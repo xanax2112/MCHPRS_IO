@@ -1,0 +1,250 @@
+========================================================================
+MCHPRS v6 交接文档（继任者必读，前一任 AI 于 2026-09-28 整理）
+========================================================================
+仓库当前状态：v5 自动化协议升级已编译通过，用户正在真实测试。
+本文档自包含：不依赖任何外部笔记，读完即可接手。
+备注：仓库内所有行号以当前工作区代码为准，改代码前用 grep 复核一次。
+
+------------------------------------------------------------------
+一、项目是什么（一句话版）
+------------------------------------------------------------------
+Rust 写的多线程 Minecraft 红石服务器。核心卖点 redpiler：把玩家建造的
+红石电路从世界编译成节点图，以远高于原版的速度 tick，并通过明文 TCP
+自动化协议（默认端口 25585）让外部脚本读写红石 IO 元件（按钮/拉杆/
+压力板/灯/活板门/音符盒），还可把 IO 点阵注册成多位"数据端口"
+（PIN/POUT）做单 tick 注入与观测。用户用它跑红石流水线机器
+（每 2 tick 过一个数据），对"每一次变化都要推送"有硬性要求。
+
+------------------------------------------------------------------
+二、仓库结构速览
+------------------------------------------------------------------
+- 根 Cargo.toml：workspace 成员 crates/{block_data_gen, proc_macros,
+  redpiler_graph, rilc, schematic, world_exporter}；根包 mchprs
+  （src/main.rs 入口），edition 2024，version 0.5.2-dev。
+- crates/core：服务器核心。
+    src/plot/mod.rs    Plot 主循环、红石 tick、POUT 采样
+    src/automation.rs  自动化 TCP 服务、SUB 订阅表、协议行格式化
+    src/config.rs      配置（automation_port=25585、
+                       automation_data_port_events 默认 true）
+    src/server.rs      Message 通道与路由
+- crates/redpiler：红石模拟核心。
+    backend/mod.rs     Backend trait（query_io/flush 等接口）
+    direct/mod.rs      direct 后端实现（nodes 数组 + pos_map 哈希）
+- crates/{world, redstone, network, blocks, save_data}：世界、原版红石、
+  网络包、方块、存档。
+- src/protocol.txt（英文，297 行）、src/protocol_zh.txt（中文）：
+  自动化协议权威文档。改协议必须两份同步更新。
+- tests/：集成测试。mc_data/：数据目录。.backup/：备份目录。
+- 构建：dev 用 opt-level=1（不开优化慢到没法用），release 开 lto=fat
+  （加速 redpiler 编译时间）；rust-toolchain.toml 固定工具链。
+
+------------------------------------------------------------------
+三、v5 协议核心（读 protocol.txt 之前先看这段）
+------------------------------------------------------------------
+- 连接：TCP 明文行协议，'\n' 结尾，行长上限 4096 字节；问候行
+  "HELLO MCHPRS AUTOMATION 5"；端口 25585（Config.toml automation_port）；
+  多连接完全独立；连接断开自动清理该连接的订阅与数据端口。
+- v5 破坏性变更：WATCH/UNWATCH→SUB/UNSUB；POLL 模式移除；响应不再
+  暴露内部 output power；新增 PIN/POUT/INPUT。
+- 请求集：READ/SET/USE/SUB/UNSUB/PIN/POUT/INPUT/CONFIG 等，
+  详见 protocol.txt 第 3 节。
+- 数据端口 DataPort（automation.rs:52-73）：
+  { name, kind(Pin|Pout), en_clk, clk, x0,y0,z0, nx,ny,nz, dx,dy,dz,
+    points(按位序，bit0 在前), plot_x, plot_z }
+  点 (i,j,k) 在 (x0+i*dx, y0+j*dy, z0+k*dz)，位索引 i*(ny*nz)+j*nz+k，
+  bit 0 为最高位（MSB）。
+- POUT 触发语义：en_clk=true 时靠 clk 元素上升沿触发，数据在同一个
+  采样点打包；en_clk=false 时任意数据位变化即触发。推送
+  "output <name> <hex>" 行。pack_hex 约定：bit0=MSB、小写 hex、
+  末 nibble 右补零（automation.rs 有镜像解包，两端必须一致）。
+  automation_data_port_events=true（默认）时额外逐位推送 EVENT 行。
+- SUB：SubOk 回复携带注册时当前状态（pos、element、powered），
+  之后变化推 "EVENT x y z element_code powered" 行。
+  注意：v5 有意不暴露 output_power（automation.rs:445 注释），
+  这是协议决策，别顺手加回去。
+- PIN：向数据端口注入（单 tick 生效）；INPUT：注入原始红石状态。
+
+------------------------------------------------------------------
+四、v6 待办清单（方向已与用户确认，全部未实施）
+------------------------------------------------------------------
+【V6-1】OK PIN / OK POUT 响应带端口名
+  目标格式：OK PIN bus_a / OK POUT disp
+  改动点：automation.rs handle_reply 的 PinOk(port)/PoutOk(port) 分支
+  （port.name 在手边，现在只输出 OK PIN/OK POUT）。
+  连带：protocol.txt 与 protocol_zh.txt 的响应格式与示例会话。
+
+【V6-2】每 tick 强制推送（信息完整性硬需求）
+  背景：流水线机器每 2 tick 过一个数据，任何采样合并都会让脚本判错。
+  合并根源：Plot 主循环按 batch 跑（batch_interval =
+  min(world_send_interval, 50ms)，见 plot/mod.rs:76-80），
+  flush/SUB drain/POUT 采样全在 batch 边界；flush 把 node.changed
+  收集后复位，batch 内多次翻转只剩末态事件。
+  改法（分两部分）：
+    a) POUT 每 tick 采样：sample_pout_ports 从 batch 边界移入逐 tick
+       循环。代价（万倍加速场景估算）：16 位端口吞吐约 -10%，
+       64 位约 -30-60%。
+    b) SUB 每 tick：见 V6-4（轮询化，推荐）。不要每 tick flush
+       （见坑 2，灾难性）。
+  建议做成配置项（如 automation_per_tick_push），默认关闭保持批量路径。
+
+【V6-3】automation_data_port_events 与 SUB+POUT 重叠元件语义
+  现状：同一元件既被 SUB 订阅又被 POUT 覆盖时，配置开启会收到两条
+  内容相同的 EVENT（SUB 通道 + POUT 通道），无去重。
+  待定：去重 / POUT 覆盖的元件从 SUB 豁免 / 仅文档化。
+  若 V6-4 落地，此问题在轮询层统一解决（订阅表去重后每个位置只有
+  一份 prev、一次 diff、一次推送）。
+
+【V6-4】SUB 改 POUT 式轮询实现（用户直觉已确认：SUB ≡ 1 位无时钟 POUT）
+  方案：
+    1. plot 线程镜像订阅表：sub_watches: FxHashSet<BlockPos>（跨连接
+       去重）+ sub_prev: FxHashMap<BlockPos, (bool, u8)>；
+    2. 生成 SubOk 时播种 prev（当前状态正好在手边）；
+    3. 每 tick 对每个订阅位置 query_io，与 prev diff，变化则构造
+       IoEvent 发 Message::IoEvents——server 端 routing 与 EVENT 行
+       格式一行不用改（push_event 只按 pos 查 watchers）；
+    4. 边角：redpiler reset/重启后重播种（防虚假事件）；query_io 返回
+       None（元件被拆）需定义行为（建议跳过或摘除订阅）；断连清理需
+       server→plot 通知（仿 pending_disconnects）。
+  代价：O(订阅数)/tick，每次 query_io 约 50-100ns。万倍加速
+  3300 tick/batch 下 50 订阅 ≈8-16ms/batch（与预算同量级，注意）；
+  普通 20tps 可忽略。轮询"沉默也付费"，注意预算。
+  红利：两通道合并为一条轮询订阅基础设施；flush 可摘掉 IoEvent 生成
+  （小收益）；客户端线格式不变。
+
+【V6-5 兜底】redpiler tick_node 即时 push
+  O(变化数)/tick，静默零开销，性能最优，但动 redpiler 核心热路径，
+  正确性风险高。仅当"多订阅 + 极限加速"压测撞墙再上。
+
+------------------------------------------------------------------
+五、核心机制详解（必须理解）
+------------------------------------------------------------------
+1. Plot 主循环（plot/mod.rs）
+   - batch 模式：batch_interval = min(world_send_interval, 50ms)
+     （:76-80）；batch 大小由 last_nspt 动态估算，Tps::Unlimited 用
+     max_batch_size；tickn 内部是逐 tick 循环。
+   - 每 batch 末尾：flush + take_io_events + sample_pout_ports
+     （主循环 redpiler active 分支，约 :903-918）；publish_world
+     也 flush+drain（:882-892）。
+   - 这就是"batch 内中间态被合并"的结构根源。
+
+2. redpiler Backend（backend/mod.rs trait，direct/mod.rs 实现）
+   - query_io(pos) -> Option<(IoElement, bool, u8)>：
+     pos_map FxHashMap 查找 + 读节点字段，O(1)，约几十纳秒
+     （direct/mod.rs:263-268）。POUT/轮询 SUB 轻量的根本原因。
+   - flush(&mut world)：遍历全部节点 O(N)（direct/mod.rs:246 起），
+     changed 节点生成 IoEvent、复位 changed、写回世界——一切状态
+     变化的唯一漏斗。
+
+3. POUT 采样（plot/mod.rs:955-1029 sample_pout_ports）
+   - PlotDataPort { port, prev_bits: Vec<bool>, clk_prev: bool }
+     （:80-84）。
+   - 时钟上升沿 = !state.clk_prev && clk_now（:996），数据在同一采样
+     点读取打包；无时钟 = now 与 prev_bits 逐位 diff 有任一位不同
+     即触发（:999-1003）。
+   - 注册时播种 prev_bits/clk_prev（handle_automation_request 的
+     Pout 分支，约 :790-830）。
+
+4. SUB 现状路径
+   SUB pos → query_io 校验 → SubOk(pos, element, powered, output_power)
+   → automation.rs 记 watches[conn]→pos / watchers[pos]→conn →
+   plot 每 batch flush+take_io_events → Message::IoEvents → server.rs
+   → push_event（automation.rs:440）→ 按 watchers 格式化 EVENT 行。
+
+5. 线程/消息流
+   - plot 线程持有 redpiler 与 world；automation 连接在 server 线程
+     （AutomationServer，automation.rs）。
+   - plot ↔ server 通过 Message：IoResponse(conn_id, AutomationResponse)、
+     IoEvents(Vec<IoEvent>)、IoDataPortOutput{conn_id,name,hex,events}
+     （server.rs 约 :49-69）。
+   - 数据端口注册表在 plot（pout_ports: FxHashMap<u64,
+     FxHashMap<String, PlotDataPort>>）；SUB 订阅表在 server
+     （watches/watchers）。V6-4 轮询化正是要打破这个分裂：订阅表
+     镜像进 plot。
+
+------------------------------------------------------------------
+六、踩过的坑与教训（含前任 AI 犯过的错，别重蹈覆辙）
+------------------------------------------------------------------
+坑 1【最大教训】别把"代码现状"包装成"设计必然"。
+   前任 AI 曾断言"SUB 每 tick 化只有两条路（每 tick flush / 改
+   tick_node）""SUB 与 POUT 是并列独立、互不包含的通道"，被用户
+   推翻。正确心智模型：SUB ≡ 1 位、无时钟、任意变化即报的 POUT；
+   轮询 diff 是每 tick 化最轻的路。回答"能不能这么设计"时，直接给
+   可行性与方案，不要用现状合理性搪塞。
+
+坑 2 性能账必须自己算，别拍脑袋。
+   query_io 几十纳秒/次；flush O(总节点数)。每 tick flush 是灾难：
+   10 万节点 × 3300 tick/batch（万倍加速）≈0.33-3.3 秒，vs 16.7ms
+   预算，慢 20-200 倍。
+
+坑 3 中间态丢失是结构性的，不是 bug。
+   flush 复位 changed 后，batch 内多次翻转只剩末态事件。V6-2 的
+   根源，改之前先和用户确认客户端期望的语义。
+
+坑 4 播种与重播种。
+   注册时播 prev（POUT 已有此套路）；redpiler reset/重启后必须
+   重播种，否则第一 tick 产生虚假事件。轮询 SUB（V6-4）同理。
+
+坑 5 编译坑（已修复）：
+   config.rs 宏相关、automation.rs 生命周期相关。改这两处时留意。
+
+坑 6 协议文档双份。
+   protocol.txt + protocol_zh.txt（含示例会话），任何协议改动同步
+   两份，并提醒用户重新验证客户端脚本。
+
+坑 7 位打包约定。
+   pack_hex：bit0=MSB、小写 hex、末 nibble 右补零；客户端解包必须
+   一致。改任何一端都断链。
+
+坑 8 v5 有意不暴露 output_power（EVENT 行与响应均不含，
+   automation.rs:445 注释）。是协议设计决策，不要顺手加回。
+
+坑 9 万倍加速是性能验算基准。
+   约 5µs/tick、3300 tick/batch、16.7ms 预算。所有"每 tick"方案的
+   开销都按这个账算。
+
+------------------------------------------------------------------
+七、关键代码位置索引（行号以当前工作区为准）
+------------------------------------------------------------------
+crates/core/src/plot/mod.rs
+  :76-80    batch 参数计算（world_send_interval、batch_interval）
+  :80-84    PlotDataPort 结构
+  ~:750-850 handle_automation_request（SUB/PIN/POUT 注册与播种）
+  :882-892  publish_world（flush+drain）
+  :903-918  主循环 batch 尾（flush+drain+sample_pout_ports）
+  :955-1029 sample_pout_ports（:996 上升沿判定；:999-1003 无时钟触发）
+crates/core/src/automation.rs
+  :52-73    DataPort 结构；:77 n_points；:82 hex_len
+  :136-142  SubOk 等响应枚举
+  ~:150-160 AutomationServer（watches/watchers/data_ports）
+  ~:420-437 handle_reply 行格式化（V6-1 改这里 PinOk/PoutOk）
+  :440      push_event（EVENT 行格式）
+  :469      drop_connection（断连清理，V6-4 需仿此通知 plot）
+crates/core/src/server.rs
+  ~:49-69   Message::{IoResponse, IoEvents, IoDataPortOutput}
+  :80-86    Message::IoEvents 路由 → automation.push_event
+crates/core/src/config.rs
+  :76       automation_port = 25585
+  :79       automation_data_port_events 默认 true
+crates/redpiler/src/backend/mod.rs
+  ~:71      Backend trait：query_io 签名等
+crates/redpiler/src/direct/mod.rs
+  :246 起   flush（全量扫描）
+  :263-268  query_io（哈希查找 + 读字段）
+src/protocol.txt / src/protocol_zh.txt
+  协议权威文档（版本 5；行长上限 4096；问候行格式）
+
+------------------------------------------------------------------
+八、建议实施顺序
+------------------------------------------------------------------
+1. 先读：protocol_zh.txt → 本文档 → plot/mod.rs 主循环段 →
+   automation.rs。
+2. V6-1（独立小改动）→ 同步两份协议文档。
+3. V6-2a：POUT 每 tick 采样（改调用位置 + 配置项默认关）。
+4. V6-4：SUB 轮询化（落地后 V6-2b 与 V6-3 自然解决）。
+5. 压测：万倍加速 + 每 2 tick 流水线机器场景，验证信息完整性。
+6. 性能撞墙再上 V6-5。
+每完成一项：cargo build 验证 + 让用户跑真实客户端回归。
+
+备注：仓库外（前任 AI 的辅助记忆库）还有四条待定项笔记，但本文档
+已全部涵盖且更完整——以本文档为准。
+========================================================================

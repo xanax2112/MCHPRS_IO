@@ -1,0 +1,168 @@
+MCHPRS Automation Protocol
+==========================
+
+This document describes the plain-text TCP protocol spoken on the automation
+port (default 25585, configurable in Config.toml as `automation_port`). It
+allows external scripts to read and drive the redstone IO elements (buttons,
+levers, pressure plates, lamps, trapdoors, note blocks) of running redpiler
+circuits without speaking the Minecraft protocol.
+
+1. Connection
+-------------
+- Transport: TCP, line-oriented UTF-8 text. Every line is terminated by '\n'.
+- Maximum line length: 4096 bytes.
+- On connect, the server greets the client with:
+
+      HELLO MCHPRS AUTOMATION 3
+
+  where 3 is the protocol version. (Version 3 adds the element's current
+  state to the OK WATCH response. Version 2 added the WATCH delivery mode;
+  the version-1 `WATCH X Y Z` form is still accepted and defaults to SUB.)
+- Multiple connections are supported and are fully independent.
+- Closing the connection removes all watches registered by that connection.
+
+2. Coordinates
+--------------
+Global Minecraft block coordinates, three signed integers separated by
+spaces:
+
+      X Y Z
+
+Example: 128 63 2048
+
+The server maps a position to its plot using (X >> 9, Z >> 9).
+
+3. Requests (client -> server)
+------------------------------
+All opcodes are case-insensitive.
+
+  READ X Y Z
+      Read the IO element at (X, Y, Z).
+
+  USE X Y Z
+      Simulate a right-click: pulse a button or toggle a lever.
+
+  SET X Y Z STATE
+      Set the absolute state of a lever or pressure plate.
+      STATE is 0 or 1.
+
+  WATCH X Y Z [MODE]
+      Register the output element at (X, Y, Z) with the given delivery mode.
+      MODE is SUB (subscribe) or POLL (poll), case-insensitive. SUB means
+      state changes are pushed to this connection as EVENT lines; POLL means
+      nothing is pushed and the client reads the state on demand with READ.
+      If MODE is omitted it defaults to SUB.
+      The server maintains a watch table per connection.
+
+  UNWATCH X Y Z
+      Remove a previously registered watch.
+
+  A single TCP packet may carry any number of request lines; the server
+  processes them line by line, in order. Sending several WATCH lines in one
+  packet therefore registers several output elements at once.
+
+4. Responses (server -> client)
+-------------------------------
+Every request receives exactly one response line.
+
+  OK READ X Y Z CODE POWERED POWER
+      READ result. CODE is the element code (see section 6), POWERED is 0 or
+      1 and POWER is the 0..15 output power.
+
+  OK USE X Y Z
+      USE succeeded.
+
+  OK SET X Y Z POWERED
+      SET succeeded, POWERED is the new state.
+
+  OK WATCH X Y Z MODE CODE POWERED POWER
+      WATCH succeeded; the connection is now registered for (X, Y, Z) with
+      the delivery mode MODE (SUB or POLL). CODE, POWERED and POWER carry the
+      element's current state at registration time, in the same format as
+      OK READ above, so the client learns the initial value without an extra
+      READ.
+
+  OK UNWATCH X Y Z
+      UNWATCH succeeded.
+
+  WARN INACTIVE X Y Z
+      No active redpiler circuit on the plot containing (X, Y, Z), or the
+      plot is not loaded.
+
+  WARN NO_IO X Y Z
+      The running circuit has no IO element at (X, Y, Z).
+
+  WARN NOT_OUTPUT X Y Z
+      The element at (X, Y, Z) is an input element and cannot be watched.
+
+  WARN FAILED X Y Z
+      The operation could not be applied to the element at (X, Y, Z).
+
+  ERR invalid request: <line>
+      The opcode was not recognized; the offending line is echoed back.
+
+  ERR malformed request: <line>
+      The line could not be parsed (bad coordinates or missing arguments).
+
+5. Events (server -> client, unsolicited)
+-----------------------------------------
+  EVENT X Y Z CODE POWERED POWER
+
+Pushed to every connection that has WATCHed (X, Y, Z) in SUB mode whenever
+the element's state changes. WATCHes registered in POLL mode never receive
+EVENT lines; their state must be queried with READ.
+
+6. Element codes
+----------------
+  0 = Button          (input)
+  1 = Lever           (input)
+  2 = Pressure Plate  (input)
+  3 = Lamp            (output)
+  4 = Trapdoor        (output)
+  5 = Note Block      (output)
+
+7. Semantics
+------------
+- READ works on any IO element. It is passive and never changes the circuit.
+- USE pulses a button for its configured duration or toggles a lever. It has
+  no effect on pressure plates, lamps, trapdoors or note blocks.
+- SET only applies to levers and pressure plates. It has no effect on buttons
+  or output elements.
+- WATCH is only valid for output elements (lamp, trapdoor, note block).
+  Watching an input element yields WARN NOT_OUTPUT.
+- WATCH X Y Z SUB (or WATCH X Y Z, which defaults to SUB) subscribes the
+  connection: every state change of the element is pushed as an EVENT line.
+- WATCH X Y Z POLL only registers the element for polling: no EVENT lines
+  are sent for it, and the client queries the current state with READ.
+- WATCH is only confirmed with OK WATCH X Y Z MODE after the plot verifies
+  that a circuit is running and the element is an output. No EVENT is
+  pushed before that confirmation.
+- If the target plot is not loaded, or no redpiler circuit is active there,
+  the server answers WARN INACTIVE.
+
+8. Example session
+------------------
+  S: HELLO MCHPRS AUTOMATION 2
+  C: READ 128 63 2048
+  S: OK READ 128 63 2048 1 0 0
+  C: USE 128 63 2048
+  S: OK USE 128 63 2048
+  C: WATCH 130 64 2048 SUB
+  S: OK WATCH 130 64 2048 SUB
+  S: EVENT 130 64 2048 3 1 15
+  C: WATCH 131 64 2048 POLL
+  S: OK WATCH 131 64 2048 POLL
+  C: READ 131 64 2048
+  S: OK READ 131 64 2048 3 0 0
+  C: UNWATCH 130 64 2048
+  S: OK UNWATCH 130 64 2048
+
+9. Configuration
+----------------
+automation_port (Config.toml, default 25585):
+    The TCP port the automation listener binds on. The bind address is fixed
+    to 127.0.0.1 (loopback only); the automation bridge is meant for local
+    scripts and cannot be reached from other machines. A configured value
+    that is not a valid u16 falls back to 25585. If binding fails, the
+    automation bridge is disabled and the Minecraft server still runs
+    normally.

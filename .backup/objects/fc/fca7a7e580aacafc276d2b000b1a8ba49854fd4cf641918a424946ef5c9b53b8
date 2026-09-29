@@ -1,0 +1,441 @@
+//! Automation bridge: a plain-text TCP protocol (default port 25585) that
+//! lets external scripts read and drive the redstone IO elements (buttons,
+//! levers, pressure plates, lamps, trapdoors, note blocks) of running
+//! redpiler circuits.
+//!
+//! The wire format is documented in `src/protocol.txt` in the repository
+//! root.
+
+use mchprs_blocks::BlockPos;
+use mchprs_redpiler::backend::{IoElement, IoEvent};
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::net::{TcpListener, TcpStream};
+use tracing::{debug, warn};
+
+/// The maximum length of a single request line or response line.
+const MAX_LINE_LEN: usize = 4096;
+
+/// How a watched output element delivers its state changes to the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchMode {
+    /// Subscribe mode: the server pushes an `EVENT` line to the connection on
+    /// every state change of the watched element.
+    Subscribe,
+    /// Poll mode: no push. The client reads the current state on demand with
+    /// a `READ` request.
+    Poll,
+}
+
+impl WatchMode {
+    /// The wire representation used in responses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WatchMode::Subscribe => "SUB",
+            WatchMode::Poll => "POLL",
+        }
+    }
+}
+
+/// A request from an automation client that is routed to a plot thread.
+#[derive(Debug, Clone)]
+pub enum AutomationRequest {
+    /// Read the current state of the IO element at `pos`.
+    Read { pos: BlockPos },
+    /// Simulate a right-click on the button or lever at `pos`.
+    Use { pos: BlockPos },
+    /// Set the absolute powered state of the lever or pressure plate at `pos`.
+    Set { pos: BlockPos, powered: bool },
+    /// Register the output element (lamp/trapdoor/note block) at `pos` with
+    /// the given delivery mode: push notifications (`Subscribe`) or
+    /// pull-only reads (`Poll`).
+    Watch { pos: BlockPos, mode: WatchMode },
+}
+
+impl AutomationRequest {
+    pub fn pos(&self) -> BlockPos {
+        match self {
+            AutomationRequest::Read { pos }
+            | AutomationRequest::Use { pos }
+            | AutomationRequest::Set { pos, .. }
+            | AutomationRequest::Watch { pos, .. } => *pos,
+        }
+    }
+}
+
+/// The reply a plot thread sends back after handling an [`AutomationRequest`].
+#[derive(Debug, Clone)]
+pub enum AutomationResponse {
+    /// `READ` result: the element at `pos` and its current state.
+    Read(BlockPos, IoElement, bool, u8),
+    /// `USE` succeeded.
+    UseOk(BlockPos),
+    /// `SET` succeeded.
+    SetOk(BlockPos, bool),
+    /// `WATCH` succeeded; the connection is registered for `pos` with the
+    /// given delivery mode.
+    WatchOk(BlockPos, WatchMode),
+    /// No redpiler circuit is running on the plot containing `pos`.
+    Inactive(BlockPos),
+    /// No IO element of the running circuit exists at `pos`.
+    NoIoElement(BlockPos),
+    /// The element at `pos` is an input element, which cannot be watched.
+    NotOutput(BlockPos),
+    /// The operation could not be applied to the element at `pos`.
+    OperationFailed(BlockPos),
+}
+
+/// An action the server thread must perform on behalf of the automation
+/// bridge.
+#[derive(Debug)]
+pub enum AutomationAction {
+    /// Route an automation request to the plot containing `pos`.
+    Route {
+        conn_id: u64,
+        pos: BlockPos,
+        request: AutomationRequest,
+    },
+}
+
+struct AutomationConn {
+    writer: TcpStream,
+    reader: BufReader<TcpStream>,
+    /// Bytes read so far without a terminating newline.
+    partial: Vec<u8>,
+    /// Bytes queued to be written to the socket.
+    pending: Vec<u8>,
+}
+
+/// Manages the automation TCP listener and all its connections.
+pub struct AutomationServer {
+    listener: TcpListener,
+    next_conn_id: u64,
+    connections: FxHashMap<u64, AutomationConn>,
+    /// Positions watched by each connection, with their delivery mode.
+    watches: FxHashMap<u64, FxHashMap<BlockPos, WatchMode>>,
+    /// Connections that receive push events for each position. Only
+    /// subscribe-mode watches are entered here; poll-mode watches are
+    /// recorded in `watches` only.
+    watchers: FxHashMap<BlockPos, FxHashSet<u64>>,
+}
+
+impl AutomationServer {
+    /// Binds the automation listener to `127.0.0.1:port`. Loopback only: the
+    /// automation bridge is meant for local scripts, not remote clients.
+    pub fn bind(port: i64) -> std::io::Result<Self> {
+        let port = u16::try_from(port).unwrap_or(25585);
+        let listener = TcpListener::bind(("127.0.0.1", port))?;
+        listener.set_nonblocking(true)?;
+        Ok(AutomationServer {
+            listener,
+            next_conn_id: 0,
+            connections: FxHashMap::default(),
+            watches: FxHashMap::default(),
+            watchers: FxHashMap::default(),
+        })
+    }
+
+    /// Accepts new connections, reads and parses requests from all
+    /// connections, and returns the requests that need to be routed to a
+    /// plot. Requests that can be handled locally (`UNWATCH`, parse errors)
+    /// are answered immediately by queueing a response line.
+    pub fn poll(&mut self) -> Vec<AutomationAction> {
+        self.accept_new();
+
+        let mut actions = Vec::new();
+        let mut local: Vec<(u64, LocalAction)> = Vec::new();
+        let mut closed = Vec::new();
+
+        for (conn_id, conn) in &mut self.connections {
+            let conn_id = *conn_id;
+            let mut lines = Vec::new();
+            match poll_lines(conn, &mut lines) {
+                Ok(true) => {}
+                Ok(false) | Err(()) => {
+                    closed.push(conn_id);
+                    continue;
+                }
+            }
+            for line in lines {
+                if line.is_empty() {
+                    continue;
+                }
+                match parse_request(&line) {
+                    Some(ParseResult::Route(pos, request)) => {
+                        actions.push(AutomationAction::Route {
+                            conn_id,
+                            pos,
+                            request,
+                        });
+                    }
+                    Some(ParseResult::Unwatch(pos)) => {
+                        local.push((conn_id, LocalAction::Unwatch(pos)));
+                    }
+                    Some(ParseResult::Invalid(line)) => {
+                        local.push((conn_id, LocalAction::Invalid(line)));
+                    }
+                    None => local.push((conn_id, LocalAction::Malformed(line))),
+                }
+            }
+        }
+
+        for conn_id in closed {
+            self.drop_connection(conn_id);
+        }
+        for (conn_id, action) in local {
+            match action {
+                LocalAction::Unwatch(pos) => {
+                    self.remove_watch(conn_id, pos);
+                    self.queue_line(conn_id, format!("OK UNWATCH {} {} {}\n", pos.x, pos.y, pos.z));
+                }
+                LocalAction::Invalid(line) => {
+                    self.queue_line(conn_id, format!("ERR invalid request: {}\n", line));
+                }
+                LocalAction::Malformed(line) => {
+                    self.queue_line(conn_id, format!("ERR malformed request: {}\n", line));
+                }
+            }
+        }
+
+        actions
+    }
+
+    /// Flushes queued responses to all connections, removing dead sockets.
+    pub fn flush(&mut self) {
+        let mut closed = Vec::new();
+        for (conn_id, conn) in &mut self.connections {
+            let conn_id = *conn_id;
+            while !conn.pending.is_empty() {
+                match conn.writer.write(&conn.pending) {
+                    Ok(0) => {
+                        closed.push(conn_id);
+                        break;
+                    }
+                    Ok(written) => {
+                        conn.pending.drain(..written);
+                    }
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                    Err(_) => {
+                        closed.push(conn_id);
+                        break;
+                    }
+                }
+            }
+        }
+        for conn_id in closed {
+            self.drop_connection(conn_id);
+        }
+    }
+
+    /// Handles a reply from a plot thread for a previously routed request.
+    pub fn handle_reply(&mut self, conn_id: u64, reply: AutomationResponse) {
+        let line = match reply {
+            AutomationResponse::Read(pos, element, powered, power) => format!(
+                "OK READ {} {} {} {} {} {}\n",
+                pos.x,
+                pos.y,
+                pos.z,
+                element.code(),
+                powered as u8,
+                power
+            ),
+            AutomationResponse::UseOk(pos) => {
+                format!("OK USE {} {} {}\n", pos.x, pos.y, pos.z)
+            }
+            AutomationResponse::SetOk(pos, powered) => {
+                format!("OK SET {} {} {} {}\n", pos.x, pos.y, pos.z, powered as u8)
+            }
+            AutomationResponse::WatchOk(pos, mode) => {
+                self.watches.entry(conn_id).or_default().insert(pos, mode);
+                if mode == WatchMode::Subscribe {
+                    self.watchers.entry(pos).or_default().insert(conn_id);
+                }
+                format!(
+                    "OK WATCH {} {} {} {}\n",
+                    pos.x,
+                    pos.y,
+                    pos.z,
+                    mode.as_str()
+                )
+            }
+            AutomationResponse::Inactive(pos) => {
+                format!("WARN INACTIVE {} {} {}\n", pos.x, pos.y, pos.z)
+            }
+            AutomationResponse::NoIoElement(pos) => {
+                format!("WARN NO_IO {} {} {}\n", pos.x, pos.y, pos.z)
+            }
+            AutomationResponse::NotOutput(pos) => {
+                format!("WARN NOT_OUTPUT {} {} {}\n", pos.x, pos.y, pos.z)
+            }
+            AutomationResponse::OperationFailed(pos) => {
+                format!("WARN FAILED {} {} {}\n", pos.x, pos.y, pos.z)
+            }
+        };
+        self.queue_line(conn_id, line);
+    }
+
+    /// Pushes a state change event to all connections watching `event.pos`.
+    pub fn push_event(&mut self, event: IoEvent) {
+        let watchers: Vec<u64> = match self.watchers.get(&event.pos) {
+            Some(watchers) => watchers.iter().copied().collect(),
+            None => return,
+        };
+        let line = format!(
+            "EVENT {} {} {} {} {} {}\n",
+            event.pos.x,
+            event.pos.y,
+            event.pos.z,
+            event.element.code(),
+            event.powered as u8,
+            event.output_power
+        );
+        for conn_id in watchers {
+            self.queue_line(conn_id, line.clone());
+        }
+    }
+
+    fn accept_new(&mut self) {
+        loop {
+            match self.listener.accept() {
+                Ok((stream, addr)) => {
+                    debug!("Automation client connected from {}", addr);
+                    let _ = stream.set_nonblocking(true);
+                    let reader = match stream.try_clone() {
+                        Ok(stream) => BufReader::new(stream),
+                        Err(_) => {
+                            warn!("Failed to clone automation socket for {}", addr);
+                            continue;
+                        }
+                    };
+                    let conn_id = self.next_conn_id;
+                    self.next_conn_id += 1;
+                    self.connections.insert(
+                        conn_id,
+                        AutomationConn {
+                            writer: stream,
+                            reader,
+                            partial: Vec::new(),
+                            pending: Vec::new(),
+                        },
+                    );
+                    self.watches.insert(conn_id, FxHashMap::default());
+                    self.queue_line(conn_id, "HELLO MCHPRS AUTOMATION 1\n".to_string());
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => return,
+                Err(e) => {
+                    warn!("Automation listener accept failed: {}", e);
+                    return;
+                }
+            }
+        }
+    }
+
+    fn queue_line(&mut self, conn_id: u64, line: String) {
+        if let Some(conn) = self.connections.get_mut(&conn_id) {
+            conn.pending.extend_from_slice(line.as_bytes());
+        }
+    }
+
+    fn remove_watch(&mut self, conn_id: u64, pos: BlockPos) {
+        if let Some(watched) = self.watches.get_mut(&conn_id) {
+            watched.remove(&pos);
+        }
+        let empty = match self.watchers.get_mut(&pos) {
+            Some(watchers) => {
+                watchers.remove(&conn_id);
+                watchers.is_empty()
+            }
+            None => false,
+        };
+        if empty {
+            self.watchers.remove(&pos);
+        }
+    }
+
+    fn drop_connection(&mut self, conn_id: u64) {
+        let watched = self.watches.remove(&conn_id).unwrap_or_default();
+        for pos in watched.into_keys() {
+            self.remove_watch(conn_id, pos);
+        }
+        self.connections.remove(&conn_id);
+    }
+}
+
+/// A parsed request that the bridge can handle without plot involvement.
+enum LocalAction {
+    Unwatch(BlockPos),
+    Invalid(String),
+    Malformed(String),
+}
+
+/// A parsed request that must be routed to a plot.
+enum ParseResult {
+    Route(BlockPos, AutomationRequest),
+    Unwatch(BlockPos),
+    /// The opcode was not recognized; the offending line is echoed back.
+    Invalid(String),
+}
+
+/// Parses one client request line. Returns `None` when the line is
+/// syntactically malformed (bad coordinates, missing arguments).
+fn parse_request(line: &str) -> Option<ParseResult> {
+    let mut parts = line.split_whitespace();
+    let op = parts.next()?.to_ascii_uppercase();
+    let x: i32 = parts.next()?.parse().ok()?;
+    let y: i32 = parts.next()?.parse().ok()?;
+    let z: i32 = parts.next()?.parse().ok()?;
+    let pos = BlockPos::new(x, y, z);
+    Some(match op.as_str() {
+        "READ" => ParseResult::Route(pos, AutomationRequest::Read { pos }),
+        "USE" => ParseResult::Route(pos, AutomationRequest::Use { pos }),
+        "SET" => {
+            let powered = parts.next()?.parse::<u8>().ok()? != 0;
+            ParseResult::Route(pos, AutomationRequest::Set { pos, powered })
+        }
+        "WATCH" => {
+            let mode = match parts.next().map(|s| s.to_ascii_uppercase()).as_deref() {
+                None | Some("SUB") => WatchMode::Subscribe,
+                Some("POLL") => WatchMode::Poll,
+                Some(_) => return None,
+            };
+            ParseResult::Route(pos, AutomationRequest::Watch { pos, mode })
+        }
+        "UNWATCH" => ParseResult::Unwatch(pos),
+        _ => ParseResult::Invalid(line.to_string()),
+    })
+}
+
+/// Reads complete lines from the connection's buffer.
+/// Returns `Ok(true)` when more data may arrive later, `Ok(false)` on EOF,
+/// and `Err(())` on read errors or when a line exceeds `MAX_LINE_LEN`.
+fn poll_lines(conn: &mut AutomationConn, lines: &mut Vec<String>) -> Result<bool, ()> {
+    loop {
+        let buf = match conn.reader.fill_buf() {
+            Ok(buf) => buf,
+            Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(true),
+            Err(_) => return Err(()),
+        };
+        if buf.is_empty() {
+            return Ok(false);
+        }
+        match buf.iter().position(|&byte| byte == b'\n') {
+            Some(newline_idx) => {
+                conn.partial.extend_from_slice(&buf[..newline_idx]);
+                if conn.partial.len() > MAX_LINE_LEN {
+                    return Err(());
+                }
+                lines.push(String::from_utf8_lossy(&conn.partial).trim().to_string());
+                conn.partial.clear();
+                conn.reader.consume(newline_idx + 1);
+            }
+            None => {
+                let len = buf.len();
+                conn.partial.extend_from_slice(buf);
+                if conn.partial.len() > MAX_LINE_LEN {
+                    return Err(());
+                }
+                conn.reader.consume(len);
+            }
+        }
+    }
+}

@@ -1,0 +1,324 @@
+ MCHPRS Automation Protocol
+ ==========================
+
+ This document describes the plain-text TCP protocol spoken on the automation
+ port (default 25585, configurable in Config.toml as `automation_port`). It
+ allows external scripts to read and drive the redstone IO elements (buttons,
+ levers, pressure plates, lamps, trapdoors, note blocks) of running redpiler
+ circuits without speaking the Minecraft protocol, and to register whole
+ lattices of IO elements as bit-vector "data ports" that can be injected and
+ observed within a single tick.
+
+ 1. Connection
+ -------------
+ - Transport: TCP, line-oriented UTF-8 text. Every line is terminated by '\n'.
+ - Maximum line length: 4096 bytes.
+ - On connect, the server greets the client with:
+
+        HELLO MCHPRS AUTOMATION 0.1.0-beta
+
+    where 0.1.0-beta is the protocol version, matching the server
+    release. (0.1.0-beta is not compatible with any earlier protocol
+    revision: the `output` push line now starts with the upper-case
+    keyword `OUTPUT`, and `automation_data_port_events` now only controls
+    whether a `POUT` data port re-pushes EVENT lines for points the
+    connection has also SUBscribed to, defaulting to off.)
+ - Multiple connections are supported and are fully independent.
+ - Closing the connection removes all subscriptions and data ports registered
+   by that connection.
+
+ 2. Coordinates
+ --------------
+ Global Minecraft block coordinates, three signed integers separated by
+ spaces:
+
+       X Y Z
+
+ Example: 128 63 2048
+
+ The server maps a position to its plot using (X >> 9, Z >> 9).
+
+ 3. Requests (client -> server)
+ ------------------------------
+ All opcodes are case-insensitive.
+
+   READ X Y Z
+       Read the IO element at (X, Y, Z).
+
+   USE X Y Z
+       Simulate a right-click: pulse a button or toggle a lever.
+
+   SET X Y Z STATE
+       Set the absolute state of a lever or pressure plate.
+       STATE is 0 or 1.
+
+   SUB X Y Z
+       Subscribe to the output element at (X, Y, Z). State changes are pushed
+       to this connection as EVENT lines. The server maintains a watch table
+       per connection.
+
+   UNSUB X Y Z
+       Remove a previously registered subscription.
+
+   PIN NAME EN_CLK CX CY CZ X0 Y0 Z0 NX NY NZ DX DY DZ
+       Register an input data port: a lattice of levers and/or pressure
+       plates that the script later drives with INPUT.
+
+   POUT NAME EN_CLK CX CY CZ X0 Y0 Z0 NX NY NZ DX DY DZ
+       Register an output data port: a lattice of lamps, trapdoors and/or
+        note blocks whose packed state the server pushes as `OUTPUT` lines.
+
+   INPUT NAME HEX
+       Inject a packed bit vector into the previously registered input port
+       NAME in a single tick. HEX is ceil(N/4) hex characters, where N is the
+       port's number of bits; upper- and lower-case are both accepted.
+
+   A single TCP packet may carry any number of request lines; the server
+   processes them line by line, in order.
+
+ Data port arguments:
+
+   - NAME is a C-style identifier of at most 32 characters: the first
+     character must be a letter or an underscore, the remaining characters
+     letters, digits or underscores. Names are case-sensitive. The reserved
+     words READ, USE, SET, SUB, UNSUB, PIN, POUT, INPUT, OUTPUT, WATCH,
+     UNWATCH, HELLO, OK, ERR, WARN and EVENT cannot be used as names (matched
+     case-insensitively).
+   - EN_CLK is 0 or 1. When it is 0 the port has no clock element and
+     CX CY CZ must be 0 0 0. When it is 1, the clock element sits at
+     (CX, CY, CZ) outside the lattice bounding box.
+   - The lattice has its origin at (X0, Y0, Z0), positive extents NX NY NZ
+     (each at least 1) and per-axis offsets DX DY DZ. Point (i, j, k) is at
+     (X0 + i*DX, Y0 + j*DY, Z0 + k*DZ) and carries bit index
+     i*(NY*NZ) + j*NZ + k; bit 0 is the most significant bit on the wire.
+     An extent of 1 spans a single point, so its offset must be 0; larger
+     extents need a positive offset.
+   - A port spans at most 16000 points. All lattice points and the clock
+     element must lie in a single plot: they must share (X >> 9, Z >> 9) and
+     stay within the plot height.
+
+ 4. Responses (server -> client)
+ -------------------------------
+ Every request receives exactly one response line.
+
+   OK READ X Y Z CODE POWERED
+       READ result. CODE is the element code (see section 6) and POWERED is
+       0 or 1.
+
+   OK USE X Y Z
+       USE succeeded.
+
+   OK SET X Y Z POWERED
+       SET succeeded, POWERED is the new state.
+
+   OK SUB X Y Z CODE POWERED
+       SUB succeeded; the connection is now subscribed to (X, Y, Z). CODE and
+       POWERED carry the element's current state at registration time, in the
+       same format as OK READ above, so the client learns the initial value
+       without an extra READ.
+
+   OK UNSUB X Y Z
+       UNSUB succeeded. UNSUB is idempotent: unsubscribing a position that is
+       not subscribed still succeeds.
+
+    OK PIN NAME
+        PIN succeeded; the port is registered under NAME for this connection.
+
+    OK POUT NAME
+        POUT succeeded; the server starts sampling the port and pushing its
+        packed state to this connection.
+
+   OK INPUT NAME
+       INPUT succeeded; all bits were applied to the port.
+
+   WARN INACTIVE X Y Z
+       No active redpiler circuit on the plot containing (X, Y, Z), or the
+       plot is not loaded.
+
+   WARN NO_IO X Y Z
+       The running circuit has no IO element at (X, Y, Z).
+
+   WARN NOT_OUTPUT X Y Z
+       The element at (X, Y, Z) is an input element and cannot be subscribed.
+
+   WARN FAILED X Y Z
+       The operation could not be applied to the element at (X, Y, Z).
+
+   ERR invalid request: <line>
+       The opcode was not recognized; the offending line is echoed back.
+
+   ERR malformed request: <line>
+       The line could not be parsed (bad coordinates, a malformed data port
+       specification or missing arguments).
+
+   ERR CODE
+       A data port operation failed. CODE is one of the following short error
+       codes:
+         NAME   the port name is not a valid identifier, is reserved, or (for
+                INPUT) no data port with that name is registered on this
+                connection.
+         RANGE  the extents or offsets are invalid, the lattice has more than
+                16000 points, or the lattice or the clock element escapes the
+                plot.
+         CLK    EN_CLK is 0 but CX CY CZ is not 0 0 0, the clock element sits
+                inside the lattice bounding box, or the clock element is not
+                a valid clock element (see section 8).
+         DUP    a data port with the same NAME is already registered on this
+                connection.
+         HEX    the INPUT hex string has the wrong length or contains
+                non-hexadecimal characters.
+         TYPE   a lattice point is not a valid element for this port kind
+                (see section 8).
+         FAILED the INPUT injection could not be applied (see section 8).
+
+ 5. Events (server -> client, unsolicited)
+ -----------------------------------------
+   EVENT X Y Z CODE POWERED
+
+ Pushed to every connection that has SUBscribed to (X, Y, Z) whenever the
+ element's state changes.
+
+All events emitted by the same circuit tick are coalesced and written to
+  each subscriber in a single network write, so simultaneous changes of
+  several watched elements arrive together.
+
+  When `automation_per_tick_push` is enabled in Config.toml (default off),
+  every watched position is polled once per tick: each state change is pushed
+  as its own EVENT line and changes are never merged across ticks. In the
+  default batch mode, changes that occur within the same tick batch may be
+  coalesced into a single EVENT line.
+
+ 6. Element codes
+ ----------------
+   0 = Button          (input)
+   1 = Lever           (input)
+   2 = Pressure Plate  (input)
+   3 = Lamp            (output)
+   4 = Trapdoor        (output)
+   5 = Note Block      (output)
+
+ 7. Data port pushes (server -> client, unsolicited)
+ ---------------------------------------------------
+    OUTPUT NAME HEX
+
+ Pushed to the connection that registered the POUT port NAME whenever the
+port's trigger condition fires (see section 8). The `OUTPUT` keyword is
+upper case and the port name is pushed converted to upper case. HEX is the
+packed state of the whole lattice, ceil(N/4) hex characters (lower-case
+digits) with the bits packed big-endian (bit 0 is the most significant
+bit). When the number of bits is not a multiple of 4, the final nibble is
+padded with zero bits on the right.
+
+When `automation_data_port_events` is enabled in Config.toml (default off),
+an EVENT X Y Z CODE POWERED line is pushed for every lattice point whose
+state changed since the previous push, directly after the `OUTPUT` line,
+including points the connection has also SUBscribed to (which then receive
+the same EVENT twice: once through the watch, once through the data port).
+When disabled, points the connection has SUBscribed to are skipped here:
+their EVENT lines already arrive through the watch.
+
+ 8. Semantics
+ ------------
+ - READ works on any IO element. It is passive and never changes the circuit.
+ - USE pulses a button for its configured duration or toggles a lever. It has
+   no effect on pressure plates, lamps, trapdoors or note blocks.
+ - SET only applies to levers and pressure plates. It has no effect on buttons
+   or output elements.
+ - SUB is only valid for output elements (lamp, trapdoor, note block).
+   Subscribing to an input element yields WARN NOT_OUTPUT.
+ - SUB is only confirmed with OK SUB X Y Z CODE POWERED after the plot
+   verifies that a circuit is running and the element is an output. The
+   confirmation carries the element's current state. No EVENT is pushed
+   before that confirmation.
+ - If the target plot is not loaded, or no redpiler circuit is active there,
+   the server answers WARN INACTIVE. PIN, POUT and INPUT also answer
+   WARN INACTIVE when the plot's circuit is not running.
+
+ PIN ports:
+ - Every lattice point must be a lever or a pressure plate; otherwise the
+   registration fails with ERR TYPE. The clock element, if any, must be a
+   button; otherwise the registration fails with ERR CLK.
+ - INPUT NAME HEX applies all bits to the lattice points in one go. After the
+   bits are applied, the clock element, if any, is pulsed once (a simulated
+   right-click). If a point cannot be driven or the clock pulse fails, the
+   injection fails with ERR FAILED; otherwise the server answers
+   OK INPUT NAME.
+
+ POUT ports:
+ - Every lattice point must be a lamp, a trapdoor or a note block; otherwise
+   the registration fails with ERR TYPE. The clock element, if any, must
+   also be one of those output elements; otherwise the registration fails
+   with ERR CLK.
+ - After registration the server samples the port at the end of every tick
+   batch. Unclocked ports (EN_CLK 0) fire on any change of any lattice bit.
+   Clocked ports (EN_CLK 1) fire only on the rising edge of the clock
+   element (off in the previous sample, on now) and carry the bit state
+   sampled on that edge. When the trigger fires, the server pushes an
+    `OUTPUT NAME HEX` line, followed by the per-element EVENT lines when
+    enabled.
+  - The state at registration time is the baseline: no `OUTPUT` line is
+    pushed at registration, only on later changes.
+- Sampling happens once per tick batch, not once per tick. At high rtps
+    multipliers, rapid flips between two consecutive batches may be coalesced
+    into a single `OUTPUT` line. When `automation_per_tick_push` is enabled in
+    Config.toml (default off), the port is sampled once per tick instead, so
+    no intermediate state is ever skipped and every state change yields its
+    own `output` line.
+ - If a lattice point or the clock element can no longer be queried (the
+   circuit stopped or the element was removed), the port stops firing.
+   POUT registrations are per connection and are removed when the connection
+   closes. A circuit reset also discards the plot-side sampling state; the
+   port then stops firing while the name remains reserved for the connection
+   until it closes, so after a reset use a fresh name or reconnect.
+
+ 9. Example session
+ ------------------
+    S: HELLO MCHPRS AUTOMATION 7
+    C: READ 128 63 2048
+   S: OK READ 128 63 2048 1 0
+   C: USE 128 63 2048
+   S: OK USE 128 63 2048
+   C: SUB 130 64 2048
+   C: SUB 132 64 2048
+   S: OK SUB 130 64 2048 3 1
+   S: OK SUB 132 64 2048 3 1
+   S: EVENT 130 64 2048 3 0
+   S: EVENT 132 64 2048 3 0
+   C: UNSUB 130 64 2048
+   S: OK UNSUB 130 64 2048
+C: PIN bus_a 1 128 60 2048 128 64 2048 1 4 1 0 1 0
+    S: OK PIN bus_a
+    C: INPUT bus_a 5
+    S: OK INPUT bus_a
+    C: POUT disp 0 0 0 0 136 64 2048 8 1 1 1 0 0
+    S: OK POUT disp
+    S: output DISP 0F
+   S: EVENT 140 64 2048 3 1
+   S: EVENT 141 64 2048 3 1
+   S: EVENT 142 64 2048 3 1
+   S: EVENT 143 64 2048 3 1
+
+ 10. Configuration
+ -----------------
+ automation_port (Config.toml, default 25585):
+     The TCP port the automation listener binds on. The bind address is fixed
+     to 127.0.0.1 (loopback only); the automation bridge is meant for local
+     scripts and cannot be reached from other machines. A configured value
+     that is not a valid u16 falls back to 25585. If binding fails, the
+     automation bridge is disabled and the Minecraft server still runs
+     normally.
+
+automation_data_port_events (Config.toml, default false):
+      Whether a `POUT` data port additionally pushes per-element `EVENT`
+      lines for output points that the same connection has also `SUB`scribed
+      to. When enabled, such points receive their `EVENT` twice (once
+      through the watch, once through the data port). When disabled, the
+      data port skips those points and their `EVENT` arrives only through
+      the watch.
+
+  automation_per_tick_push (Config.toml, default false):
+      Whether the automation bridge samples every `SUB` watch and every `POUT`
+      data port once per tick instead of once per tick batch. Enabling it
+      guarantees that every state change is pushed as soon as it happens and
+      is never merged with other changes, at some CPU cost on accelerated
+      plots. Disabled by default.

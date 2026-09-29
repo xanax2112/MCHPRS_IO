@@ -1,0 +1,12 @@
+bind_address = "127.0.0.1:25565"
+motd = "Minecraft High Performance Redstone Server"
+chat_format = "<{username}> {message}"
+max_players = 4
+view_distance = 8
+whitelist = false
+schemati = false
+block_in_hitbox = true
+auto_redpiler = false
+automation_port = 25585
+automation_data_port_events = false
+automation_per_tick_push = true

@@ -1,0 +1,275 @@
+ MCHPRS 自动化协议
+ =================
+
+ 本文档描述自动化端口（默认 25585，可在 Config.toml 中通过
+ `automation_port` 配置）上使用的纯文本 TCP 协议。它允许外部脚本在不使用
+ Minecraft 协议的情况下，读取和驱动正在运行的 redpiler 电路中的红石 IO
+ 元件（按钮、拉杆、压力板、红石灯、活板门、音符盒），并把整片 IO 元件点阵
+ 注册为位向量形式的"数据端口"，在单个 tick 内整体注入或观测。
+
+ 1. 连接
+ -------
+ - 传输方式：TCP，按行组织的 UTF-8 文本。每行以 '\n' 结尾。
+ - 单行最大长度：4096 字节。
+ - 连接建立后，服务器会发送问候语：
+
+        HELLO MCHPRS AUTOMATION 0.1.1-beta
+
+    其中 0.1.1-beta 是协议版本号。（0.1.1-beta 相对 0.1.0-beta 改变了数
+    据端口推送行为：POUT 数据端口自身不再推送任何逐元件 EVENT 行——EVENT
+    行只来自 SUB 订阅链路；`automation_data_port_events` 现在只决定同一
+    连接已 SUB 订阅、且位于该连接 POUT 端口点阵内的点是否继续推送其
+    EVENT 行，默认关闭。0.1.0-beta 引入的大写 `OUTPUT` 关键字不变。）
+ - 支持多个连接，各连接之间完全独立。
+ - 连接关闭时会移除该连接注册的所有订阅与数据端口。
+
+ 2. 坐标
+ -------
+ 使用全局 Minecraft 方块坐标，三个以空格分隔的有符号整数：
+
+       X Y Z
+
+ 示例：128 63 2048
+
+ 服务器使用 (X >> 9, Z >> 9) 将坐标映射到对应的 plot。
+
+ 3. 请求（客户端 -> 服务器）
+ --------------------------
+ 所有操作码不区分大小写。
+
+   READ X Y Z
+       读取 (X, Y, Z) 处的 IO 元件状态。
+
+   USE X Y Z
+       模拟右键点击：触发按钮或切换拉杆。
+
+   SET X Y Z STATE
+       设置拉杆或压力板的绝对状态。STATE 为 0 或 1。
+
+   SUB X Y Z
+       订阅 (X, Y, Z) 处的输出元件。该元件的状态变化会以 EVENT 行推送给
+       本连接。服务器为每个连接维护一张监听表。
+
+   UNSUB X Y Z
+       移除此前登记的订阅。
+
+   PIN NAME EN_CLK CX CY CZ X0 Y0 Z0 NX NY NZ DX DY DZ
+       注册输入数据端口：一片由拉杆和/或压力板组成的点阵，之后用 INPUT
+       驱动。
+
+   POUT NAME EN_CLK CX CY CZ X0 Y0 Z0 NX NY NZ DX DY DZ
+       注册输出数据端口：一片由红石灯、活板门和/或音符盒组成的点阵，其
+       打包状态会以 `OUTPUT` 行推送给本连接。
+
+   INPUT NAME HEX
+       在单个 tick 内把打包位向量注入此前注册的输入端口 NAME。HEX 为
+       ceil(N/4) 个十六进制字符，N 为该端口的位数；大小写均可。
+
+   单个 TCP 数据包中可以包含任意数量的请求行，服务器按行顺序处理。
+
+ 数据端口参数说明：
+
+   - NAME 是长度不超过 32 个字符的 C 风格标识符：首字符必须是字母或下划
+     线，其余字符为字母、数字或下划线。名称区分大小写。保留字 READ、USE、
+     SET、SUB、UNSUB、PIN、POUT、INPUT、OUTPUT、WATCH、UNWATCH、HELLO、
+     OK、ERR、WARN、EVENT 不能用作名称（不区分大小写匹配）。
+   - EN_CLK 为 0 或 1。为 0 时端口没有时钟元件，CX CY CZ 必须为 0 0 0。
+     为 1 时，时钟元件位于 (CX, CY, CZ)，且必须在点阵包围盒之外。
+   - 点阵原点为 (X0, Y0, Z0)，各轴范围 NX NY NZ 均为正整数（至少为 1），
+     各轴步长（偏移）为 DX DY DZ。点 (i, j, k) 位于
+     (X0 + i*DX, Y0 + j*DY, Z0 + k*DZ)，对应位序号 i*(NY*NZ) + j*NZ + k；
+     位 0 是线路上的最高有效位。范围为 1 的轴只跨越单个点，其偏移必须
+     为 0；更大的范围需要正偏移。
+   - 每个端口最多 16000 个点。所有点阵点与时钟元件必须位于同一个 plot
+     内：即 (X >> 9, Z >> 9) 相同，且不超出 plot 高度。
+
+ 4. 响应（服务器 -> 客户端）
+ --------------------------
+ 每个请求都会收到恰好一行响应。
+
+   OK READ X Y Z CODE POWERED
+       READ 结果。CODE 是元件编码（见第 6 节），POWERED 为 0 或 1。
+
+   OK USE X Y Z
+       USE 成功。
+
+   OK SET X Y Z POWERED
+       SET 成功，POWERED 为新状态。
+
+   OK SUB X Y Z CODE POWERED
+       SUB 成功；本连接已订阅 (X, Y, Z)。CODE 与 POWERED 携带登记时元件
+       的当前状态，格式与上面的 OK READ 相同，客户端无需额外 READ 即可
+       获知初始值。
+
+   OK UNSUB X Y Z
+       UNSUB 成功。UNSUB 是幂等的：取消订阅未订阅的位置同样成功。
+
+    OK PIN NAME
+        PIN 成功；端口已以 NAME 注册到本连接。
+
+    OK POUT NAME
+        POUT 成功；服务器开始采样该端口并向本连接推送其打包状态。
+
+   OK INPUT NAME
+       INPUT 成功；全部位已应用到该端口。
+
+   WARN INACTIVE X Y Z
+       包含 (X, Y, Z) 的 plot 上没有正在运行的 redpiler 电路，或该 plot
+       未加载。
+
+   WARN NO_IO X Y Z
+       正在运行的电路中 (X, Y, Z) 处没有 IO 元件。
+
+   WARN NOT_OUTPUT X Y Z
+       (X, Y, Z) 处的元件是输入元件，不能被订阅。
+
+   WARN FAILED X Y Z
+       无法对 (X, Y, Z) 处的元件执行该操作。
+
+   ERR invalid request: <line>
+       无法识别的操作码；回显出错的那一行。
+
+   ERR malformed request: <line>
+       无法解析该行（坐标非法、数据端口参数格式错误或缺少参数）。
+
+   ERR CODE
+       数据端口操作失败。CODE 为下列简短错误码之一：
+         NAME   端口名不是合法标识符，或是保留字，或（对 INPUT 而言）本
+                连接上未注册该名称的数据端口。
+         RANGE  各轴范围或偏移非法，点阵超过 16000 个点，或点阵/时钟元件
+                越出 plot。
+         CLK    EN_CLK 为 0 但 CX CY CZ 不是 0 0 0，时钟元件位于点阵包围
+                盒内，或时钟元件不是合法时钟元件（见第 8 节）。
+         DUP    本连接上已存在同名数据端口。
+         HEX    INPUT 的十六进制串长度错误，或含有非十六进制字符。
+         TYPE   某个点阵点不是该端口类型允许的元件（见第 8 节）。
+         FAILED INPUT 注入无法完成（见第 8 节）。
+
+ 5. 事件（服务器 -> 客户端，主动推送）
+ ------------------------------------
+   EVENT X Y Z CODE POWERED
+
+ 每当元件状态变化时，推送给所有 SUB 了 (X, Y, Z) 的连接。
+
+同一电路 tick 内产生的所有事件会被合并，在同一次网络写入中发给每个订阅
+  者；因此多个被订阅元件同时变化时，对应的 EVENT 行会一起到达。
+
+  当 Config.toml 中 `automation_per_tick_push` 开启（默认关闭）时，每个被
+  订阅位置每 tick 被轮询一次：每一次状态变化都会单独推送一条 EVENT 行，
+  绝不跨 tick 合并。默认的批量模式下，同一 tick 批次内发生的变化可能被
+  合并为一条 EVENT 行。
+
+ 6. 元件编码
+ -----------
+   0 = 按钮     （输入）
+   1 = 拉杆     （输入）
+   2 = 压力板   （输入）
+   3 = 红石灯   （输出）
+   4 = 活板门   （输出）
+   5 = 音符盒   （输出）
+
+ 7. 数据端口推送（服务器 -> 客户端，主动推送）
+ --------------------------------------------
+   OUTPUT NAME HEX
+
+  每当注册了 POUT 端口 NAME 的连接其触发条件满足时（见第 8 节）推送。
+  关键字 `OUTPUT` 为大写，端口名按注册名转成大写后推送。HEX 是整个点阵的
+  打包状态，ceil(N/4) 个十六进制字符（小写字母），位按大端打包（位 0 为
+  最高有效位）。位数不是 4 的倍数时，最后一个 nibble 低位补零。
+
+  POUT 数据端口自身永不推送逐元件 EVENT 行：触发时只推送打包的 `OUTPUT`
+  行，EVENT 行只来自 SUB 订阅链路。Config.toml 中的
+  `automation_data_port_events`（默认关闭）决定：同一连接已 SUB 订阅的
+  点，当其位于该连接的某个 POUT 端口点阵内时，是否继续推送其 EVENT 行。
+  关闭时，这类点永不推送 EVENT（无论该端口时钟是否触发）：它们的状态
+  变化只能从打包的 `OUTPUT` 行中看到；所有 POUT 端口之外的 SUB 点不受
+  影响。开启时，所有 SUB 点照常推送 EVENT，每个点每次变化只推一次；端
+  口触发时，`OUTPUT` 行在本连接已 SUB 订阅点的 EVENT 行之后推送。
+
+ 8. 语义
+ -------
+ - READ 适用于任意 IO 元件。它是被动操作，不会改变电路。
+ - USE 会触发按钮持续其配置的时长，或切换拉杆。对压力板、红石灯、活板
+   门和音符盒无效果。
+ - SET 只适用于拉杆和压力板。对按钮或输出元件无效果。
+ - SUB 只对输出元件（红石灯、活板门、音符盒）有效。订阅输入元件会返回
+   WARN NOT_OUTPUT。
+ - 只有在 plot 验证电路正在运行且该元件为输出元件后，才会以
+   OK SUB X Y Z CODE POWERED 确认 SUB，确认行附带该元件的当前状态。在确认
+   之前不会推送任何 EVENT。
+ - 如果目标 plot 未加载，或那里没有活动的 redpiler 电路，服务器会回复
+   WARN INACTIVE。当 plot 电路未运行时，PIN、POUT 和 INPUT 同样回复
+   WARN INACTIVE。
+
+ PIN 端口：
+ - 每个点阵点必须是拉杆或压力板，否则注册失败并返回 ERR TYPE。时钟元件
+   （若有）必须是按钮，否则返回 ERR CLK。
+ - INPUT NAME HEX 一次性把全部位应用到点阵点。应用完成后，时钟元件（若
+   有）会被触发一次（模拟右键点击）。若任一点无法驱动或时钟触发失败，注
+   入失败并返回 ERR FAILED；否则服务器回复 OK INPUT NAME。
+
+ POUT 端口：
+ - 每个点阵点必须是红石灯、活板门或音符盒，否则注册失败并返回 ERR TYPE。
+   时钟元件（若有）也必须是上述输出元件之一，否则返回 ERR CLK。
+ - 注册后，服务器在每个 tick 批次结束时采样该端口。无时钟端口（EN_CLK 0）
+   在任一点阵位变化时触发；有时钟端口（EN_CLK 1）仅在时钟元件上升沿（上
+   一次采样为关、本次为开）触发，并携带该沿上采样到的位状态。触发时服务
+   器推送一行 `OUTPUT NAME HEX`，若开启逐元件事件，随后推送相应的 EVENT
+   行。
+ - 注册时的状态即为基线：注册时不会推送 `OUTPUT` 行，只有之后的改变才会
+   触发。
+- 采样按 tick 批次进行，而不是每个 tick 一次。在高 rtps 倍速下，两个相
+    邻批次之间发生的快速翻转可能被合并为一行 `OUTPUT`。当 Config.toml 中
+    `automation_per_tick_push` 开启（默认关闭）时，端口改为每个 tick 采样
+    一次，任何中间状态都不会被跳过，保证每次状态变化都对应一行 `OUTPUT`。
+ - 若某个点阵点或时钟元件无法再查询（电路停止或元件被移除），端口将停止
+   触发。POUT 注册按连接维护，连接关闭时移除。电路重置也会丢弃 plot 侧的
+   采样状态：端口停止触发，但名称在该连接关闭前仍被占用，因此电路重置后
+   应改用新名称或重新连接。
+
+ 9. 示例会话
+ -----------
+    S: HELLO MCHPRS AUTOMATION 0.1.0-beta
+    C: READ 128 63 2048
+   S: OK READ 128 63 2048 1 0
+   C: USE 128 63 2048
+   S: OK USE 128 63 2048
+   C: SUB 130 64 2048
+   C: SUB 132 64 2048
+   S: OK SUB 130 64 2048 3 1
+   S: OK SUB 132 64 2048 3 1
+   S: EVENT 130 64 2048 3 0
+   S: EVENT 132 64 2048 3 0
+   C: UNSUB 130 64 2048
+   S: OK UNSUB 130 64 2048
+C: PIN bus_a 1 128 60 2048 128 64 2048 1 4 1 0 1 0
+    S: OK PIN bus_a
+    C: INPUT bus_a 5
+    S: OK INPUT bus_a
+    C: POUT disp 0 0 0 0 136 64 2048 8 1 1 1 0 0
+    S: OK POUT disp
+    S: OUTPUT DISP 0f
+   S: EVENT 140 64 2048 3 1
+   S: EVENT 141 64 2048 3 1
+   S: EVENT 142 64 2048 3 1
+   S: EVENT 143 64 2048 3 1
+
+ 10. 配置
+ --------
+ automation_port（Config.toml，默认 25585）：
+     自动化监听器绑定的 TCP 端口。绑定地址固定为 127.0.0.1（仅回环）；
+     自动化桥接面向本地脚本，无法被其他机器访问。配置值不是合法 u16 时
+     回退为 25585。若绑定失败，自动化桥接会被禁用，Minecraft 服务器仍
+     正常运行。
+
+automation_data_port_events（Config.toml，默认 false）：
+      是否让 POUT 数据端口为同一连接已 SUB 订阅的输出点"再"推送逐元件
+      EVENT 行。开启时，这些点会收到两次相同的 EVENT（一次来自订阅，
+      一次来自数据端口）；关闭时，数据端口跳过这些点，它们的 EVENT 只
+      通过订阅链路送达一次。
+
+  automation_per_tick_push（Config.toml，默认 false）：
+      自动化桥接是否每个 tick 采样一次所有 SUB 订阅与 POUT 数据端口，
+      而不是每个 tick 批次采样一次。开启后保证每一次状态变化发生时立即
+      推送、绝不与其他变化合并，代价是加速 plot 上额外的 CPU 开销。
+      默认关闭。

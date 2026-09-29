@@ -1,0 +1,162 @@
+MCHPRS 自动化协议
+=================
+
+本文档描述自动化端口（默认 25585，可在 Config.toml 中通过
+`automation_port` 配置）上使用的纯文本 TCP 协议。它允许外部脚本在不使用
+Minecraft 协议的情况下，读取和驱动正在运行的 redpiler 电路中的红石 IO
+元件（按钮、拉杆、压力板、红石灯、活板门、音符盒）。
+
+1. 连接
+-------
+- 传输方式：TCP，按行组织的 UTF-8 文本。每行以 '\n' 结尾。
+- 单行最大长度：4096 字节。
+- 连接建立后，服务器会发送问候语：
+
+      HELLO MCHPRS AUTOMATION 4
+
+  其中 4 是协议版本号。（版本 4 不再兼容协议版本 1 和 2：WATCH 的 MODE
+  参数现在是必填的。）
+- 支持多个连接，各连接之间完全独立。
+- 连接关闭时会移除该连接注册的所有监听（WATCH）。
+
+2. 坐标
+-------
+使用全局 Minecraft 方块坐标，三个以空格分隔的有符号整数：
+
+      X Y Z
+
+示例：128 63 2048
+
+服务器使用 (X >> 9, Z >> 9) 将坐标映射到对应的 plot。
+
+3. 请求（客户端 -> 服务器）
+--------------------------
+所有操作码不区分大小写。
+
+  READ X Y Z
+      读取 (X, Y, Z) 处的 IO 元件状态。
+
+  USE X Y Z
+      模拟右键点击：触发按钮或切换拉杆。
+
+  SET X Y Z STATE
+      设置拉杆或压力板的绝对状态。STATE 为 0 或 1。
+
+  WATCH X Y Z MODE
+      以指定交付模式登记 (X, Y, Z) 处的输出元件。
+      MODE 为 SUB（订阅制）或 POLL（查询制），不区分大小写，且为必填
+      参数。SUB 表示该元件的状态变化会以 EVENT 行推送给本连接；POLL 表示
+      不做推送，客户端按需使用 READ 查询状态。
+      服务器为每个连接维护一张监听表。
+
+  UNWATCH X Y Z
+      移除此前登记的监听。
+
+  单个 TCP 数据包中可以包含任意数量的请求行，服务器按行顺序处理。因此
+  在一个数据包中发送多条 WATCH 行，即可一次性登记多个输出端口。
+
+4. 响应（服务器 -> 客户端）
+--------------------------
+每个请求都会收到恰好一行响应。
+
+  OK READ X Y Z CODE POWERED POWER
+      READ 结果。CODE 是元件编码（见第 6 节），POWERED 为 0 或 1，
+      POWER 为 0..15 的输出强度。
+
+  OK USE X Y Z
+      USE 成功。
+
+  OK SET X Y Z POWERED
+      SET 成功，POWERED 为新状态。
+
+  OK WATCH X Y Z MODE CODE POWERED POWER
+      WATCH 成功；本连接已按 MODE（SUB 或 POLL）交付模式登记 (X, Y, Z)。
+      CODE、POWERED 与 POWER 携带登记时元件的当前状态，格式与上面的
+      OK READ 相同，客户端无需额外 READ 即可获知初始值。
+
+  OK UNWATCH X Y Z
+      UNWATCH 成功。
+
+  WARN INACTIVE X Y Z
+      包含 (X, Y, Z) 的 plot 上没有正在运行的 redpiler 电路，或该 plot
+      未加载。
+
+  WARN NO_IO X Y Z
+      正在运行的电路中 (X, Y, Z) 处没有 IO 元件。
+
+  WARN NOT_OUTPUT X Y Z
+      (X, Y, Z) 处的元件是输入元件，不能被监听。
+
+  WARN FAILED X Y Z
+      无法对 (X, Y, Z) 处的元件执行该操作。
+
+  ERR invalid request: <line>
+      无法识别的操作码；回显出错的那一行。
+
+  ERR malformed request: <line>
+      无法解析该行（坐标非法或缺少参数）。
+
+5. 事件（服务器 -> 客户端，主动推送）
+------------------------------------
+  EVENT X Y Z CODE POWERED POWER
+
+每当元件状态变化时，推送给所有以 SUB 模式 WATCH 了 (X, Y, Z) 的连接。
+以 POLL 模式登记的监听永远不会收到 EVENT 行；其状态须用 READ 查询。
+
+同一电路 tick 内产生的所有事件会被合并，在同一次网络写入中发给每个
+订阅者；因此多个被监听元件同时变化时，对应的 EVENT 行会一起到达。
+
+6. 元件编码
+-----------
+  0 = 按钮     （输入）
+  1 = 拉杆     （输入）
+  2 = 压力板   （输入）
+  3 = 红石灯   （输出）
+  4 = 活板门   （输出）
+  5 = 音符盒   （输出）
+
+7. 语义
+-------
+- READ 适用于任意 IO 元件。它是被动操作，不会改变电路。
+- USE 会触发按钮持续其配置的时长，或切换拉杆。对压力板、红石灯、活板
+  门和音符盒无效果。
+- SET 只适用于拉杆和压力板。对按钮或输出元件无效果。
+- WATCH 只对输出元件（红石灯、活板门、音符盒）有效。监听输入元件会返
+  回 WARN NOT_OUTPUT。
+- WATCH X Y Z SUB 为订阅制：该元件的每次状态
+  变化都会以 EVENT 行推送。
+- WATCH X Y Z POLL 为查询制：只为该元件登记查询，不发送 EVENT 行，客户
+  端用 READ 查询当前状态。
+- 只有在 plot 验证电路正在运行且该元件为输出元件后，才会以
+  OK WATCH X Y Z MODE CODE POWERED POWER 确认 WATCH，确认行附带该元件
+  的当前状态。在确认之前不会推送任何 EVENT。
+- 如果目标 plot 未加载，或那里没有活动的 redpiler 电路，服务器会回复
+  WARN INACTIVE。
+
+8. 示例会话
+-----------
+  S: HELLO MCHPRS AUTOMATION 4
+  C: READ 128 63 2048
+  S: OK READ 128 63 2048 1 0 0
+  C: USE 128 63 2048
+  S: OK USE 128 63 2048
+  C: WATCH 130 64 2048 SUB
+  C: WATCH 131 64 2048 POLL
+  C: WATCH 132 64 2048 SUB
+  S: OK WATCH 130 64 2048 SUB 3 1 15
+  S: OK WATCH 131 64 2048 POLL 3 0 0
+  S: OK WATCH 132 64 2048 SUB 3 1 0
+  S: EVENT 130 64 2048 3 0 15
+  S: EVENT 132 64 2048 3 0 0
+  C: READ 131 64 2048
+  S: OK READ 131 64 2048 3 0 0
+  C: UNWATCH 130 64 2048
+  S: OK UNWATCH 130 64 2048
+
+9. 配置
+-------
+automation_port（Config.toml，默认 25585）：
+    自动化监听器绑定的 TCP 端口。绑定地址固定为 127.0.0.1（仅回环）；
+    自动化桥接面向本地脚本，无法被其他机器访问。配置值不是合法 u16 时
+    回退为 25585。若绑定失败，自动化桥接会被禁用，Minecraft 服务器仍
+    正常运行。
