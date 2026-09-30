@@ -15,9 +15,9 @@
  - Maximum line length: 4096 bytes.
  - On connect, the server greets the client with:
 
-        HELLO MCHPRS AUTOMATION 0.1.2-beta
+        HELLO MCHPRS AUTOMATION 0.2.0-beta
 
-    where 0.1.2-beta is the protocol version.
+    where 0.2.0-beta is the protocol version.
  - Multiple connections are supported and are fully independent.
  - Closing the connection removes all subscriptions and data ports registered
    by that connection.
@@ -85,9 +85,12 @@
    - The lattice has its origin at (X0, Y0, Z0), positive extents NX NY NZ
      (each at least 1) and per-axis offsets DX DY DZ. Point (i, j, k) is at
      (X0 + i*DX, Y0 + j*DY, Z0 + k*DZ) and carries bit index
-     i*(NY*NZ) + j*NZ + k; bit 0 is the most significant bit on the wire.
+     j + k*NY + i*NY*NZ; bit 0 is the most significant bit on the wire.
+     Bits advance along Y fastest, then Z, then X slowest.
      An extent of 1 spans a single point, so its offset must be 0; larger
-     extents need a positive offset.
+     extents need a non-zero offset: DX and DZ must be positive, while DY
+     must be negative, because Y counts down from the origin while X and Z
+     count up.
    - A port spans at most 16000 points. All lattice points and the clock
      element must lie in a single plot: they must share (X >> 9, Z >> 9) and
      stay within the plot height.
@@ -274,7 +277,7 @@ sampled on that edge. When the trigger fires, the server pushes an
 
  9. Example session
  ------------------
-    S: HELLO MCHPRS AUTOMATION 0.1.2-beta
+    S: HELLO MCHPRS AUTOMATION 0.2.0-beta
     C: READ 128 63 2048
    S: OK READ 128 63 2048 1 0
    C: USE 128 63 2048
@@ -287,7 +290,7 @@ sampled on that edge. When the trigger fires, the server pushes an
    S: EVENT 132 64 2048 3 0
    C: UNSUB 130 64 2048
    S: OK UNSUB 130 64 2048
-C: PIN bus_a 1 128 60 2048 128 64 2048 1 4 1 0 1 0
+C: PIN bus_a 1 128 60 2048 128 67 2048 1 4 1 0 -1 0
     S: OK PIN bus_a
     C: INPUT bus_a 5
     S: OK INPUT bus_a

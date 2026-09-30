@@ -2,7 +2,6 @@ use mchprs_blocks::block_entities::BlockEntity;
 use mchprs_blocks::blocks::{Block, Comparator, ComparatorMode};
 use mchprs_blocks::{BlockDirection, BlockFace, BlockPos};
 use mchprs_world::{TickPriority, World};
-use tracing::warn;
 
 fn get_power_on_side(world: &impl World, pos: BlockPos, side: BlockDirection) -> u8 {
     let side_pos = pos.offset(side.block_face());
@@ -32,34 +31,83 @@ pub fn has_override(block: Block) -> bool {
             | Block::Furnace { .. }
             | Block::Hopper { .. }
             | Block::Cauldron
+            | Block::WaterCauldron { .. }
             | Block::Composter { .. }
             | Block::Cake { .. }
             | Block::EndPortalFrame { eye: true, .. }
     )
 }
 
-pub fn get_override(block: Block, world: &impl World, pos: BlockPos) -> u8 {
-    match block {
-        Block::Barrel { .. } | Block::Furnace { .. } | Block::Hopper { .. } => {
-            match world.get_block_entity(pos) {
-                Some(BlockEntity::Container {
-                    comparator_override,
-                    ..
-                }) => *comparator_override,
-                Some(other) => {
-                    warn!("Backing container blockentity type is invalid: {other:?}");
-                    0
-                }
-                // Empty containers may not have any block entity data
-                None => 0,
-            }
+/// Why a block's comparator override could not be read.
+///
+/// Reported by [`try_get_override`] so the redpiler can abort a compile and tell
+/// the player which block is at fault, instead of panicking.
+#[derive(Debug, Clone, Copy)]
+pub enum OverrideError {
+    /// A container-like block that is currently empty, which has no meaningful
+    /// comparator output. `kind` is the block's plain name, e.g. `"barrel"`.
+    EmptyContainer { pos: BlockPos, kind: &'static str },
+    /// A block that reports a comparator override, but that this server has no
+    /// rule for.
+    Unsupported { pos: BlockPos, block: Block },
+}
+
+/// Reads the comparator override of a container, treating an empty container as
+/// unreadable.
+fn container_override(
+    world: &impl World,
+    pos: BlockPos,
+    block: Block,
+    kind: &'static str,
+) -> Result<u8, OverrideError> {
+    match world.get_block_entity(pos) {
+        Some(BlockEntity::Container {
+            comparator_override,
+            ..
+        }) if *comparator_override > 0 => Ok(*comparator_override),
+        // An empty container may or may not carry block entity data.
+        Some(BlockEntity::Container { .. }) | None => {
+            Err(OverrideError::EmptyContainer { pos, kind })
         }
-        Block::WaterCauldron { level } => level,
-        Block::Composter { level } => level,
-        Block::Cake { bites } => 14 - 2 * bites,
-        Block::EndPortalFrame { eye: true, .. } => 15,
-        _ => unreachable!("Block does not override comparators"),
+        Some(_) => Err(OverrideError::Unsupported { pos, block }),
     }
+}
+
+/// Reads the comparator override of `block`, or reports why it cannot be read.
+///
+/// The redpiler calls this so that an unreadable override stops the compile with
+/// a diagnostic. The redstone simulator calls [`get_override`] instead.
+pub fn try_get_override(
+    block: Block,
+    world: &impl World,
+    pos: BlockPos,
+) -> Result<u8, OverrideError> {
+    match block {
+        Block::Barrel { .. } => container_override(world, pos, block, "barrel"),
+        Block::Furnace { .. } => container_override(world, pos, block, "furnace"),
+        Block::Hopper { .. } => container_override(world, pos, block, "hopper"),
+        Block::WaterCauldron { level } => Ok(level),
+        Block::Cauldron => Err(OverrideError::EmptyContainer {
+            pos,
+            kind: "cauldron",
+        }),
+        Block::Composter { level } if level > 0 => Ok(level),
+        Block::Composter { .. } => Err(OverrideError::EmptyContainer {
+            pos,
+            kind: "composter",
+        }),
+        Block::Cake { bites } => Ok(14 - 2 * bites),
+        Block::EndPortalFrame { eye: true, .. } => Ok(15),
+        _ => Err(OverrideError::Unsupported { pos, block }),
+    }
+}
+
+/// The comparator override of `block`, treating anything unreadable as `0`.
+///
+/// Used by the redstone simulator, which must not stop for a single block. The
+/// redpiler calls [`try_get_override`] so it can report the problem instead.
+pub fn get_override(block: Block, world: &impl World, pos: BlockPos) -> u8 {
+    try_get_override(block, world, pos).unwrap_or(0)
 }
 
 pub fn get_far_input(world: &impl World, pos: BlockPos, facing: BlockDirection) -> Option<u8> {

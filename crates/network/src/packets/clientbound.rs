@@ -402,6 +402,7 @@ pub enum CDeclareCommandsNodeParser {
     Float(f32, f32),
     BlockPos,
     BlockState,
+    GameMode,
     String(i32),
 }
 
@@ -422,6 +423,7 @@ impl CDeclareCommandsNodeParser {
             Vec3 => buf.write_varint(arg_type!("minecraft:vec3")),
             BlockPos => buf.write_varint(arg_type!("minecraft:block_pos")),
             BlockState => buf.write_varint(arg_type!("minecraft:block_state")),
+            GameMode => buf.write_varint(arg_type!("minecraft:gamemode")),
             Integer(min, max) => {
                 buf.write_varint(arg_type!("brigadier:integer"));
                 buf.write_byte(3); // Supply min and max value

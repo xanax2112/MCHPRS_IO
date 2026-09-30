@@ -47,7 +47,9 @@ pub enum DataPortKind {
 /// The lattice is defined by an origin `(x0, y0, z0)`, positive extents
 /// `(nx, ny, nz)` and per-axis offsets `(dx, dy, dz)`. Point `(i, j, k)` is
 /// at `(x0 + i*dx, y0 + j*dy, z0 + k*dz)` and carries bit index
-/// `i*(ny*nz) + j*nz + k`; bit 0 is the most significant bit on the wire.
+/// `j + k*ny + i*ny*nz`; bit 0 is the most significant bit on the wire.
+/// Bits advance along `y` fastest, then `z`, then `x` slowest, and `y` runs in
+/// the decreasing direction while `x` and `z` increase.
 /// All lattice points and the clock element lie in a single plot.
 #[derive(Debug, Clone)]
 pub struct DataPort {
@@ -526,7 +528,7 @@ impl AutomationServer {
                     );
                     self.watches.insert(conn_id, FxHashSet::default());
                     self.data_ports.insert(conn_id, FxHashMap::default());
-                    self.queue_line(conn_id, "HELLO MCHPRS AUTOMATION 0.1.2-beta\n".to_string());
+                    self.queue_line(conn_id, "HELLO MCHPRS AUTOMATION 0.2.0-beta\n".to_string());
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 Err(e) => {
@@ -732,11 +734,12 @@ fn build_port(name: &str, kind: DataPortKind, spec: PortSpec) -> Result<DataPort
         return Err("RANGE");
     }
     // An extent of 1 spans a single point, so its offset must be 0; larger
-    // extents need a positive offset.
+    // extents need a non-zero offset. Bits advance in the +x, -y and +z
+    // directions, so y counts down from the origin while x and z count up.
     if (nx == 1 && dx != 0) || (nx > 1 && dx <= 0) {
         return Err("RANGE");
     }
-    if (ny == 1 && dy != 0) || (ny > 1 && dy <= 0) {
+    if (ny == 1 && dy != 0) || (ny > 1 && dy >= 0) {
         return Err("RANGE");
     }
     if (nz == 1 && dz != 0) || (nz > 1 && dz <= 0) {
@@ -753,9 +756,10 @@ fn build_port(name: &str, kind: DataPortKind, spec: PortSpec) -> Result<DataPort
     let plot_x = x0 >> 9;
     let plot_z = z0 >> 9;
     let mut points = Vec::with_capacity(total as usize);
+    // Bit order is y fastest, then z, then x (index j + k*ny + i*ny*nz).
     for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
+        for k in 0..nz {
+            for j in 0..ny {
                 let x64 = i64::from(x0) + i64::from(i) * i64::from(dx);
                 let y64 = i64::from(y0) + i64::from(j) * i64::from(dy);
                 let z64 = i64::from(z0) + i64::from(k) * i64::from(dz);

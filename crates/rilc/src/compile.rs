@@ -42,13 +42,14 @@ pub fn compile(input_path: &Path, output_path: &Option<PathBuf>, options: &Compi
         let Some((world, bounds)) = crate::load_world(input_path, &schem_path) else {
             process::exit(1);
         };
+        let monitor = Arc::new(TaskMonitor::default());
         let input = CompilerInput {
             world: &world,
             bounds,
+            monitor: &monitor,
         };
 
-        let monitor = Arc::new(TaskMonitor::default());
-        let result_graph = pass_pipeline.run_passes(options, &input, graph, monitor);
+        let result_graph = pass_pipeline.run_passes(options, &input, graph, monitor.clone());
         result.push('\n');
         dump_graph(&mut result, &result_graph, name).unwrap();
         result.push('\n');

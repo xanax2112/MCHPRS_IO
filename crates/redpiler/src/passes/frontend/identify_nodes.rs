@@ -9,7 +9,7 @@
 
 use crate::compile_graph::{Annotations, CompileGraph, CompileNode, NodeIdx, NodeState, NodeType};
 use crate::passes::{AnalysisInfos, Pass};
-use crate::{CompilerInput, CompilerOptions};
+use crate::{CompilerInput, CompilerOptions, TaskMonitor};
 use itertools::Itertools;
 use mchprs_blocks::block_entities::BlockEntity;
 use mchprs_blocks::blocks::Block;
@@ -49,9 +49,16 @@ impl<W: World> Pass<W> for IdentifyNodes {
                 options.illegal_states_out,
                 options.wire_cross_out,
                 plot,
+                input.monitor,
                 pos,
             );
         });
+
+        // The annotation pass needs the identified graph, and there is no point
+        // running it once the compile is already going to be aborted.
+        if input.monitor.error().is_some() {
+            return;
+        }
 
         for pos in second_pass {
             apply_annotations(graph, options, &first_pass, plot, pos);
@@ -76,6 +83,7 @@ fn for_pos<W: World>(
     illegal_states_out: bool,
     wire_cross_out: bool,
     world: &W,
+    monitor: &TaskMonitor,
     pos: BlockPos,
 ) {
     let id = world.get_block_raw(pos);
@@ -86,8 +94,14 @@ fn for_pos<W: World>(
         return;
     }
 
-    let Some((ty, state)) = identify_block(block, pos, world) else {
-        return;
+    let (ty, state) = match identify_block(block, pos, world) {
+        Ok(Some(node)) => node,
+        Ok(None) => return,
+        Err(error) => {
+            // Reported to the player by the compile caller; never a panic.
+            monitor.set_error(error);
+            return;
+        }
     };
 
     let is_input = ty.is_normally_input();
@@ -121,9 +135,9 @@ fn identify_block<W: World>(
     block: Block,
     pos: BlockPos,
     world: &W,
-) -> Option<(NodeType, NodeState)> {
+) -> Result<Option<(NodeType, NodeState)>, comparator::OverrideError> {
     if let Some(powered) = block.clone().get_pressure_plate_powered() {
-        return Some((NodeType::PressurePlate, NodeState::simple(*powered)));
+        return Ok(Some((NodeType::PressurePlate, NodeState::simple(*powered))));
     }
     let (ty, state) = match block {
         Block::Repeater(repeater) => (
@@ -176,11 +190,11 @@ fn identify_block<W: World>(
         }
         block if comparator::has_override(block) => (
             NodeType::Constant,
-            NodeState::ss(comparator::get_override(block, world, pos)),
+            NodeState::ss(comparator::try_get_override(block, world, pos)?),
         ),
-        _ => return None,
+        _ => return Ok(None),
     };
-    Some((ty, state))
+    Ok(Some((ty, state)))
 }
 
 fn apply_annotations<W: World>(

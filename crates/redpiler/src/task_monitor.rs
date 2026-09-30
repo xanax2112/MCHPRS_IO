@@ -1,3 +1,4 @@
+use mchprs_redstone::comparator::OverrideError;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -7,6 +8,7 @@ pub struct TaskMonitor {
     max_progress: AtomicUsize,
     progress: AtomicUsize,
     message: Mutex<Option<Arc<String>>>,
+    error: Mutex<Option<OverrideError>>,
 }
 
 impl TaskMonitor {
@@ -16,6 +18,21 @@ impl TaskMonitor {
 
     pub fn cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// Records that a block's comparator override could not be read.
+    ///
+    /// Only the first error is kept: the frontend pass keeps walking the plot
+    /// after reporting one, and the earliest position is the useful one.
+    pub fn set_error(&self, error: OverrideError) {
+        let mut slot = self.error.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+    }
+
+    pub fn error(&self) -> Option<OverrideError> {
+        *self.error.lock().unwrap()
     }
 
     pub fn set_progress(&self, progress: usize) {

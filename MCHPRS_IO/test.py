@@ -8,15 +8,15 @@ PORT = 25585
 # ============ 配置区 ============
 ADD_IN_NAME = "add_in"
 ADD_IN_CLK = (242, 9, 253)
-ADD_IN_ORIGIN = (241, 11, 252)
+ADD_IN_ORIGIN = (241, 25, 252)
 ADD_IN_EXTENTS = (2, 8, 1)
-ADD_IN_OFFSETS = (3, 2, 0)
+ADD_IN_OFFSETS = (3, -2, 0)
 
 ADD_OUT_NAME = "add_out"
 ADD_OUT_CLK = (241, 9, 263)
-ADD_OUT_ORIGIN = (245, 11, 263)
+ADD_OUT_ORIGIN = (245, 27, 263)
 ADD_OUT_EXTENTS = (1, 9, 1)
-ADD_OUT_OFFSETS = (0, 2, 0)
+ADD_OUT_OFFSETS = (0, -2, 0)
 
 CIN_POS = (242, 10, 260)
 
@@ -28,22 +28,22 @@ VERBOSE = False
 STOP_ON_FAIL = False
 # ================================	
 
-# 8 位反转查表
-_REV8 = bytes(int(f"{i:08b}"[::-1], 2) for i in range(256))
-# 12 位反转查表
-_REV12 = [int(f"{i:012b}"[::-1], 2) for i in range(0x1000)]
-
-
 def pack_add_in(a, b):
-    """A 高 8 位、B 低 8 位，再将整个 16 位反转"""
-    val = ((a & 0xFF) << 8) | (b & 0xFF)
-    rev = (_REV8[val & 0xFF] << 8) | _REV8[(val >> 8) & 0xFF]
-    return f"{rev:04x}"
+    """A 高 8 位、B 低 8 位。
+
+    位序改为 YZX（Y 递减）后，端口位 0..7 落在原先位 7..0 的拉杆上，
+    因此直接按“B 在高字节、A 在低字节”发送，即可对齐原来的物理接线。
+    """
+    return f"{((b & 0xFF) << 8) | (a & 0xFF):04x}"
 
 
 def parse_add_out(hex_str):
-    """解析输出端口的 12 位打包状态（先反转 12 位）"""
-    v = _REV12[int(hex_str, 16)]
+    """解析输出端口的 9 位打包状态。
+
+    输出点阵同样翻转了 Y 方向（端口位 m 位于 y = 27 - 2m），取 12 位打包值中
+    的 bit3..bit11 窗口，即可还原成原先 y = 11 + 2k 的读法。
+    """
+    v = (int(hex_str, 16) >> 3) & 0x1FF
     carry = (v >> 8) & 1
     total = v & 0xFF
     zeros = (v >> 9) & 0x7

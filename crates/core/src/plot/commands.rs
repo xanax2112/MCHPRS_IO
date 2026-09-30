@@ -186,7 +186,7 @@ impl Plot {
                 }
 
                 self.reset_redpiler();
-                self.start_redpiler(options);
+                self.start_redpiler(options, Some(player));
                 self.publish_world();
 
                 debug!("Compile took {:?}", start_time.elapsed());
@@ -565,7 +565,7 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
             Node {
                 flags: CommandFlags::ROOT.bits() as i8,
                 children: vec![
-                    1, 4, 5, 6, 8, 10, 11, 13, 18, 30, 34, 41, 43, 44, 45, 49, 51, 52,
+                    1, 4, 5, 6, 8, 10, 11, 13, 18, 30, 34, 41, 43, 44, 45, 49, 51, 52, 53, 55, 56,
                 ],
                 redirect_node: None,
                 name: None,
@@ -683,7 +683,7 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
             // 13: /plot
             Node {
                 flags: (CommandFlags::LITERAL).bits() as i8,
-                children: vec![14, 15, 16, 17, 19, 20, 21, 22, 24, 25, 27, 28, 29],
+                children: vec![14, 15, 16, 17, 19, 20, 21, 22, 24, 25, 27, 28, 29, 39, 40],
                 redirect_node: None,
                 name: Some("plot"),
                 parser: None,
@@ -1040,6 +1040,42 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
                 children: vec![],
                 redirect_node: None,
                 name: Some("version"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 53: /gamemode
+            Node {
+                flags: (CommandFlags::LITERAL).bits() as i8,
+                children: vec![54],
+                redirect_node: None,
+                name: Some("gamemode"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 54: /gamemode [gamemode]
+            Node {
+                flags: (CommandFlags::ARGUMENT | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("gamemode"),
+                parser: Some(Parser::GameMode),
+                suggestions_type: None,
+            },
+            // 55: /gmc
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("gmc"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 56: /gmsp
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("gmsp"),
                 parser: None,
                 suggestions_type: None,
             },

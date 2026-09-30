@@ -26,7 +26,7 @@ MCHPRS_IO 保留了 MCHPRS 面向计算红石的全部核心能力：
 
 - Minecraft 1.20.4 创造模式多线程红石服务器
 - Redpiler 红石编译器
-- 自动化协议（TCP 25585 端口，明文，协议版本 0.1.2-beta）：
+- 自动化协议（TCP 25585 端口，明文，协议版本 0.2.0-beta）：
   - `PIN` / `POUT` 数据端口，把红石区域以十六进制值对外暴露
   - `INPUT` / `OUTPUT` 读写端口数值
   - `EVENT` 推送，把变化通知给订阅方
@@ -59,7 +59,7 @@ python3 MCHPRS_IO/test.py
 演示会通过自动化协议注册一个 8 位加法器（`PIN add_in` 输入端口、`POUT add_out` 输出端口）并逐组验证，你会看到类似输出：
 
 ```text
-<- HELLO MCHPRS AUTOMATION 0.1.2-beta
+<- HELLO MCHPRS AUTOMATION 0.2.0-beta
 [25] passed=25 failed=0 rate=10/s
 ...
 done. total=500 passed=500 failed=0 elapsed=50.1s rate=10/s

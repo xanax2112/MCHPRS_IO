@@ -217,6 +217,13 @@ impl<'p, W: World> PassPipeline<'p, W> {
 
             pass.run_pass(&mut graph, options, input, &mut analysis_infos);
 
+            // A pass may have hit a fatal problem (for example a comparator
+            // override it cannot read). Stop before the remaining passes and the
+            // backend run.
+            if monitor.error().is_some() {
+                return graph;
+            }
+
             trace!("Completed pass in {:?}", start.elapsed());
             trace!("node_count: {}", graph.node_count());
             trace!("edge_count: {}", graph.edge_count());

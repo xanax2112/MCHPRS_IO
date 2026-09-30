@@ -55,9 +55,11 @@ fn run_test(
         return TestOutcome::Failed;
     };
 
+    let monitor = Arc::new(TaskMonitor::default());
     let input = CompilerInput {
         world: &world,
         bounds,
+        monitor: &monitor,
     };
 
     let registry = PassRegistry::default();
@@ -68,8 +70,7 @@ fn run_test(
         },
         None => build_pass_pipeline(&registry, &test.options),
     };
-    let monitor = Arc::new(TaskMonitor::default());
-    let result_graph = pass_pipeline.run_passes(&test.options, &input, test.graph, monitor);
+    let result_graph = pass_pipeline.run_passes(&test.options, &input, test.graph, monitor.clone());
     let test_path = match test_root {
         Some(test_root) => test_path.strip_prefix(test_root).unwrap(),
         None => test_path,

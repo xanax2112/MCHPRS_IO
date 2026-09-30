@@ -8,6 +8,7 @@ pub mod task_monitor;
 use backend::{BackendDispatcher, IoElement, IoEvent, JITBackend};
 use mchprs_blocks::blocks::Block;
 use mchprs_blocks::BlockPos;
+use mchprs_redstone::comparator::OverrideError;
 use mchprs_world::{for_each_block_mut_optimized, TickEntry, World};
 use std::sync::Arc;
 use std::time::Instant;
@@ -120,6 +121,16 @@ impl CompilerOptions {
 }
 
 #[derive(Default)]
+/// Why a compile stopped before it could build a backend.
+#[derive(Debug, Clone, Copy)]
+pub enum CompileError {
+    /// A comparator input could not be read. Carries the offending position and
+    /// block so the caller can report them.
+    Override(OverrideError),
+    /// The compile was cancelled through its [`TaskMonitor`].
+    Cancelled,
+}
+
 pub struct Compiler {
     is_active: bool,
     backend: Option<BackendDispatcher>,
@@ -151,18 +162,25 @@ impl Compiler {
         options: CompilerOptions,
         ticks: Vec<TickEntry>,
         monitor: Arc<TaskMonitor>,
-    ) {
+    ) -> Result<(), CompileError> {
         debug!("Starting compile");
         let start = Instant::now();
 
-        let input = CompilerInput { world, bounds };
+        let input = CompilerInput {
+            world,
+            bounds,
+            monitor: &monitor,
+        };
         let registry = PassRegistry::default();
         let pass_pipeline = passes::build_pass_pipeline::<W>(&registry, &options);
         let graph =
             pass_pipeline.run_passes(&options, &input, CompileGraph::default(), monitor.clone());
 
+        if let Some(error) = monitor.error() {
+            return Err(CompileError::Override(error));
+        }
         if monitor.cancelled() {
-            return;
+            return Err(CompileError::Cancelled);
         }
 
         let replace_backend = match self.backend {
@@ -195,6 +213,7 @@ impl Compiler {
         self.options = options;
         self.is_active = true;
         debug!("Compile completed in {:?}", start.elapsed());
+        Ok(())
     }
 
     pub fn reset<W: World>(&mut self, world: &mut W, bounds: (BlockPos, BlockPos)) {
@@ -302,6 +321,9 @@ impl Compiler {
 pub struct CompilerInput<'w, W: World> {
     pub world: &'w W,
     pub bounds: (BlockPos, BlockPos),
+    /// Shared with the caller so a pass can report a fatal problem and stop the
+    /// pipeline before it reaches the backend.
+    pub monitor: &'w TaskMonitor,
 }
 
 #[cfg(test)]

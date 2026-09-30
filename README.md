@@ -26,7 +26,7 @@ The `MCHPRS_IO/` folder in this repository contains a complete, ready-to-run dem
 
 - Multithreaded redstone server for Minecraft 1.20.4 creative mode
 - Redpiler redstone compiler
-- Automation protocol (TCP port 25585, plain text, protocol version 0.1.2-beta):
+- Automation protocol (TCP port 25585, plain text, protocol version 0.2.0-beta):
   - `PIN` / `POUT` data ports expose redstone regions as hex values
   - `INPUT` / `OUTPUT` read and write port values
   - `EVENT` pushes notify subscribers of changes
@@ -59,7 +59,7 @@ python3 MCHPRS_IO/test.py
 The demo registers an 8-bit adder (`PIN add_in` input port, `POUT add_out` output port) over the automation protocol and verifies it against input vectors. You will see output like:
 
 ```text
-<- HELLO MCHPRS AUTOMATION 0.1.2-beta
+<- HELLO MCHPRS AUTOMATION 0.2.0-beta
 [25] passed=25 failed=0 rate=10/s
 ...
 done. total=500 passed=500 failed=0 elapsed=50.1s rate=10/s

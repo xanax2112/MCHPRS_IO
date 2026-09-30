@@ -23,7 +23,8 @@ use mchprs_network::packets::clientbound::*;
 use mchprs_network::packets::serverbound::SUseItemOn;
 use mchprs_network::PlayerPacketSender;
 use mchprs_redpiler::backend::{IoElement, IoEvent};
-use mchprs_redpiler::{Compiler, CompilerOptions};
+use mchprs_redpiler::{CompileError, Compiler, CompilerOptions};
+use mchprs_redstone::comparator::OverrideError;
 use mchprs_save_data::plot_data::{ChunkData, PlotData, Tps, WorldSendRate};
 use mchprs_text::TextComponent;
 use mchprs_world::storage::Chunk;
@@ -924,7 +925,7 @@ impl Plot {
         self.last_world_send_time = Instant::now();
     }
 
-    fn start_redpiler(&mut self, options: CompilerOptions) {
+    fn start_redpiler(&mut self, options: CompilerOptions, source: Option<usize>) {
         debug!("Starting redpiler");
         self.scoreboard
             .set_redpiler_state(&self.players, RedpilerState::Compiling);
@@ -937,7 +938,7 @@ impl Plot {
         let ticks = self.world.to_be_ticked.drain(..).collect();
 
         let mut players_need_updates = HashSet::new();
-        thread::scope(|s| {
+        let compile_result = thread::scope(|s| {
             let handle = s.spawn(|| {
                 self.redpiler
                     .compile(&self.world, bounds, options, ticks, monitor)
@@ -954,6 +955,10 @@ impl Plot {
                 }
                 thread::sleep(Duration::from_millis(20));
             }
+            // Join explicitly so the compile's outcome is observable. A compile
+            // that stops on an unreadable comparator override reports it to the
+            // player instead of unwinding through this thread.
+            handle.join()
         });
 
         // Now that we have ownership of the world again, we can update player view positions
@@ -961,10 +966,42 @@ impl Plot {
             self.update_view_pos_for_player(player_idx, false);
         }
 
-        self.scoreboard
-            .set_redpiler_state(&self.players, RedpilerState::Running);
-
-        self.reset_timings();
+        match compile_result {
+            Ok(Ok(())) => {
+                self.scoreboard
+                    .set_redpiler_state(&self.players, RedpilerState::Running);
+                self.reset_timings();
+            }
+            Ok(Err(CompileError::Override(error))) => {
+                self.scoreboard
+                    .set_redpiler_state(&self.players, RedpilerState::Stopped);
+                self.scoreboard
+                    .set_redpiler_options(&self.players, &Default::default());
+                if let Some(player) = source {
+                    let message = match error {
+                        OverrideError::EmptyContainer { pos, kind } => format!(
+                            "Redpiler compile aborted: comparator at {} reads an empty {}",
+                            pos, kind
+                        ),
+                        OverrideError::Unsupported { pos, .. } => format!(
+                            "Redpiler compile aborted: comparator at {} \
+                             reads a block with no comparator override",
+                            pos
+                        ),
+                    };
+                    self.players[player].send_error_message(&message);
+                }
+            }
+            Ok(Err(CompileError::Cancelled)) => {
+                self.scoreboard
+                    .set_redpiler_state(&self.players, RedpilerState::Stopped);
+                self.scoreboard
+                    .set_redpiler_options(&self.players, &Default::default());
+            }
+            // Any other panic keeps its existing behaviour: it is propagated
+            // rather than swallowed.
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     /// Polls every subscribed `SUB` position once per tick and pushes the
@@ -1454,7 +1491,7 @@ impl Plot {
                 && !self.redpiler.is_active()
                 && (self.tps == Tps::Unlimited || self.timings.is_running_behind())
             {
-                self.start_redpiler(Default::default());
+                self.start_redpiler(Default::default(), None);
             }
 
             let now = Instant::now();
