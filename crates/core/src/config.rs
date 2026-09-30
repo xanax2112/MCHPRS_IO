@@ -69,7 +69,6 @@ gen_config! {
     chat_format: String = "<{username}> {message}".to_string(),
     max_players: i64 = 99999,
     view_distance: i64 = 8,
-    whitelist: bool = false,
     schemati: bool = false,
     luckperms: Option<PermissionsConfig> = None,
     block_in_hitbox: bool = true,

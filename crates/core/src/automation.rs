@@ -528,7 +528,7 @@ impl AutomationServer {
                     );
                     self.watches.insert(conn_id, FxHashSet::default());
                     self.data_ports.insert(conn_id, FxHashMap::default());
-                    self.queue_line(conn_id, "HELLO MCHPRS AUTOMATION 0.2.0-beta\n".to_string());
+                    self.queue_line(conn_id, "HELLO MCHPRS AUTOMATION 0.2.1-beta\n".to_string());
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 Err(e) => {

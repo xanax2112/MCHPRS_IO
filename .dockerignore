@@ -1,0 +1,42 @@
+# Keep the Docker build context (and therefore the published image) free of
+# machine-local and unrelated files.
+#
+# .cargo/ is excluded on purpose: a per-developer .cargo/config.toml often
+# contains machine-specific settings (e.g. a regional crates.io mirror,
+# custom linkers). The image must build from crates.io defaults so that it is
+# reproducible for users worldwide.
+#
+# NOTE: the Dockerfile must not COPY ./.cargo/ -- docker refuses to copy a
+# path that is excluded here.
+.cargo/
+
+# Local Nix / direnv developer environment
+.envrc
+.direnv/
+
+# Build output
+target/
+
+# Version control data
+.git/
+.github/
+
+# Editor / workspace settings
+.vscode/
+.idea/
+
+# Local scratch data that must never ship inside the image
+.backup/
+tests/
+docs/
+
+# Docs and metadata are not needed to compile
+*.md
+LICENSE
+.gitignore
+.gitattributes
+
+# OS clutter
+**/Thumbs.db
+**/.DS_Store
+**/*~

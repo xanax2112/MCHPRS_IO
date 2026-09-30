@@ -26,7 +26,7 @@ The `MCHPRS_IO/` folder in this repository contains a complete, ready-to-run dem
 
 - Multithreaded redstone server for Minecraft 1.20.4 creative mode
 - Redpiler redstone compiler
-- Automation protocol (TCP port 25585, plain text, protocol version 0.2.0-beta):
+- Automation protocol (TCP port 25585, plain text, protocol version 0.2.1-beta):
   - `PIN` / `POUT` data ports expose redstone regions as hex values
   - `INPUT` / `OUTPUT` read and write port values
   - `EVENT` pushes notify subscribers of changes
@@ -59,7 +59,7 @@ python3 MCHPRS_IO/test.py
 The demo registers an 8-bit adder (`PIN add_in` input port, `POUT add_out` output port) over the automation protocol and verifies it against input vectors. You will see output like:
 
 ```text
-<- HELLO MCHPRS AUTOMATION 0.2.0-beta
+<- HELLO MCHPRS AUTOMATION 0.2.1-beta
 [25] passed=25 failed=0 rate=10/s
 ...
 done. total=500 passed=500 failed=0 elapsed=50.1s rate=10/s
@@ -108,7 +108,6 @@ The server generates a `Config.toml` in the working directory on first start.
 | `chat_format` | Chat format using `{username}` / `{message}` | `<{username}> {message}` |
 | `max_players` | Maximum simultaneous players | `99999` |
 | `view_distance` | Max distance (in chunks) of chunks loaded around players | `8` |
-| `whitelist` | Enable the whitelist (`whitelist.json`) | `false` |
 | `schemati` | Mimic the ORE Schemati plugin directory layout | `false` |
 | `block_in_hitbox` | Allow placing blocks inside players | `true` |
 | `auto_redpiler` | Use redpiler automatically | `false` |

@@ -13,9 +13,9 @@
  - 单行最大长度：4096 字节。
  - 连接建立后，服务器会发送问候语：
 
-        HELLO MCHPRS AUTOMATION 0.2.0-beta
+        HELLO MCHPRS AUTOMATION 0.2.1-beta
 
-    其中 0.2.0-beta 是协议版本号。
+    其中 0.2.1-beta 是协议版本号。
  - 支持多个连接，各连接之间完全独立。
  - 连接关闭时会移除该连接注册的所有订阅与数据端口。
 
@@ -226,7 +226,7 @@
 
  9. 示例会话
  -----------
-    S: HELLO MCHPRS AUTOMATION 0.2.0-beta
+    S: HELLO MCHPRS AUTOMATION 0.2.1-beta
     C: READ 128 63 2048
    S: OK READ 128 63 2048 1 0
    C: USE 128 63 2048

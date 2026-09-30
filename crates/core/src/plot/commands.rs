@@ -1,14 +1,12 @@
 use super::{database, worldedit, Plot, PlotWorld};
 use crate::player::{Gamemode, PacketSender, PlayerPos};
 use crate::plot::data::sleep_time_for_tps;
-use crate::profile::PlayerProfile;
 use crate::server::{get_version_string, Message};
 use mchprs_blocks::items::ItemStack;
 use mchprs_network::packets::clientbound::{
     CCommands, CCommandsNode as Node, CDeclareCommandsNodeParser as Parser, ClientBoundPacket,
 };
 use mchprs_network::packets::PacketEncoder;
-use mchprs_network::PlayerPacketSender;
 use mchprs_redpiler::CompilerOptions;
 use mchprs_save_data::plot_data::{Tps, WorldSendRate};
 use mchprs_text::TextComponent;
@@ -235,47 +233,6 @@ impl Plot {
         }
 
         match command {
-            "whitelist" => match args.as_slice() {
-                ["add", username] => {
-                    let username = username.to_string();
-                    let sender = self.message_sender.clone();
-                    let packet_sender = PlayerPacketSender::new(&self.players[player].client);
-                    self.async_rt.spawn(async move {
-                        match PlayerProfile::lookup_by_username(&username).await {
-                            Ok(profile) => sender
-                                .send(Message::WhitelistAdd(
-                                    profile.uuid.0,
-                                    profile.username,
-                                    packet_sender,
-                                ))
-                                .unwrap(),
-                            Err(_) => {
-                                debug!("Failed to look up profile for username {:?}", username)
-                            }
-                        }
-                    });
-                }
-                ["remove", username] => {
-                    let username = username.to_string();
-                    let sender = self.message_sender.clone();
-                    let packet_sender = PlayerPacketSender::new(&self.players[player].client);
-                    self.async_rt.spawn(async move {
-                        match PlayerProfile::lookup_by_username(&username).await {
-                            Ok(profile) => sender
-                                .send(Message::WhitelistRemove(profile.uuid.0, packet_sender))
-                                .unwrap(),
-                            Err(_) => {
-                                debug!("Failed to look up profile for username {:?}", username)
-                            }
-                        }
-                    });
-                }
-                _ => {
-                    self.players[player]
-                        .send_error_message("Usage: /whitelist [add | remove] (username)");
-                    return false;
-                }
-            },
             "rtps" => {
                 if args.is_empty() {
                     let report = self.timings.generate_report();
@@ -565,7 +522,7 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
             Node {
                 flags: CommandFlags::ROOT.bits() as i8,
                 children: vec![
-                    1, 4, 5, 6, 8, 10, 11, 13, 18, 30, 34, 41, 43, 44, 45, 49, 51, 52, 53, 55, 56,
+                    1, 4, 5, 6, 8, 10, 11, 13, 18, 34, 41, 43, 44, 45, 49, 51, 52, 53, 55, 56,
                 ],
                 redirect_node: None,
                 name: None,
@@ -833,6 +790,9 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
                 parser: None,
                 suggestions_type: None,
             },
+            // 30-33: /whitelist —— 白名单功能已整体删除（见 BACKLOG.md BUG-005）。
+            // 这四个节点保留在数组中是为了避免整体重编号（甲方案）；根节点的
+            // children 已不再引用节点 30，因此客户端看不到、也补全不出它们。
             // 30: /whitelist
             Node {
                 flags: (CommandFlags::LITERAL).bits() as i8,

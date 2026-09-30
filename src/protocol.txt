@@ -15,9 +15,9 @@
  - Maximum line length: 4096 bytes.
  - On connect, the server greets the client with:
 
-        HELLO MCHPRS AUTOMATION 0.2.0-beta
+        HELLO MCHPRS AUTOMATION 0.2.1-beta
 
-    where 0.2.0-beta is the protocol version.
+    where 0.2.1-beta is the protocol version.
  - Multiple connections are supported and are fully independent.
  - Closing the connection removes all subscriptions and data ports registered
    by that connection.
@@ -277,7 +277,7 @@ sampled on that edge. When the trigger fires, the server pushes an
 
  9. Example session
  ------------------
-    S: HELLO MCHPRS AUTOMATION 0.2.0-beta
+    S: HELLO MCHPRS AUTOMATION 0.2.1-beta
     C: READ 128 63 2048
    S: OK READ 128 63 2048 1 0
    C: USE 128 63 2048

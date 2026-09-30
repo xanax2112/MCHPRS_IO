@@ -3,7 +3,6 @@ use crate::config::CONFIG;
 use crate::player::{Gamemode, PacketSender, Player};
 use crate::plot::commands::DECLARE_COMMANDS;
 use crate::plot::{self, database, Plot, PLOT_BLOCK_HEIGHT, PLOT_SCALE};
-use crate::utils::HyphenatedUUID;
 use crate::{permissions, utils};
 use backtrace::Backtrace;
 use bus::Bus;
@@ -22,21 +21,19 @@ use mchprs_network::packets::serverbound::{
 };
 use mchprs_network::packets::{PacketEncoderExt, PlayerProperty, SlotData, COMPRESSION_THRESHOLD};
 use mchprs_blocks::BlockPos;
-use mchprs_network::{NetworkServer, NetworkState, PlayerPacketSender};
+use mchprs_network::{NetworkServer, NetworkState};
 use mchprs_redpiler::backend::IoEvent;
 use mchprs_text::TextComponent;
 use mchprs_utils::map;
 use mchprs_world::{MC_VERSION, PROTOCOL_VERSION};
 use rustc_hash::FxHashMap;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::Sha256;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Cursor;
-use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// `Message` gets send from a plot thread to the server thread.
 #[derive(Debug)]
@@ -56,10 +53,6 @@ pub enum Message {
     PlayerUpdateGamemode(u128, Gamemode),
     /// This message is sent to the server thread when a plot unloads itself.
     PlotUnload(i32, i32),
-    /// This message is sent to the server thread when a player runs /whitelist add.
-    WhitelistAdd(u128, String, PlayerPacketSender),
-    /// This message is sent to the server thread when a player runs /whitelist remove.
-    WhitelistRemove(u128, PlayerPacketSender),
     /// This message is sent to the server thread when a player runs /stop.
     Shutdown,
     /// This message is sent to the server thread when a plot thread answers
@@ -139,12 +132,6 @@ struct PlotListEntry {
     priv_message_sender: mpsc::Sender<PrivMessage>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct WhitelistEntry {
-    uuid: HyphenatedUUID,
-    name: String,
-}
-
 /// This represents a minecraft server
 pub struct MinecraftServer {
     network: NetworkServer,
@@ -153,7 +140,6 @@ pub struct MinecraftServer {
     plot_sender: Sender<Message>,
     online_players: FxHashMap<u128, PlayerListEntry>,
     running_plots: Vec<PlotListEntry>,
-    whitelist: Option<Vec<WhitelistEntry>>,
     automation: Option<AutomationServer>,
 }
 
@@ -187,16 +173,6 @@ impl MinecraftServer {
         })
         .expect("There was an error setting the ctrlc handler");
 
-        let whitelist = CONFIG.whitelist.then(|| {
-            if !Path::new("whitelist.json").exists() {
-                File::create("whitelist.json").expect("Failed to create whitelist.json");
-            }
-            serde_json::from_reader(
-                File::open("whitelist.json").expect("Failed to open whitelist.json"),
-            )
-            .unwrap_or_default()
-        });
-
         if let Some(permissions_config) = &CONFIG.luckperms {
             permissions::init(permissions_config.clone()).unwrap();
         }
@@ -209,7 +185,6 @@ impl MinecraftServer {
             plot_sender: plot_tx,
             online_players: FxHashMap::default(),
             running_plots: Vec::new(),
-            whitelist,
             automation: AutomationServer::bind(CONFIG.automation_port).ok(),
         };
 
@@ -270,10 +245,6 @@ impl MinecraftServer {
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
-        }
-
-        if let Some(whitelist) = &self.whitelist {
-            fs::write("whitelist.json", serde_json::to_string(whitelist).unwrap()).unwrap();
         }
 
         std::process::exit(0);
@@ -518,25 +489,6 @@ impl MinecraftServer {
         clients[client_idx].send_packet(&set_compression);
         clients[client_idx].set_compressed(true);
 
-        if let Some(whitelist) = &self.whitelist {
-            // uuid will only be present if velocity is enabled in config
-            let whitelisted = if let Some(uuid) = clients[client_idx].uuid {
-                whitelist.iter().any(|entry| entry.uuid.0 == uuid)
-            } else {
-                whitelist.iter().any(|entry| entry.name == *username)
-            };
-            if !whitelisted {
-                let disconnect = CDisconnectLogin {
-                    reason: json!({
-                        "text": "You are not whitelisted on this server"
-                    })
-                    .to_string(),
-                }
-                .encode();
-                clients[client_idx].send_packet(&disconnect);
-            }
-        }
-
         // Set generate uuid if it doesn't exist yet
         let uuid = match clients[client_idx].uuid {
             Some(uuid) => uuid,
@@ -638,44 +590,6 @@ impl MinecraftServer {
                 }
                 self.broadcaster
                     .broadcast(BroadcastMessage::PlayerUpdateGamemode(uuid, gamemode));
-            }
-            Message::WhitelistAdd(uuid, username, sender) => {
-                if let Some(whitelist) = &mut self.whitelist {
-                    let msg = format!("{} was successfully added to the whitelist.", &username);
-                    sender.send_system_message(&msg);
-                    let uuid = HyphenatedUUID(uuid);
-                    debug!("Added to whitelist: {} ({})", username, uuid);
-
-                    whitelist.push(WhitelistEntry {
-                        name: username,
-                        uuid,
-                    });
-                } else {
-                    sender.send_error_message("Whitelist is not enabled!");
-                }
-            }
-            Message::WhitelistRemove(uuid, sender) => {
-                if let Some(whitelist) = &mut self.whitelist {
-                    let mut found = false;
-                    whitelist.retain(|entry| {
-                        let matches = entry.uuid.0 == uuid;
-                        if matches {
-                            let msg = format!(
-                                "{} was successfully removed from the whitelist.",
-                                &entry.name
-                            );
-                            sender.send_system_message(&msg);
-                            debug!("Removed from whitelist: {}", HyphenatedUUID(uuid));
-                            found = true;
-                        }
-                        !matches
-                    });
-                    if !found {
-                        sender.send_error_message("That player is not whitelisted on this server.");
-                    }
-                } else {
-                    sender.send_error_message("Whitelist is not enabled!");
-                }
             }
             Message::IoResponse(conn_id, response) => {
                 if let Some(automation) = &mut self.automation {

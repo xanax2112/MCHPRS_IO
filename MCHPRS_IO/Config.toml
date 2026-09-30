@@ -3,7 +3,6 @@ motd = "Minecraft High Performance Redstone Server"
 chat_format = "<{username}> {message}"
 max_players = 4
 view_distance = 8
-whitelist = false
 schemati = false
 block_in_hitbox = true
 auto_redpiler = false

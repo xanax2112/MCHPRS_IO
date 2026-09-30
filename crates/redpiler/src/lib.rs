@@ -120,7 +120,6 @@ impl CompilerOptions {
     }
 }
 
-#[derive(Default)]
 /// Why a compile stopped before it could build a backend.
 #[derive(Debug, Clone, Copy)]
 pub enum CompileError {
@@ -131,6 +130,7 @@ pub enum CompileError {
     Cancelled,
 }
 
+#[derive(Default)]
 pub struct Compiler {
     is_active: bool,
     backend: Option<BackendDispatcher>,

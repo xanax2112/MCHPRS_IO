@@ -13,7 +13,7 @@
    **与 Rust 无关的终端操作允许执行**（只读探查、列出/查看文件、git 只读命令、必要时修复环境权限等）。
 2. **记录规则**：每条待办给一个编号——`BUG-nnn` 或 `FEAT-nnn`——并写清「现象 / 根因 / 方案 / 影响文件 / 验证方式 / 状态」。
 3. **版本升级**：批量实施时在文末「版本升级记录」登记，并提升 `Cargo.toml` 的 `[workspace.package] version`。
-   内核版本定义在 `Cargo.toml` 的 `[workspace.package] version`；自动化协议版本是 `crates/core/src/automation.rs` 里 HELLO 的**硬编码字面量**，两者独立编号。当前**两者均为 `0.2.0-beta`**（见第 5 节）。
+   内核版本定义在 `Cargo.toml` 的 `[workspace.package] version`；自动化协议版本是 `crates/core/src/automation.rs` 里 HELLO 的**硬编码字面量**，两者独立编号。当前：**内核 `0.2.0-beta`，协议 `0.2.1-beta`**（见第 5 节）。
 
 ## 1. 工作环境速查
 
@@ -327,6 +327,78 @@ let gamemode = match name {
 
 ---
 
+### BUG-005　`/whitelist` 失败时玩家毫无反馈（可诊断性缺陷）
+
+**状态**：✅ **已实施**（协议 0.2.1-beta，待用户编译验证）——按"删除整个白名单功能"落地；命令树节点保留为不可达（甲方案，见下）
+**登记日期**：2026-09-30
+**影响文件**：见下方"牵连清单"（跨 8 个文件）
+
+**现象**
+
+`/whitelist add <用户名>` 与 `/whitelist remove <用户名>` 在下列两种情况下**都表现为"什么都没发生"**，玩家收不到任何消息：
+
+1. **用户名解析失败**——名字不存在、Mojang 返回非 200、或网络不通；
+2. **任务内 panic**——例如已修的 `No provider set`（见第 5 节 0.2.0-beta 的附带修复）。已修的这一条不再触发，但**同类 panic 仍会静默**。
+
+**根因**
+
+- 错误分支只写了 debug 日志、**不回消息给玩家**：[commands.rs:252-254](crates/core/src/plot/commands.rs#L252-L254) 与 [:267-269](crates/core/src/plot/commands.rs#L267-L269) 都是 `Err(_) => { debug!("Failed to look up profile for username {:?}", username) }`；
+- 而 [main.rs:25-32](src/main.rs#L25-L32) 的 `EnvFilter` 默认级别是 **INFO**，`debug!` **根本不会输出**；
+- 于是"panic"与"名字查不到"从玩家侧、默认日志侧看**完全一样**——这也是它特别难被发现的原因。
+
+**已确认的修复方向（2026-09-30）：彻底删除白名单功能**
+
+用户决定**移除整个白名单功能**，而不是给失败补提示——这样能从根上消除本条，并顺带消掉整条 HTTPS/Mojang 依赖（`reqwest` 全仓**仅此一处**使用）。
+
+**牵连清单（已核实）**
+
+| 位置 | 内容 |
+| --- | --- |
+| `crates/core/src/profile.rs` | **整个文件**（`PlayerProfile` + `lookup_by_username`），唯一 reqwest 使用者 |
+| `crates/core/src/plot/commands.rs:238-278` | `/whitelist` 命令分支（含两个 `async_rt.spawn`） |
+| `crates/core/src/plot/commands.rs:836-871` | 命令树节点 30 `/whitelist`、31 `add`、32 `remove`、33 `[username]`，以及**根节点 `children` 里的 `30`** |
+| `crates/core/src/server.rs:59-62` | `Message::WhitelistAdd` / `WhitelistRemove` |
+| `crates/core/src/server.rs:143-144` | `struct WhitelistEntry` |
+| `crates/core/src/server.rs:156,190-197,212,275-276` | `whitelist` 字段、启动时读写 `whitelist.json` |
+| `crates/core/src/server.rs:521-531` | 登录时的白名单校验（"You are not whitelisted on this server"） |
+| `crates/core/src/server.rs:642-677` | 两个消息的处理分支（含 "Whitelist is not enabled!"） |
+| `crates/core/src/config.rs:72` | `whitelist: bool = false` 配置字段 |
+| `Cargo.toml:71-87`、`crates/core/Cargo.toml:44-45` | `reqwest` + `rustls` 依赖，可**整体移除**（环境 AI 那套 TLS 后端配置随之作废，ring provider 安装也一并删掉） |
+| `MCHPRS_IO/Config.toml:6` | `whitelist = false` 一行 |
+| `README.md` / `README_zh.md` 配置表 | `whitelist` 那一行 |
+| 运行时文件 | `whitelist.json`（旧文件可留着不管） |
+
+**两个必须注意的点**
+
+1. **命令树索引会整体前移（最大风险）**：删掉节点 30-33 后，其后**所有**节点下标要减 4，`children` 与 `redirect_node` 的每一处引用都得跟着改。写错**不会报编译错误**，只会让客户端拿到错误甚至越界的命令树（可能导致客户端直接断开）。两种做法：
+   - **甲（推荐，稳）**：只从根节点 `children` 里删掉 `30`，**保留** 30-33 四个节点不动（成为不可达的游离节点）。**零重编号**，行为上等价于功能已删除；
+   - **乙（干净但危险）**：真正删除并重编号所有引用（含注释里的 `// 34:` 等编号）。
+2. **配置字段删除是安全的**：`config.rs` 的 `gen_config!` 只往 `Config.toml` **补**缺失键（`or_insert_with`），从**不删**键；而 `toml::from_str` 反序列化到不含该字段的结构体时，serde **默认忽略未知字段**。所以已有的 `whitelist = false` 只会变成无害残留，**不会解析失败**。
+
+**⚠️ 功能后果（请确认）**
+
+白名单是"**只允许名单内玩家进服**"的访问控制功能。删掉后**任何人都能连进来**。若你只是想免除 Mojang 联网查询、但仍想要访问控制，可以只删 `/whitelist add|remove` 两个命令、保留按 UUID 的静态白名单（代价是 `whitelist.json` 要手工维护）。请确认选哪种。
+
+**建议时机**
+
+**等当前这批未提交改动编译通过后再做。** 现在工作区已有 6 个未提交文件、且这批代码从未成功编译过；此时再叠一个跨 8 文件的删除，一旦编译失败很难定位是哪一批引入的。
+
+**实施记录（2026-09-30，协议 0.2.1-beta）**
+
+按**甲方案**落地（零重编号）：
+
+- **删除**：`crates/core/src/profile.rs`（整文件）、`crates/core/src/lib.rs` 的 `mod profile;`、`commands.rs` 的 `/whitelist` 命令分支与其 `use crate::profile::PlayerProfile;`、`server.rs` 的 `Message::WhitelistAdd/WhitelistRemove`、`WhitelistEntry`、`whitelist` 字段、启动读写 `whitelist.json`、退出保存、登录校验、两个消息处理分支、`config.rs` 的 `whitelist` 字段、`Cargo.toml` 与 `crates/core/Cargo.toml` 的 `reqwest` + `rustls`、`MCHPRS_IO/Config.toml` 与两份 README 配置表中的 `whitelist` 行。
+- **随删除清理的 import**（否则会留下 unused 警告）：`server.rs` 的 `crate::utils::HyphenatedUUID`、`serde::{Deserialize, Serialize}`、`std::path::Path`，以及 `std::fs::{self, File}` → `std::fs`；`commands.rs` 的 `mchprs_network::PlayerPacketSender`。保留：`serde_json::json`（:530/:778/:790 仍在用）、`CDisconnectLogin`（:777 版本不匹配仍在用）、`fs`（三处 `create_dir_all`）。
+- **命令树只从根节点 `children` 删掉 `30`**，节点 30-33 原样保留、成为不可达的游离节点。
+  ⚠️ **遗留技术债**：这与 BUG-002 刚修好的"游离节点"问题同类——将来有编译+运行验证条件时，可以做乙方案（真删并整体重编号）把它们清掉。**本轮为规避重编号风险（写错不报编译错、只会让客户端拿到错误/越界命令树）而选择保留。**
+- **协议版本 → `0.2.1-beta`**（HELLO 串 + 两份协议文档 + 两个 README）；**内核版本保持 `0.2.0-beta`** 不变，按用户要求。
+
+**验证方式（由用户执行）**
+
+编译通过后：客户端 Tab 补不出 `/whitelist`，敲 `/whitelist` 回 "Command not found!"；依赖里不再有 `reqwest` / `rustls`（`Cargo.lock` 相应瘦身）；`Config.toml` 里残留的 `whitelist = false` 不影响启动；任意玩家都能直接进服。
+
+---
+
 ## 3. 待添加功能
 
 （暂无）
@@ -343,6 +415,29 @@ let gamemode = match name {
 ---
 
 ## 5. 版本升级记录
+
+### 0.2.1-beta（2026-09-30）
+
+**版本号**：**内核保持 `0.2.0-beta` 不变**；TCP 自动化协议 `0.2.0-beta` → **`0.2.1-beta`**（`crates/core/src/automation.rs` 的 HELLO 串、`src/protocol.txt`、`src/protocol_zh.txt`、`README.md`、`README_zh.md`）。
+
+> ⚠️ **说明**：本次改动（删除白名单）**并未触及自动化协议本身**，协议版本号提升是按用户要求作为本次发布的版本标记，而非协议行为变更。外部客户端无需因为版本号变化而修改任何协议实现。
+
+**包含条目**：BUG-005（实施方式为**删除整个白名单功能**）。
+
+**变更摘要**
+
+| 方面 | 改动 |
+| --- | --- |
+| 功能移除 | 白名单功能整体删除：`crates/core/src/profile.rs`（整文件）、`/whitelist add\|remove` 命令、`Message::WhitelistAdd/WhitelistRemove`、`WhitelistEntry`、`MinecraftServer::whitelist` 字段、`whitelist.json` 的启动读取与退出保存、登录时的白名单校验、`config.rs` 的 `whitelist` 字段。 |
+| 依赖移除 | `reqwest` + `rustls` 从 `[workspace.dependencies]` 与 `crates/core/Cargo.toml` 整体删除。**全仓唯一的一处 HTTPS 调用随白名单一起消失**，因此 0.2.0-beta 里为 `rustls-no-provider` 补的 `install_default()` 也一并删除（随 `profile.rs`）。`Cargo.lock` 需由 `cargo build` 重新生成。 |
+| 命令树 | 仅从根节点 `children` 移除 `30`；节点 30-33 保留为不可达游离节点（**甲方案**，零重编号）。遗留技术债见 BUG-005 实施记录。 |
+| 文档 | `MCHPRS_IO/Config.toml` 与两份 README 的配置表移除 `whitelist` 行。 |
+
+**行为后果**：服务器**不再有任何访问控制**，任何人都能连进来。
+
+**验证状态**：⏳ 待用户编译验证。
+
+**注意**：删除依赖后，环境 AI 为 `rustls-no-provider` 所做的那套 TLS 配置随之作废；`.cargo/config.toml` 里的 crates.io 镜像与本次无关，保留。
 
 ### 0.2.0-beta（2026-09-30）
 
@@ -368,3 +463,30 @@ let gamemode = match name {
 **已知未处理**：第 4 节列出的其它 panic 点（用户明确不改）。
 
 **注意**：BUG-003 是破坏性协议变更——任何依赖旧位序（ZYX / `dy` 为正）的外部脚本都必须按新规则改写。
+
+---
+
+## 6. 上游溯源（MCHPR/MCHPRS）
+
+**对比基线**：上游 `master` @ `d492e43`（浅克隆于 `%TEMP%\MCHPRS-upstream`），**同为 Minecraft 1.20.4 / 协议 765**，crate 布局与本分支一致。本分支历史被压成 `Initial commit`，无法从 git 追溯基点，故以当前上游 `master` 为准。
+
+> 重新获取：
+> `& 'C:\Program Files\Git\cmd\git.exe' clone --depth 1 --single-branch --branch master https://github.com/MCHPR/MCHPRS.git "$env:TEMP\MCHPRS-upstream"`
+
+**结论：用户报的三个 bug，上游全部存在，本分支只是继承**
+
+| 条目 | 上游 `master` 的实现 | 归属 |
+| --- | --- | --- |
+| BUG-001 比较器 | `has_override` 含 `Block::Cauldron`、**不含** `WaterCauldron`；`get_override` 有 `WaterCauldron { level }` 且兜底 `_ => unreachable!()`——与本分支**修改前逐字相同** | **上游固有 bug** |
+| BUG-004 编译崩溃 | `identify_nodes.rs:183-185` 同款 `has_override → get_override` 调用 → 同样 panic；上游**无**优雅中止、**无**那句 debug 打印 | **上游固有**；优雅中止为本分支新增 |
+| BUG-002 Tab 补全 | 上游命令树**同样没有 gamemode 节点**（只有执行分支 445-447）；`/plot` 的 `children` 与修改前逐字相同、**同样漏掉 39/40** | **上游固有**（两处都是） |
+| BUG-005 whitelist 静默失败 | 上游 `profile.rs` 与修改前逐字相同（也直接 `reqwest::Client::new()`）；whitelist 分支同样只写 `debug!` | **上游固有** |
+| BUG-003 数据端口位序 | 上游**没有** `crates/core/src/automation.rs`、也没有 `src/protocol.txt`——整套 TCP 自动化协议是本分支独有 | **本分支自己的设计** |
+| ring provider 安装 | 上游**不需要**：其 `reqwest` 用默认 feature（`rustls` → aws-lc-rs），`default_rustls_crypto_provider()` 不会落进 `panic!("No provider set")` | 由本分支换 TLS 后端（`rustls-no-provider` + ring）**引起** |
+
+**⚠️ 有意偏离上游之处（对比时勿误判为改错）**
+
+- **BUG-001 的语义**：本分支把**空锅 / 空容器 / 空堆肥桶**改判为**错误并中止编译**；上游是把它们当**合法值 0** 返回（`None => 0`、`Composter { level } => level`）。这是用户明确要求的行为差异。
+- 本分支新增：`Compiler::compile` 返回 `Result`、编译失败时置 `Stopped` 并向玩家报坐标、自动化协议整体。
+
+**副产品**：上游的 `start_redpiler` 同样**无条件**设 `RedpilerState::Running`（上游 `mod.rs:742`），本分支顺手修掉的那个既有问题上游也在。
