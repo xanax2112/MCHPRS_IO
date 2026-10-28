@@ -49,6 +49,26 @@ HELLO MCHPRS_IO 0.5.2-alpha           ← 还没编译
 | `TICK NOW` | 问当前 tick | `NOW <tick>` |
 | `RADV <x>` | 冻结时手动推进 x 个 tick | `OK RADV <x> <tick>` |
 
+### tick 语义：输入写在哪个 tick 生效、收到的 tick 是哪个时刻
+
+两条报文里的 tick 字段**取自同一个 tick 的两端**，所以两者的差值天生比玩家在游戏里数出来的延迟小 1。
+
+- `OK INPUT <name> <tick>` —— 这个输入**生效**的 tick。写入发生在该 tick 的最开头、红石 tick 计算之前，所以这一 tick 从头到尾都带着新值。发出报文时当前 tick 记为 N：不带偏移 = N+1；带偏移 k = N+k。
+- `OUTPUT <name> <tick> <hex>` —— 值被**采样**的 tick，采样发生在该 tick 的末尾：算完这一 tick（并处理完存储器）之后的状态，而不是开头。`OK READ` 同一口径，报告的是最近一个已完成的 tick。
+
+手动测电路时就会碰上这个差 1：
+
+```text
+玩家在游戏里数出 3t 延迟
+OK INPUT  add_in 1000        ← 生效 tick：从 tick 1000 开头起输入就在场
+OUTPUT    add_out 1002 05    ← 在 tick 1002 末尾采样
+1002 - 1000 = 2              ← 服务器差值比你数出来的 3t 少 1
+```
+
+**玩家观测延迟 = OUTPUT 的 tick − OK INPUT 的 tick + 1**；也就是“相减之后再补上 1”（差值是 2，真实延迟是 3t）。两个数字都没错：输入锚在 tick 起点，输出锚在 tick 终点。不要靠改写法去抵消这个差值，tick 字段永远就是那一 tick 本身，不是“下一 tick”。
+
+收到第一条 `OUTPUT` 也不等于已经稳定：组合电路可能每 tick 推一个中间值，直到稳定（见下面的例子）。
+
 ### `INPUT`
 
 一次写入整组；`<hex>` 是把整组位按顺序打包成的一个整数（见下文「位序与 hex」）。

@@ -11,10 +11,26 @@ use mchprs_blocks::BlockPos;
 use mchprs_redstone::comparator::OverrideError;
 use mchprs_world::{for_each_block_mut_optimized, TickEntry, World};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tracing::{debug, error, trace, warn};
 
 pub use task_monitor::TaskMonitor;
+
+/// `betterio` timing mode, set once per compile from `Config.toml`
+/// (BACKLOG.md BUG-021). Read by the backend when it schedules a button
+/// release or decides how a lamp turns off.
+static BETTERIO: AtomicBool = AtomicBool::new(false);
+
+/// Enables or disables the `betterio` timing tweaks.
+pub fn set_betterio(enabled: bool) {
+    BETTERIO.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether the `betterio` timing tweaks are on.
+pub fn betterio() -> bool {
+    BETTERIO.load(Ordering::Relaxed)
+}
 
 use crate::{compile_graph::CompileGraph, passes::PassRegistry};
 

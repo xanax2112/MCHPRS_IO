@@ -115,7 +115,11 @@ gen_config! {
     /// TCP port of the automation bridge. The listener is bound to 127.0.0.1.
     io_port: i64 = 25585,
     /// `false` samples every tick (exact); `true` samples once per tick batch.
-    performance: bool = false
+    performance: bool = false,
+    /// Better IO timing (BACKLOG.md BUG-021): buttons release after 2 ticks
+    /// instead of 10, and redstone lamps switch instantly like trapdoors.
+    /// `false` (default) keeps the classic timing.
+    betterio: bool = false
 }
 
 #[derive(Serialize, Deserialize)]

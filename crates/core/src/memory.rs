@@ -46,6 +46,61 @@ use std::ops::Add;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
+/// ROM/RAM templates written on startup. They are dot-prefixed so the loader
+/// skips them; they only document the format (BACKLOG.md BUG-011).
+const ROM_TEMPLATE: &str = "\
+v0.5.3-alpha hex words addressed
+origin = 0
+clk = 0
+address coordinate = [
+width = 0
+]
+data coordinate = [
+width = 0
+]
+";
+
+const RAM_TEMPLATE: &str = "\
+v0.5.3-alpha hex words addressed
+origin = 0
+clk = 0, 0, 0
+address coordinate = [
+width = 0
+]
+write data coordinate = [
+width = 0
+]
+read data coordinate = [
+width = 0
+]
+write enable = [
+width = 0
+]
+read enable = [
+width = 0
+]
+byte write enable = [
+width = 0
+]
+";
+
+/// Creates `memory/` and the two hidden templates when they are missing. Called
+/// once on startup (BACKLOG.md BUG-011).
+pub fn ensure_dir_and_templates() {
+    if let Err(err) = fs::create_dir_all(MEMORY_DIR) {
+        warn!("Could not create {}: {}", MEMORY_DIR, err);
+        return;
+    }
+    for (name, body) in [(".rom.txt", ROM_TEMPLATE), (".ram.txt", RAM_TEMPLATE)] {
+        let path = Path::new(MEMORY_DIR).join(name);
+        if !path.exists()
+            && let Err(err) = fs::write(&path, body)
+        {
+            warn!("Could not write {}: {}", path.display(), err);
+        }
+    }
+}
+
 /// Directory holding memory definitions, relative to the server working
 /// directory (the directory that holds `Config.toml`).
 pub const MEMORY_DIR: &str = "memory";
@@ -458,6 +513,11 @@ pub fn load_all(dir: &Path) -> LoadReport {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
+        // Dot-prefixed files are the templates created on startup, never
+        // memories themselves (BACKLOG.md BUG-011).
+        if name.starts_with('.') {
+            continue;
+        }
         let kind = if name.ends_with(RAM_SUFFIX) {
             Kind::Ram
         } else if name.ends_with(ROM_SUFFIX) {
@@ -1383,7 +1443,10 @@ pub(crate) fn version_stamp(line: &str) -> Option<(u32, u32)> {
     let mut parts = line.split_whitespace();
     let token = parts.next()?;
     let tail: Vec<&str> = parts.collect();
-    if tail != ["hex", "words", "addressed"] {
+    // A bare `v0.5.3-alpha` line is accepted as well, which is what the
+    // generated `io.txt` uses (BACKLOG.md BUG-011); memory files keep the
+    // full `hex words addressed` form.
+    if !tail.is_empty() && tail != ["hex", "words", "addressed"] {
         return None;
     }
     let version = token.strip_prefix('v')?;

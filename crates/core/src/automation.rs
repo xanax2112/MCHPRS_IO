@@ -48,7 +48,7 @@ use std::net::{TcpListener, TcpStream};
 use tracing::{debug, info, warn};
 
 /// The protocol version announced in `HELLO`.
-pub const PROTOCOL_VERSION: &str = "0.5.2-alpha";
+pub const PROTOCOL_VERSION: &str = "0.5.3-alpha";
 
 /// Maximum length of a single request or response line (BACKLOG.md §7.11).
 const MAX_LINE_LEN: usize = 65_536;

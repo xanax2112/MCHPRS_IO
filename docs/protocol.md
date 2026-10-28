@@ -49,6 +49,26 @@ Normal mode is fine for most work: read outputs, write inputs, watch them change
 | `TICK NOW` | ask for the current tick | `NOW <tick>` |
 | `RADV <x>` | advance x ticks while frozen | `OK RADV <x> <tick>` |
 
+### Tick numbers: when an input lands, what a timestamp means
+
+The two tick fields are anchored at **different edges of the same tick**, so the gap between them is deliberately one smaller than the latency a player counts in game.
+
+- `OK INPUT <name> <tick>` — the tick on which the value **takes effect**. The write happens at the very start of that tick, before the redstone tick is evaluated, so the group already carries the new value for the whole tick. Sent while the current tick is N: no offset → N+1; offset k → N+k.
+- `OUTPUT <name> <tick> <hex>` — the tick at whose **end** the value was sampled. It is the state after that tick has been simulated (and memories updated), not the state at its start. `OK READ` uses the same convention: it reports the latest completed tick.
+
+So when you measure a circuit by hand:
+
+```text
+player counts 3t from input to output in game
+OK INPUT  add_in 1000        ← effective tick: the input is present from the start of tick 1000
+OUTPUT    add_out 1002 05    ← sampled at the end of tick 1002
+1002 - 1000 = 2              ← the server gap is one less than the 3t you counted
+```
+
+`latency counted in game = OUTPUT tick − OK INPUT tick + 1`. In other words, **subtract, then compensate by one**: a raw difference of 2 means a real 3-tick delay. Both numbers are correct — the input is stamped at a tick's beginning, the output at a tick's end. Do not "fix" this by shifting either tick field: each one always names the tick itself, never the next one.
+
+The first `OUTPUT` you receive is not necessarily the settled value: combinational circuits can push an intermediate value on every tick until they settle (see the example below).
+
 ### `INPUT`
 
 Writes a whole group at once; `<hex>` is the bits of the group packed into one integer, first coordinate first (see "Bits and hex").

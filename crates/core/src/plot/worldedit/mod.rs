@@ -5,6 +5,8 @@ mod execute;
 use super::commands::CommandFlags;
 use super::{Plot, PlotWorld};
 use crate::player::{PacketSender, Player, PlayerPos};
+use crate::config::CONFIG;
+use crate::utils::HyphenatedUUID;
 use execute::*;
 use mchprs_blocks::block_entities::{BlockEntity, ContainerType};
 use mchprs_blocks::blocks::Block;
@@ -30,6 +32,27 @@ pub fn execute_command(
     command: &str,
     args: &mut Vec<&str>,
 ) -> bool {
+    // `//schem load|save|list` (BACKLOG.md BUG-023): `load` and `save` are
+    // exactly `//load` and `//save`, `list` prints the schematic directory.
+    if command == "/schem" {
+        match args.first().copied() {
+            Some("load") | Some("save") => {
+                let sub = if args[0] == "load" { "/load" } else { "/save" };
+                args.remove(0);
+                return execute_command(plot, player_idx, sub, args);
+            }
+            Some("list") => {
+                schem_list(plot, player_idx);
+                return true;
+            }
+            _ => {
+                plot.players[player_idx]
+                    .send_error_message("Usage: //schem <load|save|list>");
+                return true;
+            }
+        }
+    }
+
     let player = &mut plot.players[player_idx];
     let command = if let Some(command) = COMMANDS.get(command) {
         command
@@ -1061,6 +1084,46 @@ fn expand_selection(player: &mut Player, amount: BlockPos, contract: bool) {
     }
 }
 
+/// Lists the schematic files in `./schems` (or the per-player folder when
+/// `schemati` is on) for `//schem list` (BACKLOG.md BUG-023).
+fn schem_list(plot: &mut Plot, player_idx: usize) {
+    let player = &mut plot.players[player_idx];
+    let mut dir = std::path::PathBuf::from("./schems");
+    if CONFIG.schemati {
+        dir.push(HyphenatedUUID(player.uuid).to_string());
+    }
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            player.send_error_message(&format!("Could not read {}: {}", dir.display(), err));
+            return;
+        }
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+        .filter(|name| SCHEMATI_VALIDATE_REGEX.is_match(name))
+        .collect();
+    names.sort();
+    if names.is_empty() {
+        player.send_worldedit_message("No schematics found.");
+        return;
+    }
+    let shown: Vec<String> = names.iter().take(20).cloned().collect();
+    let suffix = if names.len() > shown.len() {
+        format!(" ... and {} more", names.len() - shown.len())
+    } else {
+        String::new()
+    };
+    player.send_worldedit_message(&format!(
+        "Schematics ({}): {}{}",
+        names.len(),
+        shown.join(", "),
+        suffix
+    ));
+}
+
 fn update(plot: &mut PlotWorld, first_pos: BlockPos, second_pos: BlockPos) {
     for_each_block_mut_optimized(plot, first_pos, second_pos, |plot, pos| {
         let block = plot.get_block(pos);
@@ -1102,6 +1165,58 @@ pub fn add_command_completions(nodes: &mut Vec<CCommandsNode>) {
             });
         }
     }
+
+    // `//schem load|save|list` (BACKLOG.md BUG-023). `load` / `save` redirect
+    // to the existing `//load` / `//save` nodes so they complete their filename
+    // argument as well.
+    let find_idx = |nodes: &Vec<CCommandsNode>, name: &str| -> i32 {
+        nodes
+            .iter()
+            .position(|node| node.name.as_deref() == Some(name))
+            .unwrap_or(0) as i32
+    };
+    let load_idx = find_idx(nodes, "/load");
+    let save_idx = find_idx(nodes, "/save");
+    let schem_idx = nodes.len() as i32;
+    nodes[0].children.push(schem_idx);
+    nodes.push(CCommandsNode {
+        flags: CommandFlags::LITERAL.bits() as i8,
+        children: Vec::new(),
+        redirect_node: None,
+        name: Some("/schem"),
+        parser: None,
+        suggestions_type: None,
+    });
+    let schem_load_idx = nodes.len() as i32;
+    nodes[schem_idx as usize].children.push(schem_load_idx);
+    nodes.push(CCommandsNode {
+        flags: (CommandFlags::LITERAL | CommandFlags::REDIRECT).bits() as i8,
+        children: Vec::new(),
+        redirect_node: Some(load_idx),
+        name: Some("load"),
+        parser: None,
+        suggestions_type: None,
+    });
+    let schem_save_idx = nodes.len() as i32;
+    nodes[schem_idx as usize].children.push(schem_save_idx);
+    nodes.push(CCommandsNode {
+        flags: (CommandFlags::LITERAL | CommandFlags::REDIRECT).bits() as i8,
+        children: Vec::new(),
+        redirect_node: Some(save_idx),
+        name: Some("save"),
+        parser: None,
+        suggestions_type: None,
+    });
+    let schem_list_idx = nodes.len() as i32;
+    nodes[schem_idx as usize].children.push(schem_list_idx);
+    nodes.push(CCommandsNode {
+        flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+        children: Vec::new(),
+        redirect_node: None,
+        name: Some("list"),
+        parser: None,
+        suggestions_type: None,
+    });
 
     // Add completions for command aliases
     for (name, target) in ALIASES.iter() {

@@ -253,7 +253,7 @@ pub(super) fn execute_paste(ctx: CommandExecuteContext<'_>) {
     }
 }
 
-static SCHEMATI_VALIDATE_REGEX: LazyLock<Regex> =
+pub(super) static SCHEMATI_VALIDATE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[a-zA-Z0-9_.]+\.schem(atic)?").unwrap());
 
 pub(super) fn execute_load(ctx: CommandExecuteContext<'_>) {

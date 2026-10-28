@@ -313,7 +313,12 @@ fn check_group(group: &IoGroup, redpiler: &Compiler, world: &impl World) -> Resu
             )
         })?;
         let ok = if group.kind.is_input() {
-            matches!(io.0, IoElement::Lever | IoElement::PressurePlate)
+            // Buttons are allowed as input points too; a written `1` pulses
+            // them (BACKLOG.md BUG-024).
+            matches!(
+                io.0,
+                IoElement::Lever | IoElement::PressurePlate | IoElement::Button
+            )
         } else {
             matches!(
                 io.0,
@@ -327,7 +332,7 @@ fn check_group(group: &IoGroup, redpiler: &Compiler, world: &impl World) -> Resu
                 pos.y,
                 pos.z,
                 if group.kind.is_input() {
-                    "lever or pressure plate"
+                    "lever, pressure plate or button"
                 } else {
                     "redstone lamp, trapdoor or note block"
                 },
@@ -354,6 +359,33 @@ fn check_group(group: &IoGroup, redpiler: &Compiler, world: &impl World) -> Resu
         }
     }
     Ok(())
+}
+
+/// `io.txt` skeleton written when the file is missing. Only the version line
+/// plus an empty input and output group (BACKLOG.md BUG-011).
+const IO_TEMPLATE: &str = "\
+v0.5.3-alpha
+input none_in = [
+origin = 0
+clk = 0
+width = 0
+]
+output none_out = [
+origin = 0
+clk = 0
+width = 0
+]
+";
+
+/// Creates `io.txt` if it does not exist yet (BACKLOG.md BUG-011).
+pub fn ensure_file() {
+    let path = std::path::Path::new(IO_FILE);
+    if path.exists() {
+        return;
+    }
+    if let Err(err) = std::fs::write(path, IO_TEMPLATE) {
+        tracing::warn!("Could not write {}: {}", IO_FILE, err);
+    }
 }
 
 /// Drops the `line N: ` prefix the memory parser adds, because the numbers it
@@ -595,13 +627,9 @@ fn parse(text: &str) -> IoTable {
                 continue;
             }
         };
-        if list.points.is_empty() {
-            table.errors.push(IoError {
-                line: start_line + 1,
-                message: format!("group `{}` has no coordinates", name),
-            });
-            continue;
-        }
+        // A `width = 0` group with no coordinates is the empty skeleton the
+        // server writes on startup, and `/coord` fills it in later; it loads as
+        // an empty group instead of failing the file (BACKLOG.md BUG-011).
         let points: Vec<BlockPos> = list
             .points
             .iter()

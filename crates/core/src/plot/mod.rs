@@ -1,4 +1,5 @@
 pub mod commands;
+mod coord;
 mod data;
 pub mod database;
 mod monitor;
@@ -90,6 +91,12 @@ pub struct Plot {
 
     // Timings
     tps: Tps,
+    /// rtps to restore on `/tick unfreeze` (BACKLOG.md BUG-023).
+    frozen_rtps: Option<Tps>,
+    /// `/coord` context, undo and redo stacks (BACKLOG.md BUG-022).
+    coord: coord::CoordState,
+    /// Set when `/coord` touched a file, so the next compile re-reads it.
+    coord_dirty: bool,
     last_update_time: Instant,
     lag_time: Duration,
     last_nspt: Option<Duration>,
@@ -944,7 +951,20 @@ impl Plot {
             .get(&conn_id)
             .is_some_and(|groups| groups.contains(name));
         if bound {
-            return AutomationResponse::CommandOk;
+            // Re-`POUT` on a group we already listen to means "give me the
+            // current value once more"; the binding and the push rules stay
+            // exactly the same (BACKLOG.md BUG-007).
+            let bits = self
+                .io
+                .find(name)
+                .and_then(|group| group.read(&self.redpiler))
+                .unwrap_or_default();
+            let hex = encode_hex(&bits, self.io.find(name).and_then(|group| group.matrix));
+            return AutomationResponse::Output {
+                name: name.to_string(),
+                tick: self.tick,
+                hex,
+            };
         }
         self.pout_bindings
             .entry(conn_id)
@@ -1360,6 +1380,51 @@ impl Plot {
 
     /// Re-reads `memory/*.rom.txt` from disk and re-validates every definition.
     /// Returns `(loaded, active)` (BACKLOG.md BUG-015).
+    /// `/tick freeze`: remembers the current rtps, then sets it to 0.
+    fn freeze_rtps(&mut self) {
+        if self.tps != Tps::Limited(0.0) {
+            self.frozen_rtps = Some(self.tps);
+        }
+        self.apply_rtps(Tps::Limited(0.0));
+    }
+
+    /// `/tick unfreeze`: restores the rtps saved by `freeze`. With nothing
+    /// saved the plot simply stays as it is.
+    fn unfreeze_rtps(&mut self) -> Option<Tps> {
+        let restored = self.frozen_rtps.take()?;
+        self.apply_rtps(restored);
+        Some(restored)
+    }
+
+    /// `/io reload`: same contract as `/memory reload` (BACKLOG.md BUG-012) —
+    /// refused while a `-i` compile is active, otherwise the compiled state is
+    /// dropped and `io.txt` is parsed again. It never starts a compile.
+    fn reload_io(&mut self) -> ReloadOutcome {
+        if self
+            .redpiler
+            .current_flags()
+            .map(|flags| flags.io_only)
+            .unwrap_or(false)
+        {
+            return ReloadOutcome::CompiledIoOnly;
+        }
+        if self.redpiler.is_active() {
+            self.reset_redpiler();
+            self.publish_world();
+        }
+        self.io = io::IoTable::load(Path::new(IO_FILE));
+        let rejected = self
+            .io
+            .errors
+            .iter()
+            .map(|error| format!("io.txt line {}: {}", error.line, error.message))
+            .collect();
+        ReloadOutcome::Reloaded {
+            loaded: self.io.groups.len(),
+            rejected,
+        }
+    }
+
     fn reload_memories(&mut self) -> ReloadOutcome {
         // `-i` (io only) compiles never re-read memory definitions, and a
         // reload is refused while such a compile is running (BACKLOG.md
@@ -1401,6 +1466,21 @@ impl Plot {
 
     fn start_redpiler(&mut self, options: CompilerOptions, source: Option<usize>) {
         debug!("Starting redpiler");
+        // `betterio` is a runtime timing switch, not a compile option
+        // (BACKLOG.md BUG-021): push the Config value into the backend
+        // before every compile so a restart is all it takes.
+        mchprs_redpiler::set_betterio(CONFIG.betterio);
+        // A `/coord` edit is not visible until the files are read again; the
+        // next compile does that once (BACKLOG.md BUG-022).
+        if self.coord_dirty {
+            self.io = io::IoTable::load(Path::new(IO_FILE));
+            let report = memory::load_all(Path::new(memory::MEMORY_DIR));
+            for message in &report.rejected {
+                warn!("{}", message);
+            }
+            self.memories = report.memories;
+            self.coord_dirty = false;
+        }
         self.scoreboard
             .set_redpiler_state(&self.players, RedpilerState::Compiling);
         self.scoreboard
@@ -2023,6 +2103,9 @@ impl Plot {
             locked_players: HashSet::new(),
             running: true,
             tps,
+            frozen_rtps: None,
+            coord: Default::default(),
+            coord_dirty: false,
             always_running,
             redpiler: Default::default(),
             memories: {

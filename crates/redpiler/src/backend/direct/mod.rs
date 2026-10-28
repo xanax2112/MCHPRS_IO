@@ -221,7 +221,13 @@ impl JITBackend for DirectBackend {
                 if node.powered {
                     return;
                 }
-                self.schedule_tick(node_id, 10, TickPriority::Normal);
+                // betterio shortens the button release from 10 to 2 ticks
+                // (BACKLOG.md BUG-021).
+                self.schedule_tick(
+                    node_id,
+                    if crate::betterio() { 2 } else { 10 },
+                    TickPriority::Normal,
+                );
                 self.set_node(node_id, true, 15);
             }
             NodeType::Lever => {
@@ -325,7 +331,13 @@ impl JITBackend for DirectBackend {
                 if self.nodes[node_id].powered {
                     return true;
                 }
-                self.schedule_tick(node_id, 10, TickPriority::Normal);
+                // betterio shortens the button release from 10 to 2 ticks
+                // (BACKLOG.md BUG-021).
+                self.schedule_tick(
+                    node_id,
+                    if crate::betterio() { 2 } else { 10 },
+                    TickPriority::Normal,
+                );
                 self.set_node(node_id, true, 15);
                 true
             }
@@ -356,6 +368,20 @@ impl JITBackend for DirectBackend {
         match self.nodes[node_id].ty {
             NodeType::Lever | NodeType::PressurePlate => {
                 self.set_node(node_id, powered, bool_to_ss(powered));
+                true
+            }
+            // A button written by a script behaves like a press: `1` pulses it
+            // and the normal schedule releases it, `0` does nothing
+            // (BACKLOG.md BUG-024).
+            NodeType::Button => {
+                if powered && !self.nodes[node_id].powered {
+                    self.schedule_tick(
+                        node_id,
+                        if crate::betterio() { 2 } else { 10 },
+                        TickPriority::Normal,
+                    );
+                    self.set_node(node_id, true, 15);
+                }
                 true
             }
             _ => false,

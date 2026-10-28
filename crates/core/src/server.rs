@@ -163,6 +163,10 @@ impl MinecraftServer {
         fs::create_dir_all("./world/players").unwrap();
         fs::create_dir_all("./world/plots").unwrap();
         fs::create_dir_all("./schems").unwrap();
+        // `memory/` with its hidden templates and an `io.txt` skeleton
+        // (BACKLOG.md BUG-011).
+        crate::memory::ensure_dir_and_templates();
+        crate::io::ensure_file();
 
         plot::database::init();
 

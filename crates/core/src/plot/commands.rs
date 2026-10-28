@@ -1,6 +1,5 @@
 use super::{ReloadOutcome, database, worldedit, Plot, PlotWorld};
 use crate::player::{Gamemode, PacketSender, PlayerPos};
-use crate::plot::data::sleep_time_for_tps;
 use crate::server::{get_version_string, Message};
 use mchprs_blocks::items::ItemStack;
 use mchprs_network::packets::clientbound::{
@@ -237,14 +236,24 @@ impl Plot {
                 crate::console::ok("Shutting down...");
                 let _ = self.message_sender.send(Message::Shutdown);
             }
-            "io" => {
-                if args.first() == Some(&"list") {
+            "io" => match args.first().copied() {
+                Some("list") => {
                     let summary = self.io_summary();
                     crate::console::ok(&summary);
-                } else {
-                    crate::console::error("Usage: /io list");
                 }
-            }
+                Some("reload") | Some("r") => match self.reload_io() {
+                    ReloadOutcome::CompiledIoOnly => crate::console::error(
+                        "/io reload is not available while a circuit compiled with -i is running.",
+                    ),
+                    ReloadOutcome::Reloaded { loaded, rejected } => {
+                        crate::console::ok(&format!("Reloaded {} IO group(s).", loaded));
+                        for message in rejected {
+                            crate::console::error(&message);
+                        }
+                    }
+                },
+                _ => crate::console::error("Usage: /io <list|reload>"),
+            },
             "memory" => match args.first().copied() {
                 Some("reload") | Some("r") => match self.reload_memories() {
                     ReloadOutcome::CompiledIoOnly => crate::console::error(
@@ -294,6 +303,47 @@ impl Plot {
                     ),
                     Err(code) => crate::console::error(&self.seq_error(code)),
                 },
+                Some("freeze") if args.len() == 1 => {
+                    self.freeze_rtps();
+                    crate::console::ok("Tick rate frozen (rtps 0).");
+                }
+                Some("unfreeze") if args.len() == 1 => match self.unfreeze_rtps() {
+                    Some(_) => crate::console::ok("Tick rate restored."),
+                    None => crate::console::error("Tick rate was not frozen."),
+                },
+                Some("step") => {
+                    let step: u64 = match args.get(1).and_then(|arg| arg.parse().ok()) {
+                        Some(step) => step,
+                        None => {
+                            crate::console::error("Usage: /tick step <even number>");
+                            return;
+                        }
+                    };
+                    if step == 0 || step % 2 != 0 {
+                        crate::console::error(
+                            "/tick step only accepts even numbers (/tick step 2 = /radv 1).",
+                        );
+                        return;
+                    }
+                    self.advance_ticks(step / 2);
+                    crate::console::ok(&format!("Advanced {} tick(s).", step / 2));
+                }
+                Some("rate") => {
+                    if let Some(arg) = args.get(1) {
+                        let tps = if let Ok(tps) = arg.parse::<f32>() {
+                            Tps::Limited(tps)
+                        } else if !arg.is_empty() && "unlimited".starts_with(arg) {
+                            Tps::Unlimited
+                        } else {
+                            crate::console::error("Usage: /tick rate [rtps]");
+                            return;
+                        };
+                        self.apply_rtps(tps);
+                    } else {
+                        self.apply_rtps(Tps::Limited(20.0));
+                    }
+                    crate::console::ok("The rtps was successfully set.");
+                }
                 Some(_) => crate::console::error("Usage: /tick [seq]"),
             },
             "radv" | "radvance" => {
@@ -440,10 +490,7 @@ impl Plot {
                     return false;
                 };
 
-                self.sleep_time = sleep_time_for_tps(tps);
-                self.timings.set_tps(tps);
-                self.tps = tps;
-                self.reset_timings();
+                self.apply_rtps(tps);
                 self.players[player].send_system_message("The rtps was successfully set.");
             }
             "radv" | "radvance" => {
@@ -483,6 +530,63 @@ impl Plot {
                         self.players[player].send_error_message(&message);
                     }
                 },
+                Some("freeze") if args.len() == 1 => {
+                    self.freeze_rtps();
+                    self.players[player]
+                        .send_system_message("Tick rate frozen (rtps 0).");
+                }
+                Some("unfreeze") if args.len() == 1 => match self.unfreeze_rtps() {
+                    Some(_) => self
+                        .players[player]
+                        .send_system_message("Tick rate restored."),
+                    None => self
+                        .players[player]
+                        .send_error_message("Tick rate was not frozen."),
+                },
+                Some("step") => {
+                    let Some(step) = args.get(1).and_then(|arg| arg.parse::<u64>().ok()) else {
+                        self.players[player]
+                            .send_error_message("Usage: /tick step <even number>");
+                        return false;
+                    };
+                    if step == 0 || step % 2 != 0 {
+                        self.players[player].send_error_message(
+                            "/tick step only accepts even numbers (/tick step 2 = /radv 1).",
+                        );
+                        return false;
+                    }
+                    let ticks = step / 2;
+                    let start_time = Instant::now();
+                    self.advance_ticks(ticks);
+                    self.players[player].send_system_message(&format!(
+                        "Plot has been advanced by {} ticks ({:?})",
+                        ticks,
+                        start_time.elapsed()
+                    ));
+                }
+                Some("rate") => {
+                    if let Some(arg) = args.get(1) {
+                        let tps = if let Ok(tps) = arg.parse::<f32>() {
+                            if !tps.is_finite() || tps < 0.0 {
+                                self.players[player]
+                                    .send_error_message("RTPS must be a finite, non-negative number!");
+                                return false;
+                            }
+                            Tps::Limited(tps)
+                        } else if !arg.is_empty() && "unlimited".starts_with(arg) {
+                            Tps::Unlimited
+                        } else {
+                            self.players[player].send_error_message("Unable to parse rtps!");
+                            return false;
+                        };
+                        self.apply_rtps(tps);
+                    } else {
+                        // Bare `/tick rate` sets 20 (BACKLOG.md BUG-023).
+                        self.apply_rtps(Tps::Limited(20.0));
+                    }
+                    self.players[player]
+                        .send_system_message("The rtps was successfully set.");
+                }
                 Some(_) => self.players[player].send_error_message("Usage: /tick [seq]"),
             },
             "teleport" | "tp" => {
@@ -699,6 +803,36 @@ impl Plot {
                         .send_error_message("Usage: /memory reload"),
                 }
             }
+            "coord" => {
+                self.handle_coord_command(player, &args);
+            }
+            "io" => match args.first().copied() {
+                Some("list") => {
+                    let summary = self.io_summary();
+                    self.players[player].send_system_message(&summary);
+                }
+                Some("reload") | Some("r") => match self.reload_io() {
+                    ReloadOutcome::CompiledIoOnly => self.players[player].send_error_message(
+                        "/io reload is not available while a circuit compiled with -i is running.",
+                    ),
+                    ReloadOutcome::Reloaded { loaded, rejected } => {
+                        self.players[player]
+                            .send_system_message(&format!("Reloaded {} IO group(s).", loaded));
+                        for message in rejected.iter().take(5) {
+                            self.players[player].send_error_message(message);
+                        }
+                        if rejected.len() > 5 {
+                            self.players[player].send_error_message(&format!(
+                                "...and {} more rejected line(s), see the log.",
+                                rejected.len() - 5
+                            ));
+                        }
+                    }
+                },
+                _ => self
+                    .players[player]
+                    .send_error_message("Usage: /io <list|reload>"),
+            },
             "version" => {
                 self.players[player].send_system_message(&get_version_string());
             }
@@ -731,7 +865,7 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
                 flags: CommandFlags::ROOT.bits() as i8,
                 children: vec![
                     1, 4, 5, 6, 8, 10, 11, 13, 18, 34, 41, 43, 44, 45, 49, 51, 52, 53, 55, 56,
-                    57, 59,
+                    57, 59, 61, 81,
                 ],
                 redirect_node: None,
                 name: None,
@@ -1152,7 +1286,7 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
             // 46: /redpiler compile
             Node {
                 flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
-                children: vec![],
+                children: vec![68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78],
                 redirect_node: None,
                 name: Some("compile"),
                 parser: None,
@@ -1269,7 +1403,7 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
             // 59: /tick
             Node {
                 flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
-                children: vec![60],
+                children: vec![60, 62, 63, 64, 66],
                 redirect_node: None,
                 name: Some("tick"),
                 parser: None,
@@ -1281,6 +1415,267 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
                 children: vec![],
                 redirect_node: None,
                 name: Some("seq"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 61: /io
+            Node {
+                flags: CommandFlags::LITERAL.bits() as i8,
+                children: vec![79, 80],
+                redirect_node: None,
+                name: Some("io"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 62: /tick freeze
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("freeze"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 63: /tick unfreeze
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("unfreeze"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 64: /tick step
+            Node {
+                flags: CommandFlags::LITERAL.bits() as i8,
+                children: vec![65],
+                redirect_node: None,
+                name: Some("step"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 65: /tick step [even ticks]
+            Node {
+                flags: (CommandFlags::ARGUMENT | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("even"),
+                parser: Some(Parser::Integer(2, i32::MAX)),
+                suggestions_type: None,
+            },
+            // 66: /tick rate
+            Node {
+                flags: CommandFlags::LITERAL.bits() as i8,
+                children: vec![67],
+                redirect_node: None,
+                name: Some("rate"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 67: /tick rate [rtps]
+            Node {
+                flags: (CommandFlags::ARGUMENT | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("rtps"),
+                parser: Some(Parser::Float(0.0, 1000.0)),
+                suggestions_type: None,
+            },
+            // 68: /redpiler compile --optimize
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("--optimize"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 69: /redpiler compile --export
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("--export"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 70: /redpiler compile --io-only
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("--io-only"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 71: /redpiler compile --update
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("--update"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 72: /redpiler compile --export-dot
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("--export-dot"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 73: /redpiler compile --wire-dot-out
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("--wire-dot-out"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 74: /redpiler compile --illegal-states-out
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("--illegal-states-out"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 75: /redpiler compile --wire-cross-out
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("--wire-cross-out"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 76: /redpiler compile --print-after-all
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("--print-after-all"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 77: /redpiler compile --print-before-backend
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("--print-before-backend"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 78: /redpiler compile --passes=
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("--passes="),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 79: /io list
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("list"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 80: /io reload
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("reload"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 81: /coord
+            Node {
+                flags: CommandFlags::LITERAL.bits() as i8,
+                children: vec![82, 83, 84, 88, 89],
+                redirect_node: None,
+                name: Some("coord"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 82: /coord in
+            Node {
+                flags: CommandFlags::LITERAL.bits() as i8,
+                children: vec![85, 86],
+                redirect_node: None,
+                name: Some("in"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 83: /coord new
+            Node {
+                flags: CommandFlags::LITERAL.bits() as i8,
+                children: vec![87],
+                redirect_node: None,
+                name: Some("new"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 84: /coord add
+            Node {
+                flags: CommandFlags::LITERAL.bits() as i8,
+                children: vec![87],
+                redirect_node: None,
+                name: Some("add"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 85: /coord in [file]
+            Node {
+                flags: (CommandFlags::ARGUMENT | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("file"),
+                parser: Some(Parser::String(0)),
+                suggestions_type: None,
+            },
+            // 86: /coord in io.txt [name]
+            Node {
+                flags: (CommandFlags::ARGUMENT | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("io name"),
+                parser: Some(Parser::String(0)),
+                suggestions_type: None,
+            },
+            // 87: /coord new|add [type]
+            Node {
+                flags: (CommandFlags::ARGUMENT | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("type"),
+                parser: Some(Parser::String(0)),
+                suggestions_type: None,
+            },
+            // 88: /coord undo
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("undo"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 89: /coord redo
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("redo"),
                 parser: None,
                 suggestions_type: None,
             },

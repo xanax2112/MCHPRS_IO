@@ -74,7 +74,13 @@ pub(super) fn update_node(
         NodeType::Lamp => {
             let should_be_lit = get_bool_input(node);
             let lit = node.powered;
-            if lit && !should_be_lit {
+            if crate::betterio() {
+                // betterio makes a lamp behave exactly like a trapdoor: both
+                // edges apply in the tick the input changes (BACKLOG.md BUG-021).
+                if lit != should_be_lit {
+                    set_node(node, should_be_lit);
+                }
+            } else if lit && !should_be_lit {
                 schedule_tick(scheduler, node_id, node, 2, TickPriority::Normal);
             } else if !lit && should_be_lit {
                 set_node(node, true);
