@@ -453,7 +453,7 @@ analog_output <组名> = [ origin / clk / rs_width / width / 坐标 ]
 
 | 版本 | 内核 / 协议 | 状态 |
 | --- | --- | --- |
-| `0.5.2-alpha` | 0.5.2-alpha / 0.5.2-alpha | ✅ 模电 `matrix:`、日志去重、文件版本兼容（0.5.0+）均已完成；编译通过（1m42s）+ 三组冒烟测试通过 + 已替换线上二进制（sha256 `19320ca2…`） |
+| `0.5.2-alpha` | 0.5.2-alpha / 0.5.2-alpha | ✅ 模电 `matrix:`、日志去重、文件版本兼容（0.5.0+）均已完成；编译通过（1m42s）+ 三组冒烟测试通过 + 已替换线上二进制（sha256 `19320ca2…`）；2026-10-28 提交 `main`（`328e2ca`）+ 打标签 `v0.5.2-alpha` + 发布 Release（CI 编译 7 个平台二进制） |
 | `0.5.1-alpha` | 0.5.1-alpha / 0.5.1-alpha | ✅ 二次构建：模电双键（`rs_width` + `width`）与动词全大写，编译通过（3m40s）+ 冒烟测试通过 + 已替换线上二进制（sha256 `8c98c83b…`） |
 | `0.5.0-alpha` | 0.5.0-alpha / 0.5.0-alpha | ✅ 编译通过、冒烟测试通过、已替换线上二进制（sha256 `5a07ee1c…`） |
 | `0.4.3-beta` | 0.4.3-beta / 0.4.3-beta | ✅ 已发布、线上部署、运行验证通过；2026-10-28 补打远程附注标签 `v0.4.3-beta`（→ `7a36df6`）并发布 GitHub Release |
@@ -463,7 +463,8 @@ analog_output <组名> = [ origin / clk / rs_width / width / 坐标 ]
 | `0.3.0-beta` | 0.3.0-beta / 0.3.0-beta | ✅ 已投入使用 |
 | `0.2.x` | 0.2.0–0.2.1 | ✅ 已发布 |
 
-- **远程发布对应关系**：`v0.4.3-beta` → Release `0.4.3-beta`（<https://github.com/xanax2112/MCHPRS_IO/releases/tag/v0.4.3-beta>）；仅源码包（tag 自动生成），无二进制附件；`0.4.2-beta` 不单独发布。更晚的 `0.5.x-alpha` 只存在于 Android 本地工作区，未提交、未打标。
+- **远程发布对应关系**：`v0.4.3-beta` → Release `0.4.3-beta`（仅源码包，无二进制附件；`0.4.2-beta` 不单独发布）；`v0.5.2-alpha` → Release `0.5.2-alpha`（<https://github.com/xanax2112/MCHPRS_IO/releases/tag/v0.5.2-alpha>，预发布，CI 编译 7 个平台二进制）。
+- **CI 行为**：推 `v*` 标签会触发 `build.yml`（6 个目标 + 通用 macOS 包），发布环节先删后重建 `preview`，再建本版本 Release；推 `main` 不触发任何工作流（只监听 `master` 与 `v*`）。
 
 ---
 
