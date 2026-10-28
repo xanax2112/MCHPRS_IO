@@ -1,5 +1,4 @@
-use super::{database, worldedit, Plot, PlotWorld};
-use crate::automation::AutomationResponse;
+use super::{ReloadOutcome, database, worldedit, Plot, PlotWorld};
 use crate::player::{Gamemode, PacketSender, PlayerPos};
 use crate::plot::data::sleep_time_for_tps;
 use crate::server::{get_version_string, Message};
@@ -221,33 +220,96 @@ impl Plot {
     /// The dispatcher below mirrors the player path for the supported subset;
     /// it deliberately does not reuse `handle_command` because that function is
     /// written entirely in terms of `self.players[player]`.
-    pub(super) fn handle_automation_command(&mut self, line: &str) -> AutomationResponse {
+    /// Runs one `/` command typed into the server terminal (BUG-031).
+    ///
+    /// Commands that need a player target are rejected; everything else
+    /// behaves like the in-game command (including `/rtps 0`, which takes the
+    /// automation bridge into exclusive manual stepping).
+    pub(super) fn handle_console_command(&mut self, line: &str) {
         let line = line.strip_prefix('/').unwrap_or(line);
         let mut parts = line.split_whitespace();
-        let command = match parts.next() {
-            Some(command) => command,
-            None => return AutomationResponse::CommandError("ARG"),
+        let Some(command) = parts.next() else {
+            return;
         };
         let args: Vec<&str> = parts.collect();
-
-        // Relative coordinates are resolved against a player position, which an
-        // automation caller does not have.
-        if args
-            .iter()
-            .any(|arg| arg.starts_with('~') || arg.starts_with('^'))
-        {
-            return AutomationResponse::CommandError("ARG");
-        }
-
-        info!(
-            "automation issued command: {} {}",
-            command,
-            args.join(" ")
-        );
-
-        match self.execute_automation_command(command, &args) {
-            Ok(()) => AutomationResponse::CommandOk,
-            Err(code) => AutomationResponse::CommandError(code),
+        match command {
+            "stop" => {
+                crate::console::ok("Shutting down...");
+                let _ = self.message_sender.send(Message::Shutdown);
+            }
+            "io" => {
+                if args.first() == Some(&"list") {
+                    let summary = self.io_summary();
+                    crate::console::ok(&summary);
+                } else {
+                    crate::console::error("Usage: /io list");
+                }
+            }
+            "memory" => match args.first().copied() {
+                Some("reload") | Some("r") => match self.reload_memories() {
+                    ReloadOutcome::CompiledIoOnly => crate::console::error(
+                        "/memory reload is not available while a circuit compiled with -i is running.",
+                    ),
+                    ReloadOutcome::Reloaded { loaded, rejected } => {
+                        crate::console::ok(&format!(
+                            "Reloaded {} memory definition(s).",
+                            loaded
+                        ));
+                        for message in rejected {
+                            crate::console::error(&message);
+                        }
+                    }
+                },
+                _ => crate::console::error("Usage: /memory reload"),
+            },
+            "rtps" => {
+                let Some(arg) = args.first() else {
+                    crate::console::error("Usage: /rtps <n | unlimited>");
+                    return;
+                };
+                let tps = if let Ok(value) = arg.parse::<f32>() {
+                    if !value.is_finite() || value < 0.0 {
+                        crate::console::error("RTPS must be a finite, non-negative number.");
+                        return;
+                    }
+                    Tps::Limited(value)
+                } else if !arg.is_empty() && "unlimited".starts_with(arg) {
+                    Tps::Unlimited
+                } else {
+                    crate::console::error("Unable to parse rtps!");
+                    return;
+                };
+                self.apply_rtps(tps);
+                self.on_player_rtps(&args);
+                crate::console::ok("The rtps was successfully set.");
+            }
+            "tick" => match args.first().copied() {
+                None => match self.current_tick() {
+                    Some(tick) => crate::console::ok(&format!("Tick: {}", tick)),
+                    None => crate::console::error("No circuit is compiled, so there is no tick."),
+                },
+                Some("seq") if args.len() == 1 => match self.start_seq_mode() {
+                    Ok(()) => crate::console::ok(
+                        "Reservation mode enabled: scripts disconnected, rtps set to 0.",
+                    ),
+                    Err(code) => crate::console::error(&self.seq_error(code)),
+                },
+                Some(_) => crate::console::error("Usage: /tick [seq]"),
+            },
+            "radv" | "radvance" => {
+                let Some(ticks) = args.first().and_then(|arg| arg.parse::<u32>().ok()) else {
+                    crate::console::error("Usage: /radv <ticks>");
+                    return;
+                };
+                self.advance_ticks(u64::from(ticks));
+                crate::console::ok(&format!("Advanced {} tick(s).", ticks));
+            }
+            "redpiler" | "rp" => match self.execute_automation_command("redpiler", &args) {
+                Ok(()) => crate::console::ok("Done."),
+                Err(code) => crate::console::error(&format!("ERR {}", code)),
+            },
+            "version" => crate::console::ok(&get_version_string()),
+            _ => crate::console::error(crate::console::NEEDS_PLAYER),
         }
     }
 
@@ -258,7 +320,7 @@ impl Plot {
     ) -> Result<(), &'static str> {
         match command {
             "redpiler" | "rp" => {
-                let sub = args.first().copied().ok_or("ARG")?;
+                let sub = args.first().copied().ok_or("arg")?;
                 match sub {
                     "compile" | "c" => {
                         let options = CompilerOptions::parse(&args[1..].join(" "));
@@ -274,7 +336,7 @@ impl Plot {
                         self.publish_world();
                         Ok(())
                     }
-                    _ => Err("UNKNOWN"),
+                    _ => Err("unknown"),
                 }
             }
             "stop" => {
@@ -282,32 +344,42 @@ impl Plot {
                 Ok(())
             }
             "radv" | "radvance" => {
-                let ticks: u32 = args.first().and_then(|arg| arg.parse().ok()).ok_or("ARG")?;
+                let ticks: u32 = args.first().and_then(|arg| arg.parse().ok()).ok_or("arg")?;
                 self.advance_ticks(u64::from(ticks));
                 Ok(())
             }
             "memory" => match args.first().copied() {
-                Some("reload") | Some("r") => {
-                    let _ = self.reload_memories();
-                    Ok(())
-                }
-                _ => Err("ARG"),
+                Some("reload") | Some("r") => match self.reload_memories() {
+                    ReloadOutcome::CompiledIoOnly => Err("mode"),
+                    ReloadOutcome::Reloaded { rejected, .. } => {
+                        for message in rejected {
+                            warn!("{}", message);
+                        }
+                        Ok(())
+                    }
+                },
+                _ => Err("arg"),
             },
-            "toggleautorp" => {
-                self.auto_redpiler = !self.auto_redpiler;
-                Ok(())
-            }
             "worldsendrate" | "wsr" => {
-                let hertz: f32 = args.first().and_then(|arg| arg.parse().ok()).ok_or("ARG")?;
+                let hertz: f32 = args.first().and_then(|arg| arg.parse().ok()).ok_or("arg")?;
                 if !hertz.is_finite() || !(0.0..=1000.0).contains(&hertz) {
-                    return Err("ARG");
+                    return Err("arg");
                 }
                 self.world.world_send_rate = WorldSendRate(hertz);
                 self.world.pending_sounds.clear();
                 self.last_world_send_time = Instant::now();
                 Ok(())
             }
-            _ => Err("UNKNOWN"),
+            _ => Err("unknown"),
+        }
+    }
+
+    /// Chat/console text for a [`Plot::start_seq_mode`] failure (BACKLOG.md
+    /// BUG-004).
+    fn seq_error(&self, code: &'static str) -> String {
+        match code {
+            "nocompile" => "/tick seq needs a compiled circuit; compile first.".to_string(),
+            _ => "/tick seq is not available in performance mode.".to_string(),
         }
     }
 
@@ -394,16 +466,25 @@ impl Plot {
                     start_time.elapsed()
                 ));
             }
-            "toggleautorp" => {
-                self.auto_redpiler = !self.auto_redpiler;
-                if self.auto_redpiler {
-                    self.players[player]
-                        .send_system_message("Automatic redpiler compilation has been enabled.");
-                } else {
-                    self.players[player]
-                        .send_system_message("Automatic redpiler compilation has been disabled.");
-                }
-            }
+            "tick" => match args.first().copied() {
+                None => match self.current_tick() {
+                    Some(tick) => {
+                        self.players[player].send_system_message(&format!("Tick: {}", tick));
+                    }
+                    None => self.players[player]
+                        .send_error_message("No circuit is compiled, so there is no tick."),
+                },
+                Some("seq") if args.len() == 1 => match self.start_seq_mode() {
+                    Ok(()) => self.players[player].send_system_message(
+                        "Reservation mode enabled: scripts disconnected, rtps set to 0.",
+                    ),
+                    Err(code) => {
+                        let message = self.seq_error(code);
+                        self.players[player].send_error_message(&message);
+                    }
+                },
+                Some(_) => self.players[player].send_error_message("Usage: /tick [seq]"),
+            },
             "teleport" | "tp" => {
                 if args.len() == 3 {
                     let player_pos = self.players[player].pos;
@@ -591,24 +672,28 @@ impl Plot {
             }
             "memory" => {
                 match args.first().copied() {
-                    Some("reload") => {
-                        let (loaded, active, rejected) = self.reload_memories();
-                        self.players[player].send_system_message(&format!(
-                            "Reloaded {} memory definition(s), {} active.",
-                            loaded, active
-                        ));
-                        // Files that failed to load would otherwise only show
-                        // up in the log (BACKLOG.md BUG-021).
-                        for message in rejected.iter().take(5) {
-                            self.players[player].send_error_message(message);
-                        }
-                        if rejected.len() > 5 {
-                            self.players[player].send_error_message(&format!(
-                                "...and {} more rejected file(s), see the log.",
-                                rejected.len() - 5
+                    Some("reload") => match self.reload_memories() {
+                        ReloadOutcome::CompiledIoOnly => self.players[player].send_error_message(
+                            "/memory reload is not available while a circuit compiled with -i is running.",
+                        ),
+                        ReloadOutcome::Reloaded { loaded, rejected } => {
+                            self.players[player].send_system_message(&format!(
+                                "Reloaded {} memory definition(s).",
+                                loaded
                             ));
+                            // Files that failed to load would otherwise only show
+                            // up in the log (BACKLOG.md BUG-021).
+                            for message in rejected.iter().take(5) {
+                                self.players[player].send_error_message(message);
+                            }
+                            if rejected.len() > 5 {
+                                self.players[player].send_error_message(&format!(
+                                    "...and {} more rejected file(s), see the log.",
+                                    rejected.len() - 5
+                                ));
+                            }
                         }
-                    }
+                    },
                     _ => self
                         .players[player]
                         .send_error_message("Usage: /memory reload"),
@@ -646,7 +731,7 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
                 flags: CommandFlags::ROOT.bits() as i8,
                 children: vec![
                     1, 4, 5, 6, 8, 10, 11, 13, 18, 34, 41, 43, 44, 45, 49, 51, 52, 53, 55, 56,
-                    57,
+                    57, 59,
                 ],
                 redirect_node: None,
                 name: None,
@@ -1178,6 +1263,24 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
                 children: vec![],
                 redirect_node: None,
                 name: Some("reload"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 59: /tick
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![60],
+                redirect_node: None,
+                name: Some("tick"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 60: /tick seq
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("seq"),
                 parser: None,
                 suggestions_type: None,
             },

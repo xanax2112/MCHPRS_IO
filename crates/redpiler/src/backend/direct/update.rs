@@ -87,6 +87,11 @@ pub(super) fn update_node(
             }
         }
         NodeType::Wire => {
+            // Locked wires are driven from outside the graph (analog memory
+            // output points); keep the strength the memory injected.
+            if node.locked {
+                return;
+            }
             let (input_power, _) = get_all_input(node);
             if node.output_power != input_power {
                 node.output_power = input_power;

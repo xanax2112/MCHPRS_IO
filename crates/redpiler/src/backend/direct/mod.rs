@@ -362,6 +362,31 @@ impl JITBackend for DirectBackend {
         }
     }
 
+    fn query_wire_power(&self, pos: BlockPos) -> Option<u8> {
+        let node_id = *self.pos_map.get(&pos)?;
+        let node = &self.nodes[node_id];
+        if matches!(node.ty, NodeType::Wire) {
+            Some(node.output_power)
+        } else {
+            None
+        }
+    }
+
+    fn try_set_wire_power(&mut self, pos: BlockPos, power: u8) -> bool {
+        let Some(&node_id) = self.pos_map.get(&pos) else {
+            return false;
+        };
+        if !matches!(self.nodes[node_id].ty, NodeType::Wire) {
+            return false;
+        }
+        let power = power.min(15);
+        // A wire driven by a memory must keep the injected strength: mark it
+        // locked so `update` does not recompute it from its (absent) inputs.
+        self.nodes[node_id].locked = true;
+        self.set_node(node_id, power > 0, power);
+        true
+    }
+
     fn take_io_events(&mut self) -> Vec<IoEvent> {
         mem::take(&mut self.pending_io_events)
     }

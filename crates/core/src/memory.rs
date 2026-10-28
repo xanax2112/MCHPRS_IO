@@ -5,7 +5,7 @@
 //! same file syntax:
 //!
 //! ```text
-//! v0.4.3-beta hex words addressed
+//! v0.5.2-alpha hex words addressed
 //! origin = 0
 //! clk = 0
 //! address coordinate = [
@@ -19,8 +19,10 @@
 //! 00: 0f 3c 69
 //! ```
 //!
-//! Every list starts with a mandatory `width = N` (BACKLOG.md BUG-023) and its
-//! coordinates expand to exactly that many points. A line is either a single
+//! Every digital list starts with a mandatory `width = N` and its coordinates
+//! expand to exactly that many points. An analog list declares **both**
+//! `rs_width = <points>` and `width = <bits>` (`width == rs_width * 4`), in
+//! either order, before its coordinates. A line is either a single
 //! point (`x, y, z`) or a step (`x, y, z, +2x, 4`); a `matrix:` line expands
 //! along up to three directions at once and pads each row at its front to a
 //! whole number of hex digits (BUG-022).
@@ -32,9 +34,12 @@
 //!
 //! See `BACKLOG.md` BUG-015 (ROM) and BUG-021 (RAM).
 
+use mchprs_blocks::blocks::Block;
 use mchprs_blocks::BlockPos;
 use mchprs_redpiler::backend::IoElement;
 use mchprs_redpiler::Compiler;
+use mchprs_redstone::wire;
+use mchprs_world::World;
 use std::collections::HashMap;
 use std::fs;
 use std::ops::Add;
@@ -65,14 +70,33 @@ pub enum Kind {
     Ram,
 }
 
+/// One bus of the memory. Digital buses carry 1 bit per point; analog buses
+/// use isolated redstone dust and carry 4 bits (strength 0-15) per point.
+#[derive(Clone)]
+pub struct Line {
+    pub points: Vec<BlockPos>,
+    pub analog: bool,
+}
+
+impl Line {
+    /// Number of bits this bus carries.
+    pub fn bits(&self) -> usize {
+        if self.analog {
+            self.points.len() * 4
+        } else {
+            self.points.len()
+        }
+    }
+}
+
 /// The memory's port layout.
 pub enum Ports {
     /// ROM: the server drives `data` from the stored words.
-    Rom { data: Vec<BlockPos> },
+    Rom { data: Line },
     /// RAM: the server samples the read side and drives `read_data`.
     Ram {
-        write_data: Vec<BlockPos>,
-        read_data: Vec<BlockPos>,
+        write_data: Line,
+        read_data: Line,
         write_enable: BlockPos,
         read_enable: BlockPos,
         byte_enable: Vec<BlockPos>,
@@ -91,23 +115,25 @@ pub struct MatrixShape {
 
 impl MatrixShape {
     /// Hex digits one row occupies.
-    fn row_digits(&self) -> usize {
+    pub(crate) fn row_digits(&self) -> usize {
         (self.first + 3) / 4
     }
 
     /// Width of one hex word in bits, per-row padding included.
-    fn padded_bits(&self) -> usize {
+    pub(crate) fn padded_bits(&self) -> usize {
         self.row_digits() * 4 * self.rows
     }
 }
 
 /// One parsed `[ ... ]` list, already expanded into individual points.
-struct PortList {
-    /// Declared `width`.
-    width: usize,
-    points: Vec<BlockPos>,
+pub(crate) struct PortList {
+    /// Declared `width` (digital) or `rs_width` (analog), in points.
+    pub(crate) width: usize,
+    /// Set when the list was declared with an `analog ...` key.
+    pub(crate) analog: bool,
+    pub(crate) points: Vec<BlockPos>,
     /// Set when the list used the `matrix:` form.
-    matrix: Option<MatrixShape>,
+    pub(crate) matrix: Option<MatrixShape>,
     /// Where each point came from, for duplicate reporting.
     provenance: Vec<Provenance>,
 }
@@ -123,6 +149,7 @@ impl PortList {
     fn empty() -> PortList {
         PortList {
             width: 0,
+            analog: false,
             points: Vec::new(),
             matrix: None,
             provenance: Vec::new(),
@@ -136,7 +163,7 @@ pub struct Memory {
     pub name: String,
     pub kind: Kind,
     /// Address bus, most significant bit first.
-    pub address: Vec<BlockPos>,
+    pub address: Line,
     /// Clock element. `None` only for ROMs (a RAM clock is mandatory).
     pub clock: Option<BlockPos>,
     /// Word width in bits.
@@ -200,6 +227,12 @@ impl MemoryState {
         self.dirty
     }
 
+    /// Drops unsaved contents. A memory that failed validation never writes
+    /// back (BACKLOG.md §7.11).
+    pub fn discard(&mut self) {
+        self.dirty = false;
+    }
+
     /// Writes the RAM contents back to its file if anything changed. Returns an
     /// error string on I/O failure (the memory stays dirty).
     pub fn save(&mut self) -> Result<(), String> {
@@ -245,7 +278,7 @@ impl MemoryState {
         // per 8-word block, the block start aligned to 8, always eight words,
         // and every word as wide as the data bus. Blocks without a stored word
         // are skipped entirely; readers treat those addresses as zero.
-        let address_digits = ((self.memory.address.len() + 3) / 4).max(1);
+        let address_digits = ((self.memory.address.bits() + 3) / 4).max(1);
         let zero_word = vec![false; self.memory.bits];
         let mut blocks: Vec<usize> = self
             .memory
@@ -285,7 +318,7 @@ impl MemoryState {
         let Ports::Rom { data } = ports else {
             return;
         };
-        let Some(value) = read_address(redpiler, &address[..]) else {
+        let Some(value) = read_address(redpiler, address) else {
             return;
         };
         let fire = match clock {
@@ -303,19 +336,10 @@ impl MemoryState {
         if !fire {
             return;
         }
-        for (index, pos) in data.iter().enumerate() {
-            let bit = words
-                .get(&value)
-                .and_then(|word| word.get(index))
-                .copied()
-                .unwrap_or(false);
-            // Only touch nodes whose level actually changes, otherwise a wide
-            // data bus re-triggers every consumer on every tick
-            // (BACKLOG.md BUG-026).
-            if redpiler.query_io(*pos).map(|(_, powered, _)| powered) != Some(bit) {
-                let _ = redpiler.try_set_powered(*pos, bit);
-            }
-        }
+        // Only touch nodes whose level actually changes, otherwise a wide
+        // data bus re-triggers every consumer on every tick (BACKLOG.md
+        // BUG-026).
+        write_line(redpiler, data, words.get(&value));
     }
 
     /// RAM: on the rising edge, sample the read side, drive the read data bus
@@ -352,7 +376,7 @@ impl MemoryState {
             return;
         };
 
-        let Some(value) = read_address(redpiler, &address[..]) else {
+        let Some(value) = read_address(redpiler, address) else {
             return;
         };
         let write_enabled = matches!(redpiler.query_io(*write_enable), Some((_, true, _)));
@@ -361,22 +385,13 @@ impl MemoryState {
         // Read priority: the word is sampled before the write of this edge
         // applies.
         if read_enabled {
-            for (index, pos) in read_data.iter().enumerate() {
-                let bit = words
-                    .get(&value)
-                    .and_then(|word| word.get(index))
-                    .copied()
-                    .unwrap_or(false);
-                if redpiler.query_io(*pos).map(|(_, powered, _)| powered) != Some(bit) {
-                    let _ = redpiler.try_set_powered(*pos, bit);
-                }
-            }
+            write_line(redpiler, read_data, words.get(&value));
         }
 
         if !write_enabled {
             return;
         }
-        let Some(new_word) = read_bits(redpiler, &write_data[..]) else {
+        let Some(new_word) = read_line(redpiler, write_data) else {
             return;
         };
         let enables: Vec<bool> = byte_enable
@@ -542,23 +557,35 @@ const OUTPUT_TYPES: &str = "a redstone lamp, trapdoor or note block";
 const INPUT_TYPES: &str = "a lever or a pressure plate";
 
 impl Memory {
-    pub fn validate(&self, redpiler: &Compiler) -> Result<(), Invalid> {
-        if self.address.len() > MAX_ADDRESS_BITS {
+    pub fn validate(&self, redpiler: &Compiler, world: &impl World) -> Result<(), Invalid> {
+        if self.address.bits() > MAX_ADDRESS_BITS {
             return Err(Invalid::AddressTooWide);
         }
-        for pos in &self.address {
-            expect_output(redpiler, *pos, "an address line")?;
+        if self.address.analog {
+            for pos in &self.address.points {
+                expect_wire_dot(world, *pos, "an address line")?;
+            }
+        } else {
+            for pos in &self.address.points {
+                expect_output(redpiler, *pos, "an address line")?;
+            }
         }
         if let Some(clk) = self.clock {
             expect_output(redpiler, clk, "the clock")?;
         }
         match &self.ports {
             Ports::Rom { data } => {
-                for pos in data {
-                    expect_input(redpiler, *pos, "a data line")?;
+                if data.analog {
+                    for pos in &data.points {
+                        expect_wire_dot(world, *pos, "an analog data line")?;
+                    }
+                } else {
+                    for pos in &data.points {
+                        expect_input(redpiler, *pos, "a data line")?;
+                    }
                 }
-                for data_pos in data {
-                    for read_pos in self.address.iter().chain(self.clock.iter()) {
+                for data_pos in &data.points {
+                    for read_pos in self.address.points.iter().chain(self.clock.iter()) {
                         if touches(*data_pos, *read_pos) {
                             return Err(Invalid::Adjacent {
                                 first: *data_pos,
@@ -577,20 +604,30 @@ impl Memory {
             } => {
                 expect_output(redpiler, *write_enable, "the write enable")?;
                 expect_output(redpiler, *read_enable, "the read enable")?;
-                for pos in write_data {
-                    expect_output(redpiler, *pos, "a write data line")?;
+                if write_data.analog {
+                    for pos in &write_data.points {
+                        expect_wire_dot(world, *pos, "an analog write data line")?;
+                    }
+                } else {
+                    for pos in &write_data.points {
+                        expect_output(redpiler, *pos, "a write data line")?;
+                    }
                 }
                 for pos in byte_enable {
                     expect_output(redpiler, *pos, "a byte write enable")?;
                 }
-                for pos in read_data {
-                    expect_input(redpiler, *pos, "a read data line")?;
+                for pos in &read_data.points {
+                    if read_data.analog {
+                        expect_wire_dot(world, *pos, "an analog read data line")?;
+                    } else {
+                        expect_input(redpiler, *pos, "a read data line")?;
+                    }
                     if redpiler.has_inputs(*pos).unwrap_or(false) {
                         return Err(Invalid::DrivenOutput { pos: *pos });
                     }
                 }
-                for write_pos in write_data {
-                    for read_pos in read_data {
+                for write_pos in &write_data.points {
+                    for read_pos in &read_data.points {
                         if write_pos == read_pos {
                             return Err(Invalid::Overlap {
                                 first: *write_pos,
@@ -601,6 +638,7 @@ impl Memory {
                 }
                 let read_side: Vec<BlockPos> = self
                     .address
+                    .points
                     .iter()
                     .copied()
                     .chain(self.clock.iter().copied())
@@ -608,7 +646,7 @@ impl Memory {
                     .chain(std::iter::once(*read_enable))
                     .chain(byte_enable.iter().copied())
                     .collect();
-                for data_pos in read_data {
+                for data_pos in &read_data.points {
                     for other in &read_side {
                         if touches(*data_pos, *other) {
                             return Err(Invalid::Adjacent {
@@ -708,19 +746,91 @@ fn expect_input(redpiler: &Compiler, pos: BlockPos, role: &'static str) -> Resul
         }),
     }
 }
+/// Checks that `pos` holds an isolated redstone dust dot (or the cross shape
+/// screens use), which is what every analog bus point must be.
+fn expect_wire_dot(world: &impl World, pos: BlockPos, role: &'static str) -> Result<(), Invalid> {
+    const WANTED: &str = "an isolated redstone dot";
+    match world.get_block(pos) {
+        Block::RedstoneWire(wire_block) if wire::is_dot(wire_block) || wire::is_cross(wire_block) => {
+            Ok(())
+        }
+        Block::RedstoneWire(_) => Err(Invalid::WrongElement {
+            pos,
+            role,
+            wanted: WANTED,
+            found: "a connected redstone wire",
+        }),
+        _ => Err(Invalid::Missing {
+            pos,
+            role,
+            wanted: WANTED,
+        }),
+    }
+}
+
 fn touches(a: BlockPos, b: BlockPos) -> bool {
     (a.x - b.x).abs() + (a.y - b.y).abs() + (a.z - b.z).abs() == 1
 }
 
 /// Assembles the address bus value. `None` when any element is missing from
 /// the compiled graph.
-fn read_address(redpiler: &Compiler, points: &[BlockPos]) -> Option<usize> {
+fn read_address(redpiler: &Compiler, line: &Line) -> Option<usize> {
     let mut value = 0usize;
-    for pos in points {
+    if line.analog {
+        for bit in read_line(redpiler, line)? {
+            value = (value << 1) | usize::from(bit);
+        }
+        return Some(value);
+    }
+    for pos in &line.points {
         let (_, powered, _) = redpiler.query_io(*pos)?;
         value = (value << 1) | usize::from(powered);
     }
     Some(value)
+}
+
+/// Reads one bus. Analog buses expand each point into its four bits, most
+/// significant bit first.
+fn read_line(redpiler: &Compiler, line: &Line) -> Option<Vec<bool>> {
+    if line.analog {
+        let mut bits = Vec::with_capacity(line.points.len() * 4);
+        for pos in &line.points {
+            let strength = redpiler.query_wire_power(*pos)?;
+            for shift in [3u8, 2, 1, 0] {
+                bits.push((strength >> shift) & 1 == 1);
+            }
+        }
+        return Some(bits);
+    }
+    read_bits(redpiler, &line.points)
+}
+
+/// Drives one bus. `word` is `None` when the stored address is empty (all
+/// bits zero). Only nodes whose value actually changes are touched.
+fn write_line(redpiler: &mut Compiler, line: &Line, word: Option<&Vec<bool>>) {
+    let zero: Vec<bool> = Vec::new();
+    let word = word.unwrap_or(&zero);
+    if line.analog {
+        for (index, pos) in line.points.iter().enumerate() {
+            let mut strength = 0u8;
+            for shift in [3u8, 2, 1, 0] {
+                let bit = word.get(index * 4 + (3 - shift) as usize).copied().unwrap_or(false);
+                if bit {
+                    strength |= 1 << shift;
+                }
+            }
+            if redpiler.query_wire_power(*pos) != Some(strength) {
+                let _ = redpiler.try_set_wire_power(*pos, strength);
+            }
+        }
+        return;
+    }
+    for (index, pos) in line.points.iter().enumerate() {
+        let bit = word.get(index).copied().unwrap_or(false);
+        if redpiler.query_io(*pos).map(|(_, powered, _)| powered) != Some(bit) {
+            let _ = redpiler.try_set_powered(*pos, bit);
+        }
+    }
 }
 
 /// Reads every element of a bus as 0/1.
@@ -832,22 +942,18 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
         return Err("empty file".into());
     }
 
-    let version_token = format!("v{}", env!("CARGO_PKG_VERSION"));
     let header = lines[idx].trim();
-    let mut header_parts = header.split_whitespace();
-    let header_ok = header_parts.next() == Some(version_token.as_str())
-        && header_parts.next() == Some("hex")
-        && header_parts.next() == Some("words")
-        && header_parts.next() == Some("addressed")
-        && header_parts.next().is_none();
-    if !header_ok {
-        return Err(at_line(
-            idx,
-            format!(
-                "first line must be `{} hex words addressed`, found `{}`",
-                version_token, header
-            ),
-        ));
+    match version_stamp(header) {
+        Some(version) if version >= MIN_FORMAT_VERSION => {}
+        _ => {
+            return Err(at_line(
+                idx,
+                format!(
+                    "first line must be `v<version> hex words addressed` with version 0.5.0 or newer, found `{}`",
+                    header
+                ),
+            ));
+        }
     }
     idx += 1;
 
@@ -908,13 +1014,39 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
                 if address.is_some() {
                     return Err(at_line(idx, "`address coordinate` is defined twice"));
                 }
-                address = Some(parse_list(&lines, &mut idx, value, count, "address coordinate")?);
+                address = Some(parse_list(&lines, &mut idx, value, count, "address coordinate", false)?);
+            }
+            "analog address coordinate" => {
+                if address.is_some() {
+                    return Err(at_line(idx, "`address coordinate` is defined twice"));
+                }
+                address = Some(parse_list(
+                    &lines,
+                    &mut idx,
+                    value,
+                    count,
+                    "analog address coordinate",
+                    true,
+                )?);
             }
             "data coordinate" => {
                 if data.is_some() {
                     return Err(at_line(idx, "`data coordinate` is defined twice"));
                 }
-                data = Some(parse_list(&lines, &mut idx, value, count, "data coordinate")?);
+                data = Some(parse_list(&lines, &mut idx, value, count, "data coordinate", false)?);
+            }
+            "analog data coordinate" => {
+                if data.is_some() {
+                    return Err(at_line(idx, "`data coordinate` is defined twice"));
+                }
+                data = Some(parse_list(
+                    &lines,
+                    &mut idx,
+                    value,
+                    count,
+                    "analog data coordinate",
+                    true,
+                )?);
             }
             "write data coordinate" => {
                 if write_data.is_some() {
@@ -926,6 +1058,20 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
                     value,
                     count,
                     "write data coordinate",
+                    false,
+                )?);
+            }
+            "analog write data coordinate" => {
+                if write_data.is_some() {
+                    return Err(at_line(idx, "`write data coordinate` is defined twice"));
+                }
+                write_data = Some(parse_list(
+                    &lines,
+                    &mut idx,
+                    value,
+                    count,
+                    "analog write data coordinate",
+                    true,
                 )?);
             }
             "read data coordinate" => {
@@ -938,6 +1084,20 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
                     value,
                     count,
                     "read data coordinate",
+                    false,
+                )?);
+            }
+            "analog read data coordinate" => {
+                if read_data.is_some() {
+                    return Err(at_line(idx, "`read data coordinate` is defined twice"));
+                }
+                read_data = Some(parse_list(
+                    &lines,
+                    &mut idx,
+                    value,
+                    count,
+                    "analog read data coordinate",
+                    true,
                 )?);
             }
             "write enable" => {
@@ -986,6 +1146,7 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
                     value,
                     count,
                     "byte write enable",
+                    false,
                 )?);
             }
             _ => return Err(at_line(idx, format!("unknown key `{}`", key))),
@@ -1006,11 +1167,15 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
     if address.width == 0 {
         return Err("`address coordinate`: `width` must be greater than 0".into());
     }
-    if address.points.len() > MAX_ADDRESS_BITS {
+    let address_bits = if address.analog {
+        address.width * 4
+    } else {
+        address.width
+    };
+    if address_bits > MAX_ADDRESS_BITS {
         return Err(format!(
             "address bus is {} bits wide, the maximum is {}",
-            address.points.len(),
-            MAX_ADDRESS_BITS
+            address_bits, MAX_ADDRESS_BITS
         ));
     }
     if kind == Kind::Ram && clock.is_none() {
@@ -1051,12 +1216,15 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
             if data.width == 0 {
                 return Err("`data coordinate`: `width` must be greater than 0".into());
             }
-            let bits = data.width;
+            let bits = if data.analog { data.width * 4 } else { data.width };
             (
                 bits,
                 data.matrix,
                 Ports::Rom {
-                    data: offset_all(data.points, origin),
+                    data: Line {
+                        points: offset_all(data.points, origin),
+                        analog: data.analog,
+                    },
                 },
             )
         }
@@ -1077,10 +1245,20 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
             if read_data.width == 0 {
                 return Err("`read data coordinate`: `width` must be greater than 0".into());
             }
-            if write_data.width != read_data.width {
+            let write_bits = if write_data.analog {
+                write_data.width * 4
+            } else {
+                write_data.width
+            };
+            let read_bits = if read_data.analog {
+                read_data.width * 4
+            } else {
+                read_data.width
+            };
+            if write_bits != read_bits {
                 return Err(format!(
-                    "`write data coordinate` declares width {} but `read data coordinate` declares width {}",
-                    write_data.width, read_data.width
+                    "`write data coordinate` carries {} bit(s) but `read data coordinate` carries {}",
+                    write_bits, read_bits
                 ));
             }
             if write_data.matrix != read_data.matrix {
@@ -1089,7 +1267,7 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
                         .into(),
                 );
             }
-            let bits = write_data.width;
+            let bits = write_bits;
             let expected = (bits + 7) / 8;
             if byte_enable.width != 0 && byte_enable.width != expected {
                 return Err(format!(
@@ -1103,8 +1281,14 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
                 bits,
                 write_data.matrix,
                 Ports::Ram {
-                    write_data: offset_all(write_data.points, origin),
-                    read_data: offset_all(read_data.points, origin),
+                    write_data: Line {
+                        points: offset_all(write_data.points, origin),
+                        analog: write_data.analog,
+                    },
+                    read_data: Line {
+                        points: offset_all(read_data.points, origin),
+                        analog: read_data.analog,
+                    },
                     write_enable: write_enable.add(origin),
                     read_enable: read_enable.add(origin),
                     byte_enable: offset_all(byte_enable.points, origin),
@@ -1113,7 +1297,10 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
         }
     };
 
-    let address = offset_all(address.points, origin);
+    let address = Line {
+        points: offset_all(address.points, origin),
+        analog: address.analog,
+    };
     let clock = clock.map(|pos| pos.add(origin));
     let words = parse_words(&lines, data_start, bits, matrix)?;
 
@@ -1134,6 +1321,14 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
 
 fn offset_all(points: Vec<BlockPos>, origin: BlockPos) -> Vec<BlockPos> {
     points.into_iter().map(|pos| pos.add(origin)).collect()
+}
+
+/// Parses an `origin` / `clk` value shared by memory and `io.txt` files.
+pub(crate) fn parse_origin(value: &str) -> Result<BlockPos, String> {
+    match parse_single_or_triple(value)? {
+        Coordinate::Absent => Ok(BlockPos::new(0, 0, 0)),
+        Coordinate::At(pos) => Ok(pos),
+    }
 }
 
 /// The outcome of parsing a `clk` / `origin` value.
@@ -1176,12 +1371,35 @@ fn parse_single_or_triple(value: &str) -> Result<Coordinate, String> {
 /// `width = N` (BUG-023); the remaining entries are coordinates, either one
 /// per line (`x, y, z` or `x, y, z, step, count`) or a single `matrix:` line.
 /// `idx` is advanced to the last line the list consumed.
-fn parse_list(
+/// Oldest file-format version this kernel still reads. Files stamped
+/// `v0.5.0` and newer are accepted; `io.txt` uses the same constant.
+pub(crate) const MIN_FORMAT_VERSION: (u32, u32) = (0, 5);
+
+/// Parses a version stamp line such as `v0.5.2-alpha hex words addressed`.
+///
+/// Returns the `(major, minor)` pair when the line has that exact shape, so
+/// callers can tell "not a header at all" from "a header that is too old".
+pub(crate) fn version_stamp(line: &str) -> Option<(u32, u32)> {
+    let mut parts = line.split_whitespace();
+    let token = parts.next()?;
+    let tail: Vec<&str> = parts.collect();
+    if tail != ["hex", "words", "addressed"] {
+        return None;
+    }
+    let version = token.strip_prefix('v')?;
+    let mut numbers = version.split('.');
+    let major = numbers.next()?.parse::<u32>().ok()?;
+    let minor = numbers.next()?.parse::<u32>().ok()?;
+    Some((major, minor))
+}
+
+pub(crate) fn parse_list(
     lines: &[&str],
     idx: &mut usize,
     value: &str,
     count: usize,
     key: &str,
+    analog: bool,
 ) -> Result<PortList, String> {
     let mut buffer = String::new();
     let mut opened = false;
@@ -1219,14 +1437,103 @@ fn parse_list(
         entries.push((start_index + offset, line));
     }
 
-    let Some(&(width_index, width_text)) = entries.first() else {
+    if entries.is_empty() {
         return Err(at_line(
             start_index,
             format!("`{}`: the list is empty, the first entry must be `width = N`", key),
         ));
+    }
+
+    // Digital lists declare `width` only. Analog lists declare **both**
+    // `rs_width` (points) and `width` (bits, `rs_width * 4`), in either order.
+    let mut declared_width: Option<usize> = None;
+    let mut declared_rs_width: Option<usize> = None;
+    let mut key_index = start_index;
+    let mut consumed = 0usize;
+    while consumed < entries.len() && consumed < 2 {
+        let (index, text) = entries[consumed];
+        let Some((name, value)) = text.split_once('=') else {
+            break;
+        };
+        let name = name.trim();
+        if name != "width" && name != "rs_width" {
+            break;
+        }
+        let parsed = value.trim().parse::<usize>().map_err(|_| {
+            at_line(
+                index,
+                format!(
+                    "`{}`: `{}` must be a whole number, found `{}`",
+                    key, name, text
+                ),
+            )
+        })?;
+        match name {
+            "width" => {
+                if declared_width.is_some() {
+                    return Err(at_line(
+                        index,
+                        format!("`{}`: `width` is defined twice", key),
+                    ));
+                }
+                declared_width = Some(parsed);
+            }
+            _ => {
+                if !analog {
+                    return Err(at_line(
+                        index,
+                        format!("`{}`: `rs_width` is only allowed for analog lists", key),
+                    ));
+                }
+                if declared_rs_width.is_some() {
+                    return Err(at_line(
+                        index,
+                        format!("`{}`: `rs_width` is defined twice", key),
+                    ));
+                }
+                declared_rs_width = Some(parsed);
+            }
+        }
+        if consumed == 0 {
+            key_index = index;
+        }
+        consumed += 1;
+    }
+
+    let Some(declared_width) = declared_width else {
+        return Err(at_line(
+            start_index,
+            format!("`{}`: the list must start with `width = N`", key),
+        ));
     };
-    let width = parse_width(width_text, width_index, key)?;
-    let body = &entries[1..];
+    let width = if analog {
+        let Some(rs_width) = declared_rs_width else {
+            return Err(at_line(
+                key_index,
+                format!(
+                    "`{}`: an analog list needs both `rs_width` and `width`",
+                    key
+                ),
+            ));
+        };
+        if declared_width != rs_width * 4 {
+            return Err(at_line(
+                key_index,
+                format!(
+                    "`{}`: `width = {}` does not match `rs_width = {}` (expected width = {})",
+                    key,
+                    declared_width,
+                    rs_width,
+                    rs_width * 4
+                ),
+            ));
+        }
+        rs_width
+    } else {
+        declared_width
+    };
+    let width_index = key_index;
+    let body = &entries[consumed..];
 
     if width == 0 {
         if !body.is_empty() {
@@ -1239,7 +1546,10 @@ fn parse_list(
                 ),
             ));
         }
-        return Ok(PortList::empty());
+        return Ok(PortList {
+            analog,
+            ..PortList::empty()
+        });
     }
 
     let Some(&(first_index, first_text)) = body.first() else {
@@ -1297,35 +1607,19 @@ fn parse_list(
             ),
         ));
     }
+    // Analog buses carry four bits per point, so a per-row pad is meaningless:
+    // drop the shape and pack them as one flat point sequence (BACKLOG.md
+    // BUG-010).
+    if analog {
+        matrix = None;
+    }
 
     Ok(PortList {
         width,
+        analog,
         points,
         matrix,
         provenance,
-    })
-}
-
-/// Reads the mandatory `width = N` entry.
-fn parse_width(text: &str, index: usize, key: &str) -> Result<usize, String> {
-    let Some((name, value)) = text.split_once('=') else {
-        return Err(at_line(
-            index,
-            format!("`{}`: the first entry must be `width = N`, found `{}`", key, text),
-        ));
-    };
-    if name.trim() != "width" {
-        return Err(at_line(
-            index,
-            format!("`{}`: the first entry must be `width = N`, found `{}`", key, text),
-        ));
-    }
-    let value = value.trim();
-    value.parse::<usize>().map_err(|_| {
-        at_line(
-            index,
-            format!("`{}`: `width` must be a whole number, found `{}`", key, value),
-        )
     })
 }
 
@@ -1613,7 +1907,7 @@ fn parse_words(
 }
 
 /// Decodes one hex word. Shorter input is zero-padded at the front and longer
-/// input keeps its low bits, matching the pre-0.4.2 behaviour (BUG-022 规则 22).
+/// input keeps its low bits, matching the pre-0.4.3 behaviour (BUG-022 规则 22).
 /// A `matrix` word is padded per row first and the padding is then stripped.
 fn parse_word(
     word: &str,
@@ -1653,7 +1947,7 @@ fn parse_word(
 
 /// Right-aligns `raw` into a `width`-bit vector: short input gains leading
 /// zeros, long input loses its leading bits.
-fn right_align(raw: &[bool], width: usize) -> Vec<bool> {
+pub(crate) fn right_align(raw: &[bool], width: usize) -> Vec<bool> {
     let mut out = vec![false; width];
     let take = raw.len().min(width);
     out[width - take..].copy_from_slice(&raw[raw.len() - take..]);
@@ -1690,7 +1984,7 @@ fn is_data_line(line: &str) -> bool {
 
 /// Removes `#`, `//` and `/* */` comments, preserving line structure. Returns
 /// `(line number, message)` on an unterminated block comment.
-fn strip_comments(text: &str) -> Result<String, (usize, String)> {
+pub(crate) fn strip_comments(text: &str) -> Result<String, (usize, String)> {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.char_indices().peekable();
     let mut line = 1usize;

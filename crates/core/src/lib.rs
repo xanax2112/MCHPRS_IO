@@ -3,7 +3,9 @@
 #[macro_use]
 mod utils;
 mod config;
+pub mod console;
 mod interaction;
+mod io;
 mod memory;
 mod permissions;
 mod player;

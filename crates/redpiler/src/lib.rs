@@ -301,6 +301,25 @@ impl Compiler {
         self.backend().try_set_powered(pos, powered)
     }
 
+    /// Returns the strength (0-15) of the redstone dust node at `pos`, or
+    /// `None` when the compiler is inactive or there is no wire node there.
+    pub fn query_wire_power(&self, pos: BlockPos) -> Option<u8> {
+        if !self.is_active {
+            return None;
+        }
+        self.backend.as_ref()?.query_wire_power(pos)
+    }
+
+    /// Sets the strength (0-15) of a redstone dust node at `pos` on behalf of
+    /// a memory or an automation data port. Returns `false` when the compiler
+    /// is inactive or no wire node exists at `pos`.
+    pub fn try_set_wire_power(&mut self, pos: BlockPos, power: u8) -> bool {
+        if !self.is_active {
+            return false;
+        }
+        self.backend().try_set_wire_power(pos, power)
+    }
+
     /// Drains pending automation IO events. Returns an empty vector when the
     /// compiler is inactive.
     pub fn take_io_events(&mut self) -> Vec<IoEvent> {

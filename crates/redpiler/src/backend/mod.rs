@@ -83,6 +83,13 @@ pub trait JITBackend {
     /// i.e. whether any forward link points at it. `None` when there is no
     /// node there. Used to tell a memory's output levers from driven ones.
     fn has_inputs(&self, pos: BlockPos) -> Option<bool>;
+    /// Returns the strength (0-15) of the redstone dust node at `pos`, or
+    /// `None` when there is no wire node there.
+    fn query_wire_power(&self, pos: BlockPos) -> Option<u8>;
+    /// Sets the strength (0-15) of a redstone dust node at `pos` and marks it
+    /// externally driven, so `update` stops recomputing it from its inputs.
+    /// Returns `false` when there is no wire node at `pos`.
+    fn try_set_wire_power(&mut self, pos: BlockPos, power: u8) -> bool;
     /// Drains all pending IO state change events.
     fn take_io_events(&mut self) -> Vec<IoEvent>;
 }

@@ -6,10 +6,13 @@ mod packet_handlers;
 mod scoreboard;
 pub mod worldedit;
 
-use crate::automation::{AutomationRequest, AutomationResponse, DataPort};
-use crate::config::CONFIG;
+use crate::automation::{
+    AutomationRequest, AutomationResponse, RequestKind, decode_hex, encode_hex,
+};
+use crate::config::{CONFIG, IoMode};
 use crate::interaction;
 use crate::interaction::UseOnBlockContext;
+use crate::io::{self, IO_FILE};
 use crate::memory::{self, MemoryState};
 use crate::player::{EntityId, Gamemode, PacketSender, Player, PlayerPos};
 use crate::server::{BroadcastMessage, Message, PrivMessage};
@@ -23,7 +26,6 @@ use mchprs_blocks::{BlockFace, BlockPos};
 use mchprs_network::packets::clientbound::*;
 use mchprs_network::packets::serverbound::SUseItemOn;
 use mchprs_network::PlayerPacketSender;
-use mchprs_redpiler::backend::{IoElement, IoEvent};
 use mchprs_redpiler::{CompileError, Compiler, CompilerOptions, TaskMonitor};
 use mchprs_redstone::comparator::OverrideError;
 use mchprs_save_data::plot_data::{ChunkData, PlotData, Tps, WorldSendRate};
@@ -66,6 +68,10 @@ const ERROR_IO_ONLY: &str = "This plot cannot be interacted with while redpiler 
 
 const MAX_BATCH_SIZE: u32 = 50_000;
 
+/// Maximum number of pending `INPUT` reservations. The queue is global because
+/// reservation mode only ever admits one script (BACKLOG.md §3.3 / BUG-004).
+const MAX_RESERVATIONS: usize = 255;
+
 pub struct Plot {
     pub world: PlotWorld,
     pub players: Vec<Player>,
@@ -99,64 +105,41 @@ pub struct Plot {
     running: bool,
     /// If true, the plot will remain running even if no players are on for a long time.
     always_running: bool,
-    auto_redpiler: bool,
 
     owner: Option<u128>,
     async_rt: Runtime,
     scoreboard: Scoreboard,
 
-    /// `POUT` data ports registered on this plot, keyed by automation
-    /// connection id and then by port name. Input (`PIN`) ports need no
-    /// plot-side state because every `INPUT` request carries the full port.
-    pout_ports: FxHashMap<u64, FxHashMap<String, PlotDataPort>>,
-
-    /// `SUB` subscriptions mirrored into the plot thread, keyed by automation
-    /// connection id and then by position. Drives the per-tick polling in
-    /// `automation_per_tick_push` mode.
-    sub_watches: FxHashMap<u64, FxHashSet<BlockPos>>,
-    /// Previous `(powered, output_power)` of every subscribed position per
-    /// connection, seeded at registration so only changes after it are
-    /// pushed.
-    sub_prev: FxHashMap<(u64, BlockPos), (bool, u8)>,
+    /// Every group declared in `io.txt`, re-validated after each compile.
+    io: io::IoTable,
+    /// Completed tick counter of the running circuit: `0` the instant a compile
+    /// finishes and `+1` per completed tick, wrapping at 32 bits
+    /// (BACKLOG.md §7.2).
+    tick: u32,
+    /// Groups each automation connection is bound to with `POUT`. Any compile
+    /// or reset empties this; scripts have to send `POUT` again
+    /// (BACKLOG.md §7.3).
+    pout_bindings: FxHashMap<u64, FxHashSet<String>>,
+    /// Pending `INPUT` reservations, locked to absolute ticks. At most
+    /// [`MAX_RESERVATIONS`] entries; a later request for the same tick and
+    /// group overwrites the earlier one (BACKLOG.md §7.2).
+    reservations: Vec<Reservation>,
+    /// `/tick seq` is active: the plot is in reservation mode and the single
+    /// exclusive script may reserve ticks (BACKLOG.md BUG-004).
+    seq_mode: bool,
+    /// The connection currently holding the reservation lock, mirrored from the
+    /// automation bridge. Only that connection may use the
+    /// `INPUT <name> <offset> <hex>` form (BACKLOG.md BUG-004).
+    exclusive: Option<u64>,
 }
 
-/// Plot-side state of a registered `POUT` data port: the previous packed bit
-/// vector (for diffing per-element events) and the previous clock element
-/// state (for rising-edge detection).
-struct PlotDataPort {
-    port: DataPort,
-    prev_bits: Vec<bool>,
-    clk_prev: bool,
-}
-
-/// Packs a bit vector (bit 0 = most significant bit) into hex (lower-case
-/// digits). The vector is treated as one unsigned integer, so a width that is
-/// not a multiple of four is zero-padded at the *front* of the whole value
-/// (BACKLOG.md BUG-016). Mirrors the unpacking in [`crate::automation`]'s
-/// `INPUT` parser.
-fn pack_hex(bits: &[bool]) -> String {
-    let mut hex = String::with_capacity((bits.len() + 3) / 4);
-    let mut index = 0;
-    // The leading nibble holds only the leftover bits, so the padding ends up
-    // at the most significant end of the value.
-    let leftover = bits.len() % 4;
-    if leftover != 0 {
-        let mut value = 0u8;
-        for bit in &bits[..leftover] {
-            value = (value << 1) | u8::from(*bit);
-        }
-        hex.push(char::from_digit(u32::from(value), 16).unwrap());
-        index = leftover;
-    }
-    while index < bits.len() {
-        let mut value = 0u8;
-        for bit in &bits[index..index + 4] {
-            value = (value << 1) | u8::from(*bit);
-        }
-        hex.push(char::from_digit(u32::from(value), 16).unwrap());
-        index += 4;
-    }
-    hex
+/// One pending `INPUT`, locked to an absolute tick (BACKLOG.md §7.2).
+#[derive(Clone)]
+struct Reservation {
+    /// Absolute tick counter value the input is applied at.
+    tick: u32,
+    group: String,
+    bits: Vec<bool>,
 }
 
 /// Formats the empty-container compile warning (BACKLOG.md BUG-014): one red
@@ -363,6 +346,17 @@ impl World for PlotWorld {
     }
 }
 
+/// Result of `/memory reload` (BACKLOG.md §4.4 / BUG-030).
+pub(super) enum ReloadOutcome {
+    /// Refused: the running circuit was compiled with `-i` (io only).
+    CompiledIoOnly,
+    /// Files were re-read; no compile was started.
+    Reloaded {
+        loaded: usize,
+        rejected: Vec<String>,
+    },
+}
+
 impl Plot {
     fn tickn(&mut self, ticks: u64) {
         if self.redpiler.is_active() {
@@ -376,36 +370,120 @@ impl Plot {
         }
     }
 
-    /// Advances `ticks` ticks on behalf of `/radvance`.
+    /// Advances `ticks` ticks on behalf of `/radv` (`/radvance`).
     ///
-    /// Mirrors the redpiler branch of [`Plot::update`]: ROM / RAM are driven by
-    /// the server and see **every** tick, while the script-facing `POUT` / `SUB`
-    /// sampling still follows `automation_per_tick_push` (BACKLOG.md BUG-027).
+    /// ROM / RAM see **every** tick, exactly like the automatic loop, and the
+    /// tick counter advances once per completed tick so an `OUTPUT` sampled
+    /// during `/radv 5` carries ticks `n+1 ..= n+5` (BACKLOG.md §7.2).
     fn advance_ticks(&mut self, ticks: u64) {
         if !self.redpiler.is_active() {
             self.tickn(ticks);
             self.publish_world();
             return;
         }
-        let per_tick_push = CONFIG.automation_per_tick_push;
+        let exact = CONFIG.io_mode() == IoMode::Exact;
         for _ in 0..ticks {
-            self.tickn(1);
-            if per_tick_push {
-                self.sample_sub_watches();
-                self.sample_pout_ports();
-            }
-            self.run_memories();
+            self.step_tick(exact);
         }
         self.redpiler.flush(&mut self.world);
-        let events = self.redpiler.take_io_events();
-        if !per_tick_push && !events.is_empty() {
-            let _ = self.message_sender.send(Message::IoEvents(events));
-        }
-        if !per_tick_push {
-            self.sample_pout_ports();
+        // `EVENT` pushes were removed in 0.5.2-alpha; drain the backend's
+        // buffer so it cannot grow without bound.
+        self.redpiler.take_io_events();
+        if !exact {
+            self.sample_io_groups();
         }
         self.world.flush_block_changes();
         self.last_world_send_time = Instant::now();
+    }
+
+    /// Runs exactly one redstone tick and advances the tick counter.
+    ///
+    /// The order is: apply every reservation that belongs to this tick, run the
+    /// tick, bump the counter, then let the memories see the result. In `exact`
+    /// mode the IO groups are sampled right away, so an `OUTPUT` line describes
+    /// the state at the end of the tick it names (BACKLOG.md §7.2 / §7.4).
+    fn step_tick(&mut self, exact: bool) {
+        let next = self.tick.wrapping_add(1);
+        self.apply_reservations(next);
+        self.tickn(1);
+        self.tick = next;
+        self.run_memories();
+        if exact {
+            self.sample_io_groups();
+        }
+    }
+
+    /// Writes every `INPUT` reserved for `tick` into its group.
+    ///
+    /// Reservations that never became due stay in the queue, so a `/radv` that
+    /// stops short of the reserved tick simply leaves them pending
+    /// (BACKLOG.md §7.2).
+    fn apply_reservations(&mut self, tick: u32) {
+        if self.reservations.is_empty() {
+            return;
+        }
+        let mut due: Vec<Reservation> = Vec::new();
+        self.reservations.retain(|reservation| {
+            if reservation.tick == tick {
+                due.push(reservation.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for reservation in due {
+            if let Some(group) = self.io.find_mut(&reservation.group) {
+                group.write(&mut self.redpiler, &reservation.bits);
+            }
+        }
+    }
+
+    /// `true` while the plot is in manual stepping mode (`/rtps 0`).
+    fn rtps_zero(&self) -> bool {
+        matches!(self.tps, Tps::Limited(tps) if tps <= 0.0)
+    }
+
+    /// Samples every group that has a `POUT` binding and pushes the groups that
+    /// fired to the connections bound to them.
+    ///
+    /// A group is polled **once** per tick, so several connections bound to it
+    /// all receive the same value and the change detection is not disturbed by
+    /// one of them being registered later. Ungrouped output groups are never
+    /// polled.
+    fn sample_io_groups(&mut self) {
+        if self.pout_bindings.is_empty() || !self.redpiler.is_active() {
+            return;
+        }
+        let mut bound: Vec<String> = Vec::new();
+        for groups in self.pout_bindings.values() {
+            for name in groups {
+                if !bound.contains(name) {
+                    bound.push(name.clone());
+                }
+            }
+        }
+        let mut fired: Vec<(String, String)> = Vec::new();
+        for name in bound {
+            let Some(group) = self.io.find_mut(&name) else {
+                continue;
+            };
+            if let Some(bits) = group.poll(&self.redpiler) {
+                let hex = encode_hex(&bits, group.matrix);
+                fired.push((name, hex));
+            }
+        }
+        for (name, hex) in fired {
+            for (conn_id, groups) in &self.pout_bindings {
+                if groups.contains(&name) {
+                    let _ = self.message_sender.send(Message::IoDataPortOutput {
+                        conn_id: *conn_id,
+                        name: name.clone(),
+                        tick: self.tick,
+                        hex: hex.clone(),
+                    });
+                }
+            }
+        }
     }
 
     fn tick(&mut self) {
@@ -808,181 +886,423 @@ impl Plot {
     }
 
     /// Handles an automation IO request against the running redpiler circuit.
+    ///
+    /// Every answer that depends on the circuit lives here: the handshake tick
+    /// counter, `POUT` bindings, `INPUT` reservations and `READ`. Errors are a
+    /// single code from BACKLOG.md §7.11.
     fn handle_automation_request(
         &mut self,
         conn_id: u64,
         request: AutomationRequest,
     ) -> AutomationResponse {
-        match request {
-            AutomationRequest::Read { pos } => {
-                if !self.redpiler.is_active() {
-                    AutomationResponse::Inactive(pos)
-                } else {
-                    match self.redpiler.query_io(pos) {
-                        Some((element, powered, output_power)) => {
-                            AutomationResponse::Read(pos, element, powered, output_power)
-                        }
-                        None => AutomationResponse::NoIoElement(pos),
-                    }
-                }
+        // Remember who holds the reservation lock, so the `INPUT <name>
+        // <offset> <hex>` form can be restricted to that connection.
+        if request.exclusive {
+            self.exclusive = Some(conn_id);
+        }
+        match request.kind {
+            RequestKind::Hello => self.handle_hello(),
+            RequestKind::Bind { name } => self.handle_bind(conn_id, &name),
+            RequestKind::Input { name, offset, hex } => {
+                self.handle_input(conn_id, &name, offset, &hex)
             }
-            AutomationRequest::Use { pos } => {
-                if !self.redpiler.is_active() {
-                    AutomationResponse::Inactive(pos)
-                } else if self.redpiler.query_io(pos).is_none() {
-                    AutomationResponse::NoIoElement(pos)
-                } else if self.redpiler.try_use_block(pos) {
-                    AutomationResponse::UseOk(pos)
-                } else {
-                    AutomationResponse::OperationFailed(pos)
-                }
+            RequestKind::ReadBit { name, bit } => self.handle_read_bit(&name, bit),
+            RequestKind::ReadPos { pos } => self.handle_read_pos(pos),
+            RequestKind::TickNow => self.handle_tick_now(),
+            RequestKind::Radv { ticks } => self.handle_radv(ticks),
+        }
+    }
+
+    /// `HELLO MCHPRS_IO 0.5.2-alpha [<tick>]`; the tick field is omitted while
+    /// no circuit is compiled (BACKLOG.md §7.1).
+    fn handle_hello(&self) -> AutomationResponse {
+        AutomationResponse::Hello {
+            tick: self.redpiler.is_active().then_some(self.tick),
+        }
+    }
+
+    /// `POUT <name>`: bind the connection to an output group and answer with its
+    /// current value.
+    ///
+    /// A repeated `POUT` for a group the connection is already bound to is
+    /// idempotent and pushes nothing (BACKLOG.md §7.3).
+    fn handle_bind(&mut self, conn_id: u64, name: &str) -> AutomationResponse {
+        if !self.redpiler.is_active() {
+            return AutomationResponse::Err("nocompile");
+        }
+        let Some(group) = self.io.find(name) else {
+            return AutomationResponse::Err("name");
+        };
+        if group.kind.is_input() {
+            return AutomationResponse::Err("not_output");
+        }
+        if !group.active {
+            return AutomationResponse::Err("disabled");
+        }
+        let bound = self
+            .pout_bindings
+            .get(&conn_id)
+            .is_some_and(|groups| groups.contains(name));
+        if bound {
+            return AutomationResponse::CommandOk;
+        }
+        self.pout_bindings
+            .entry(conn_id)
+            .or_default()
+            .insert(name.to_string());
+
+        // Seed the change detector with the current state, so the first poll
+        // only reports changes that happen after the binding, then send the
+        // current value as the binding confirmation.
+        let bits = {
+            let Some(group) = self.io.find_mut(name) else {
+                return AutomationResponse::Err("name");
+            };
+            group.prime(&self.redpiler);
+            group.read(&self.redpiler).unwrap_or_default()
+        };
+        let hex = encode_hex(&bits, self.io.find(name).and_then(|group| group.matrix));
+        AutomationResponse::Output {
+            name: name.to_string(),
+            tick: self.tick,
+            hex,
+        }
+    }
+
+    /// `INPUT <name> [<offset>] <hex>`: schedule a word for a group.
+    ///
+    /// Without an offset it lands on the next tick. With an offset it is a
+    /// reservation, which needs `exact` mode plus `rtps 0` and the exclusive
+    /// script (BACKLOG.md §7.2 / §7.13).
+    fn handle_input(
+        &mut self,
+        conn_id: u64,
+        name: &str,
+        offset: Option<u16>,
+        hex: &str,
+    ) -> AutomationResponse {
+        if !self.redpiler.is_active() {
+            return AutomationResponse::Err("nocompile");
+        }
+        if offset.is_some() && !self.reservations_allowed(conn_id) {
+            // Reservations only exist in `/tick seq` mode (BACKLOG.md BUG-005).
+            return AutomationResponse::Err("mode");
+        }
+        let Some(group) = self.io.find(name) else {
+            return AutomationResponse::Err("name");
+        };
+        if !group.active {
+            return AutomationResponse::Err("disabled");
+        }
+        if !group.kind.is_input() {
+            // The protocol has no separate code for "this group only reads";
+            // the request cannot be carried out as written.
+            return AutomationResponse::Err("not_output");
+        }
+        let bits = match decode_hex(hex, group.bits(), group.matrix) {
+            Ok(bits) => bits,
+            Err(()) => return AutomationResponse::Err("hex"),
+        };
+
+        let absolute = self.tick.wrapping_add(u32::from(offset.unwrap_or(1)));
+        match self.reserve_input(name, bits, absolute) {
+            Ok(()) => AutomationResponse::Input {
+                name: name.to_string(),
+                tick: absolute,
+            },
+            Err(code) => AutomationResponse::Err(code),
+        }
+    }
+
+    /// `true` when the connection may use the reservation form of `INPUT`:
+    /// only the exclusive script of an active `/tick seq` session may reserve
+    /// (BACKLOG.md BUG-004 / BUG-005).
+    fn reservations_allowed(&self, conn_id: u64) -> bool {
+        self.seq_mode
+            && CONFIG.io_mode() == IoMode::Exact
+            && self.rtps_zero()
+            && self.exclusive == Some(conn_id)
+    }
+
+    /// Adds a reservation, replacing the one for the same tick and group
+    /// (BACKLOG.md §7.2: later requests win).
+    fn reserve_input(
+        &mut self,
+        group: &str,
+        bits: Vec<bool>,
+        tick: u32,
+    ) -> Result<(), &'static str> {
+        if let Some(existing) = self
+            .reservations
+            .iter_mut()
+            .find(|reservation| reservation.tick == tick && reservation.group == group)
+        {
+            existing.bits = bits;
+            return Ok(());
+        }
+        if self.reservations.len() >= MAX_RESERVATIONS {
+            return Err("full");
+        }
+        self.reservations.push(Reservation {
+            tick,
+            group: group.to_string(),
+            bits,
+        });
+        Ok(())
+    }
+
+    /// `READ <name>:<bit>`: bit `0` is the group's last coordinate, for analog
+    /// groups it counts points and answers the strength of that point
+    /// (BACKLOG.md §7.4).
+    fn handle_read_bit(&mut self, name: &str, bit: u32) -> AutomationResponse {
+        if !self.redpiler.is_active() {
+            return AutomationResponse::Err("nocompile");
+        }
+        let Some(group) = self.io.find(name) else {
+            return AutomationResponse::Err("name");
+        };
+        if !group.active {
+            return AutomationResponse::Err("disabled");
+        }
+        let len = group.points.len();
+        let Ok(bit) = usize::try_from(bit) else {
+            return AutomationResponse::Err("range");
+        };
+        if bit >= len {
+            return AutomationResponse::Err("range");
+        }
+        let pos = group.points[len - 1 - bit];
+        let power = if group.kind.is_analog() {
+            match self.redpiler.query_wire_power(pos) {
+                Some(power) => power,
+                None => return AutomationResponse::Err("no_io"),
             }
-            AutomationRequest::Set { pos, powered } => {
-                if !self.redpiler.is_active() {
-                    AutomationResponse::Inactive(pos)
-                } else if self.redpiler.query_io(pos).is_none() {
-                    AutomationResponse::NoIoElement(pos)
-                } else if self.redpiler.try_set_powered(pos, powered) {
-                    AutomationResponse::SetOk(pos, powered)
-                } else {
-                    AutomationResponse::OperationFailed(pos)
-                }
+        } else {
+            match self.redpiler.query_io(pos) {
+                Some((_, powered, _)) => u8::from(powered),
+                None => return AutomationResponse::Err("no_io"),
             }
-            AutomationRequest::Sub { pos } => {
-                if !self.redpiler.is_active() {
-                    AutomationResponse::Inactive(pos)
-                } else {
-                    match self.redpiler.query_io(pos) {
-                        None => AutomationResponse::NoIoElement(pos),
-                        Some((element, powered, output_power)) => match element {
-                            IoElement::Button | IoElement::Lever | IoElement::PressurePlate => {
-                                AutomationResponse::NotOutput(pos)
-                            }
-                            _ => {
-                                // Mirror the subscription into the plot thread
-                                // and seed the previous state so only changes
-                                // after registration are pushed.
-                                self.sub_watches
-                                    .entry(conn_id)
-                                    .or_default()
-                                    .insert(pos);
-                                self.sub_prev
-                                    .insert((conn_id, pos), (powered, output_power));
-                                AutomationResponse::SubOk(pos, element, powered, output_power)
-                            }
-                        },
-                    }
-                }
+        };
+        AutomationResponse::Read {
+            target: format!("{}:{}", name, bit),
+            tick: self.tick,
+            power,
+        }
+    }
+
+    /// `READ <x,y,z>`: read the IO element at an absolute coordinate. Redstone
+    /// dust answers its strength (`0-15`), every other element answers `0/1`
+    /// (BACKLOG.md §7.4 / §7.7).
+    fn handle_read_pos(&mut self, pos: BlockPos) -> AutomationResponse {
+        if !self.redpiler.is_active() {
+            return AutomationResponse::Err("nocompile");
+        }
+        let target = format!("{},{},{}", pos.x, pos.y, pos.z);
+        if let Some((_, powered, _)) = self.redpiler.query_io(pos) {
+            return AutomationResponse::Read {
+                target,
+                tick: self.tick,
+                power: u8::from(powered),
+            };
+        }
+        match self.redpiler.query_wire_power(pos) {
+            Some(power) => AutomationResponse::Read {
+                target,
+                tick: self.tick,
+                power,
+            },
+            None => AutomationResponse::Err("no_io"),
+        }
+    }
+
+    /// `TICK NOW`: the latest completed tick (BACKLOG.md §7.2).
+    fn handle_tick_now(&self) -> AutomationResponse {
+        if !self.redpiler.is_active() {
+            return AutomationResponse::Err("nocompile");
+        }
+        AutomationResponse::Now { tick: self.tick }
+    }
+
+    /// Re-validates every `io.txt` group against the freshly compiled graph and
+    /// reports the ones that were disabled.
+    ///
+    /// A failed group only disables itself (BACKLOG.md §3.7). The report goes to
+    /// the player that started the compile; scripts cannot compile, so there is
+    /// no wire report any more (BACKLOG.md BUG-008).
+    fn validate_io_groups(&mut self, source: Option<usize>) {
+        self.io.validate(&self.redpiler, &self.world);
+        // An io clock may not share its button with a memory clock: both would
+        // pulse the same element (BACKLOG.md §5.4).
+        let memory_clocks: Vec<BlockPos> = self
+            .memories
+            .iter()
+            .filter(|state| state.active)
+            .filter_map(|state| state.memory.clock)
+            .collect();
+        for group in &mut self.io.groups {
+            if let Some(clk) = group.clock
+                && memory_clocks.contains(&clk)
+            {
+                group.active = false;
+                group.reason = Some(format!(
+                    "the clock ({},{},{}) is also a memory clock",
+                    clk.x, clk.y, clk.z
+                ));
             }
-            AutomationRequest::Pin { port } => {
-                if !self.redpiler.is_active() {
-                    AutomationResponse::Inactive(port.anchor())
-                } else {
-                    match self.validate_pin_port(&port) {
-                        Ok(()) => AutomationResponse::PinOk(port),
-                        Err(code) => AutomationResponse::PortError(code),
-                    }
-                }
+        }
+        let failures: Vec<(String, String)> = self
+            .io
+            .groups
+            .iter()
+            .filter(|group| !group.active)
+            .map(|group| {
+                (
+                    group.name.clone(),
+                    group.reason.clone().unwrap_or_default(),
+                )
+            })
+            .collect();
+        for (name, reason) in &failures {
+            warn!("io group `{}` disabled: {}", name, reason);
+        }
+        if failures.is_empty() {
+            return;
+        }
+        // Automatic compiles do not report (BACKLOG.md §3.7); only a player or
+        // the console sees the failures.
+        if let Some(player) = source {
+            for (name, reason) in &failures {
+                self.players[player]
+                    .send_error_message(&format!("io group `{}` disabled: {}", name, reason));
             }
-            AutomationRequest::Pout { port } => {
-                if !self.redpiler.is_active() {
-                    AutomationResponse::Inactive(port.anchor())
-                } else {
-                    match self.validate_pout_port(&port) {
-                        Ok(()) => {
-                            // Seed the previous state so only changes after
-                            // registration are reported.
-                            let mut prev_bits = Vec::with_capacity(port.n_points());
-                            for pos in &port.points {
-                                prev_bits.push(
-                                    self.redpiler
-                                        .query_io(*pos)
-                                        .map_or(false, |(_, powered, _)| powered),
-                                );
-                            }
-                            let clk_prev = if port.en_clk {
-                                self.redpiler
-                                    .query_io(port.clk)
-                                    .map_or(false, |(_, powered, _)| powered)
-                            } else {
-                                false
-                            };
-                            self.pout_ports
-                                .entry(conn_id)
-                                .or_default()
-                                .insert(
-                                    port.name.clone(),
-                                    PlotDataPort {
-                                        port: port.clone(),
-                                        prev_bits,
-                                        clk_prev,
-                                    },
-                                );
-                            AutomationResponse::PoutOk(port)
-                        }
-                        Err(code) => AutomationResponse::PortError(code),
-                    }
-                }
-            }
-            AutomationRequest::Input { port, bits } => {
-                if !self.redpiler.is_active() {
-                    AutomationResponse::Inactive(port.anchor())
-                } else {
-                    let mut ok = true;
-                    for (pos, bit) in port.points.iter().zip(bits.iter()) {
-                        if !self.redpiler.try_set_powered(*pos, *bit) {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if ok && port.en_clk && !self.redpiler.try_use_block(port.clk) {
-                        ok = false;
-                    }
-                    if ok {
-                        AutomationResponse::InputOk(port.name)
+        }
+    }
+
+    /// `RADV <ticks>`: manual stepping started by a script (BACKLOG.md BUG-008).
+    ///
+    /// A script may only step while nothing else advances the circuit; the
+    /// player command `/radv` has no such restriction (BACKLOG.md BUG-006).
+    fn handle_radv(&mut self, ticks: u32) -> AutomationResponse {
+        if !self.redpiler.is_active() {
+            return AutomationResponse::Err("nocompile");
+        }
+        if !self.rtps_zero() {
+            return AutomationResponse::Err("mode");
+        }
+        self.advance_ticks(u64::from(ticks));
+        AutomationResponse::Radv {
+            ticks,
+            tick: self.tick,
+        }
+    }
+
+    /// The tick counter as shown by `/tick`; `None` while nothing is compiled
+    /// (BACKLOG.md BUG-003).
+    pub(super) fn current_tick(&self) -> Option<u32> {
+        self.redpiler.is_active().then_some(self.tick)
+    }
+
+    /// `/tick seq`: kick every script, set rtps to 0 and enter reservation mode
+    /// (BACKLOG.md BUG-004). Running it again re-arms the session: connections
+    /// are dropped again and pending reservations are cleared.
+    ///
+    /// `Err("nocompile")` means nothing is compiled yet, `Err("performance")`
+    /// means `performance = true`; reservation mode does not exist in either
+    /// case.
+    pub(super) fn start_seq_mode(&mut self) -> Result<(), &'static str> {
+        if !self.redpiler.is_active() {
+            return Err("nocompile");
+        }
+        if CONFIG.io_mode() != IoMode::Exact {
+            return Err("performance");
+        }
+        self.seq_mode = true;
+        self.reservations.clear();
+        self.exclusive = None;
+        self.apply_rtps(Tps::Limited(0.0));
+        let _ = self.message_sender.send(Message::SeqModeChanged { on: true });
+        Ok(())
+    }
+
+    /// Applies a new rtps value exactly like the player command does.
+    fn apply_rtps(&mut self, tps: Tps) {
+        self.sleep_time = sleep_time_for_tps(tps);
+        self.timings.set_tps(tps);
+        self.tps = tps;
+        self.reset_timings();
+    }
+
+    /// Player issued `/rtps <n>` (BACKLOG.md BUG-005).
+    ///
+    /// A plain `/rtps 0` only changes the speed: it neither kicks scripts nor
+    /// grants reservations. Automatic speeds leave reservation mode, which is
+    /// the only way to unlock apart from a compile.
+    fn on_player_rtps(&mut self, args: &[&str]) {
+        let Some(arg) = args.first() else {
+            return;
+        };
+        let parsed = arg.parse::<f32>().ok();
+        let automatic =
+            parsed.is_some_and(|value| value > 0.0) || "unlimited".starts_with(*arg);
+        if !automatic {
+            return;
+        }
+        self.seq_mode = false;
+        self.exclusive = None;
+        let _ = self
+            .message_sender
+            .send(Message::SeqModeChanged { on: false });
+    }
+
+    /// `/io list`: a summary of `io.txt` only (BACKLOG.md §7.11). While no
+    /// circuit is compiled only the format errors are known; a compiled plot
+    /// also reports the groups that were disabled by validation.
+    fn io_summary(&self) -> String {
+        let mut message = format!(
+            "io.txt: {} group(s), {} format error(s)",
+            self.io.groups.len(),
+            self.io.errors.len()
+        );
+        if !self.io.errors.is_empty() {
+            let lines: Vec<String> = self
+                .io
+                .errors
+                .iter()
+                .map(|error| {
+                    if error.line == 0 {
+                        "unknown line".to_string()
                     } else {
-                        AutomationResponse::PortError("FAILED")
+                        format!("line {}", error.line)
                     }
-                }
+                })
+                .collect();
+            message.push_str(&format!(" ({})", lines.join(", ")));
+        }
+        if self.redpiler.is_active() {
+            let disabled: Vec<&str> = self
+                .io
+                .groups
+                .iter()
+                .filter(|group| !group.active)
+                .map(|group| group.name.as_str())
+                .collect();
+            message.push_str(&format!(", {} disabled", disabled.len()));
+            if !disabled.is_empty() {
+                message.push_str(&format!(" ({})", disabled.join(", ")));
+            }
+            // Analog points only exist in the graph when the compile was given
+            // `-d` / `-c`; say so whenever the file declares analog groups
+            // (BACKLOG.md §3.9).
+            if self.io.groups.iter().any(|group| group.kind.is_analog()) {
+                message.push_str("; analog groups require -d -c when compiling");
             }
         }
+        message
     }
 
-    /// Validates that every lattice point of a `PIN` port is a lever or a
-    /// pressure plate and that the clock element, if any, is a button.
-    fn validate_pin_port(&mut self, port: &DataPort) -> Result<(), &'static str> {
-        for pos in &port.points {
-            match self.redpiler.query_io(*pos) {
-                Some((IoElement::Lever | IoElement::PressurePlate, _, _)) => {}
-                _ => return Err("TYPE"),
-            }
-        }
-        if port.en_clk {
-            match self.redpiler.query_io(port.clk) {
-                Some((IoElement::Button, _, _)) => {}
-                _ => return Err("CLK"),
-            }
-        }
-        Ok(())
-    }
-
-    /// Validates that every lattice point of a `POUT` port is a lamp, a
-    /// trapdoor or a note block and that the clock element, if any, is an
-    /// output element.
-    fn validate_pout_port(&mut self, port: &DataPort) -> Result<(), &'static str> {
-        for pos in &port.points {
-            match self.redpiler.query_io(*pos) {
-                Some((IoElement::Lamp | IoElement::Trapdoor | IoElement::NoteBlock, _, _)) => {}
-                _ => return Err("TYPE"),
-            }
-        }
-        if port.en_clk {
-            match self.redpiler.query_io(port.clk) {
-                Some((IoElement::Lamp | IoElement::Trapdoor | IoElement::NoteBlock, _, _)) => {}
-                _ => return Err("CLK"),
-            }
-        }
-        Ok(())
+    fn send_io_list(&mut self, player: usize) {
+        let message = self.io_summary();
+        self.players[player].send_system_message(&message);
     }
 
     /// Advances every active memory by one sample. Called right after the
@@ -1004,6 +1324,12 @@ impl Plot {
     /// and before `/memory reload`.
     fn flush_memories(&mut self) {
         for state in &mut self.memories {
+            if !state.active {
+                // A memory that failed validation must not carry its contents
+                // back to disk (BACKLOG.md §7.11: the data is discarded).
+                state.discard();
+                continue;
+            }
             if state.is_dirty() {
                 if let Err(err) = state.save() {
                     warn!("{}", err);
@@ -1018,7 +1344,7 @@ impl Plot {
     fn validate_memories(&mut self, source: Option<usize>) {
         for state in &mut self.memories {
             state.reset_edges();
-            match state.memory.validate(&self.redpiler) {
+            match state.memory.validate(&self.redpiler, &self.world) {
                 Ok(()) => state.active = true,
                 Err(invalid) => {
                     state.active = false;
@@ -1034,26 +1360,40 @@ impl Plot {
 
     /// Re-reads `memory/*.rom.txt` from disk and re-validates every definition.
     /// Returns `(loaded, active)` (BACKLOG.md BUG-015).
-    fn reload_memories(&mut self) -> (usize, usize, Vec<String>) {
-        // Unsaved RAM contents are written first so a reload cannot lose them.
-        self.flush_memories();
+    fn reload_memories(&mut self) -> ReloadOutcome {
+        // `-i` (io only) compiles never re-read memory definitions, and a
+        // reload is refused while such a compile is running (BACKLOG.md
+        // §4.4 / BUG-030).
+        if self
+            .redpiler
+            .current_flags()
+            .map(|flags| flags.io_only)
+            .unwrap_or(false)
+        {
+            return ReloadOutcome::CompiledIoOnly;
+        }
+        if self.redpiler.is_active() {
+            // Compiled: write the RAMs back, leave the compiled state, then
+            // re-read the files. No compile is triggered here.
+            self.flush_memories();
+            self.reset_redpiler();
+            self.publish_world();
+        }
+        // Not compiled: nothing is written, the files are simply re-read.
         let report = memory::load_all(Path::new(memory::MEMORY_DIR));
         self.memories = report.memories;
-        if self.redpiler.is_active() {
-            self.validate_memories(None);
+        ReloadOutcome::Reloaded {
+            loaded: self.memories.len(),
+            rejected: report.rejected,
         }
-        let loaded = self.memories.len();
-        let active = self.memories.iter().filter(|state| state.active).count();
-        (loaded, active, report.rejected)
     }
 
     fn publish_world(&mut self) {
         if self.redpiler.is_active() {
             self.redpiler.flush(&mut self.world);
-            let events = self.redpiler.take_io_events();
-            if !events.is_empty() {
-                let _ = self.message_sender.send(Message::IoEvents(events));
-            }
+            // `EVENT` pushes (and the `SUB` verb behind them) were removed in
+            // 0.5.2-alpha; the queue still has to be drained after every flush.
+            self.redpiler.take_io_events();
         }
         self.world.flush_block_changes();
         self.last_world_send_time = Instant::now();
@@ -1123,6 +1463,15 @@ impl Plot {
                     }
                 }
                 self.validate_memories(source);
+
+                // 0.5.2-alpha: a finished compile starts from tick 0, drops
+                // every binding and every reservation, and re-validates the
+                // `io.txt` groups against the new graph (BACKLOG.md §7.2 /
+                // §7.3).
+                self.clear_io_state();
+                self.validate_io_groups(source);
+
+
             }
             Ok(Err(CompileError::Override(error))) => {
                 self.scoreboard
@@ -1170,119 +1519,25 @@ impl Plot {
         }
     }
 
-    /// Polls every subscribed `SUB` position once per tick and pushes the
-    /// positions whose state changed since the previous poll. Used by the
-    /// correctness-first `automation_per_tick_push` mode; the batch mode
-    /// instead relies on redpiler's flush-time event drain.
-    fn sample_sub_watches(&mut self) {
-        if self.sub_watches.is_empty() || !self.redpiler.is_active() {
-            return;
+    /// Clears the runtime state that belongs to a compiled circuit: the tick
+    /// counter, every `POUT` binding, every reservation and the IO groups'
+    /// change detectors (BACKLOG.md §7.2 / §7.3).
+    fn clear_io_state(&mut self) {
+        self.tick = 0;
+        self.pout_bindings.clear();
+        self.reservations.clear();
+        self.exclusive = None;
+        // A new compile always ends reservation mode (BACKLOG.md BUG-004).
+        if self.seq_mode {
+            self.seq_mode = false;
+            let _ = self
+                .message_sender
+                .send(Message::SeqModeChanged { on: false });
         }
-        let mut events: Vec<IoEvent> = Vec::new();
-        // A position is reported at most once per tick even when several
-        // connections subscribe to it; the server routes a single `EVENT`
-        // line to every watcher of that position.
-        let mut pushed: FxHashSet<BlockPos> = FxHashSet::default();
-        for (conn_id, positions) in &mut self.sub_watches {
-            for pos in positions.iter().copied() {
-                let Some((element, powered, output_power)) = self.redpiler.query_io(pos)
-                else {
-                    // The element is gone (e.g. disassembled mid-session);
-                    // skip it this tick and keep the previous state.
-                    continue;
-                };
-                let (prev_powered, prev_output_power) = self
-                    .sub_prev
-                    .get(&(*conn_id, pos))
-                    .copied()
-                    .unwrap_or((false, 0));
-                let changed =
-                    powered != prev_powered || output_power != prev_output_power;
-                self.sub_prev
-                    .insert((*conn_id, pos), (powered, output_power));
-                if changed && pushed.insert(pos) {
-                    events.push(IoEvent {
-                        pos,
-                        element,
-                        powered,
-                        output_power,
-                    });
-                }
-            }
-        }
-        if !events.is_empty() {
-            let _ = self.message_sender.send(Message::IoEvents(events));
-        }
-    }
-
-    /// Samples every registered `POUT` data port after a tick batch and
-    /// pushes the packed state of ports whose trigger condition fired:
-    /// unclocked ports fire on any bit change, clocked ports fire on the
-    /// rising edge of the clock element and carry the bit state sampled on
-    /// that same edge.
-    fn sample_pout_ports(&mut self) {
-        if self.pout_ports.is_empty() || !self.redpiler.is_active() {
-            return;
-        }
-        let mut outputs: Vec<(u64, String, String)> = Vec::new();
-        for (conn_id, ports) in &mut self.pout_ports {
-            for (name, state) in ports {
-                let port = &state.port;
-                // Sample the full state of every lattice point.
-                let mut now: Vec<IoEvent> = Vec::with_capacity(port.n_points());
-                let mut complete = true;
-                for pos in &port.points {
-                    match self.redpiler.query_io(*pos) {
-                        Some((element, powered, output_power)) => {
-                            now.push(IoEvent {
-                                pos: *pos,
-                                element,
-                                powered,
-                                output_power,
-                            });
-                        }
-                        None => {
-                            complete = false;
-                            break;
-                        }
-                    }
-                }
-                if !complete {
-                    continue;
-                }
-                let clk_now = if port.en_clk {
-                    match self.redpiler.query_io(port.clk) {
-                        Some((_, powered, _)) => powered,
-                        None => continue,
-                    }
-                } else {
-                    false
-                };
-                // Clocked ports fire on the rising edge of the clock
-                // element; unclocked ports fire on any bit change.
-                let fired = if port.en_clk {
-                    let edge = !state.clk_prev && clk_now;
-                    state.clk_prev = clk_now;
-                    edge
-                } else {
-                    now.iter()
-                        .zip(state.prev_bits.iter())
-                        .any(|(event, prev)| event.powered != *prev)
-                };
-                if fired {
-                    let bits: Vec<bool> = now.iter().map(|event| event.powered).collect();
-                    let hex = pack_hex(&bits);
-                    state.prev_bits = bits;
-                    outputs.push((*conn_id, name.clone(), hex));
-                }
-            }
-        }
-        for (conn_id, name, hex) in outputs {
-            let _ = self.message_sender.send(Message::IoDataPortOutput {
-                conn_id,
-                name,
-                hex,
-            });
+        for group in &mut self.io.groups {
+            group.active = false;
+            group.reason = None;
+            group.reset_edges();
         }
     }
 
@@ -1305,12 +1560,9 @@ impl Plot {
             // reseting redpiler could cause a large amount of block updates
             self.reset_timings();
         }
-        // The circuit that owned the registered ports is gone; drop them.
-        // Same for `SUB` subscriptions: re-seeding is impossible here, so
-        // drop them and let clients re-register after the next start.
-        self.pout_ports.clear();
-        self.sub_watches.clear();
-        self.sub_prev.clear();
+        // The circuit that owned the tick counter, the bindings, the
+        // reservations and the group state is gone.
+        self.clear_io_state();
     }
 
     fn destroy_entity(&mut self, entity_id: u32) {
@@ -1415,6 +1667,15 @@ impl Plot {
             for command in commands {
                 let mut args: Vec<&str> = command.split(' ').collect();
                 let command = args.remove(0);
+                // 0.5.2-alpha hooks the command table cannot express:
+                // `/rtps` has to keep the automation bridge's manual-mode lock
+                // in sync, and `/io list` is not part of `handle_command`.
+                if command == "rtps" {
+                    self.on_player_rtps(&args);
+                } else if command == "io" && args.first() == Some(&"list") {
+                    self.send_io_list(player_idx);
+                    continue;
+                }
                 if self.handle_command(player_idx, command, args) {
                     removal_offset += 1;
                 }
@@ -1502,18 +1763,18 @@ impl Plot {
                     let reply = self.handle_automation_request(conn_id, request);
                     let _ = self.message_sender.send(Message::IoResponse(conn_id, reply));
                 }
-                PrivMessage::AutomationCommand { conn_id, line } => {
-                    let reply = self.handle_automation_command(&line);
-                    let _ = self.message_sender.send(Message::IoResponse(conn_id, reply));
+                PrivMessage::ConsoleCommand(line) => {
+                    self.handle_console_command(&line);
                 }
                 PrivMessage::AutomationDisconnect { conn_id } => {
-                    // The owning automation connection is gone; drop its
-                    // data ports so stale state is never sampled or pushed.
-                    self.pout_ports.remove(&conn_id);
-                    if let Some(positions) = self.sub_watches.remove(&conn_id) {
-                        for pos in positions {
-                            self.sub_prev.remove(&(conn_id, pos));
-                        }
+                    // The owning connection is gone; drop its bindings so no
+                    // stale `OUTPUT` is ever pushed to it.
+                    self.pout_bindings.remove(&conn_id);
+                    if self.exclusive == Some(conn_id) {
+                        // The session stays armed in the bridge but nobody may
+                        // reserve until `/tick seq` runs again (BACKLOG.md
+                        // BUG-004).
+                        self.exclusive = None;
                     }
                 }
             }
@@ -1622,43 +1883,25 @@ impl Plot {
             if batch_size != 0 {
                 let mut ticks_completed = batch_size;
                 if self.redpiler.is_active() {
-                    if CONFIG.automation_per_tick_push {
-                        // Correctness-first mode: run one tick at a time and
-                        // sample `SUB` watches and `POUT` ports after every
-                        // tick so no state change is ever merged or dropped.
-                        // The world is still only flushed once per batch
-                        // (per-tick flushing is prohibitively expensive).
-                        for _ in 0..batch_size {
-                            self.tickn(1);
-                            self.sample_sub_watches();
-                            self.sample_pout_ports();
-                            self.run_memories();
-                        }
-                        self.redpiler.flush(&mut self.world);
-                        // Flush-time IO events duplicate the per-tick
-                        // polling stream; drain and discard them.
-                        self.redpiler.take_io_events();
-                    } else {
-                        // ROM / RAM are managed by the server itself and must
-                        // see every tick, otherwise a lagging batch merges
-                        // clock edges and loses RAM writes (BACKLOG.md
-                        // BUG-027).
-                        for _ in 0..batch_size {
-                            self.tickn(1);
-                            self.run_memories();
-                        }
-                        self.redpiler.flush(&mut self.world);
-                        // Drain automation IO events every tick so scripts
-                        // receive state changes promptly even when no player
-                        // interaction happens.
-                        let events = self.redpiler.take_io_events();
-                        if !events.is_empty() {
-                            let _ = self.message_sender.send(Message::IoEvents(events));
-                        }
-                        // Sample registered `POUT` data ports on the same
-                        // tick boundary as the drained events so `output`
-                        // lines carry the state of this tick.
-                        self.sample_pout_ports();
+                    // `exact` samples the IO groups after every single tick, so
+                    // nothing is merged or dropped; `performance` samples once
+                    // at the end of the batch. ROM / RAM always see every tick,
+                    // otherwise a lagging batch merges clock edges and loses
+                    // RAM writes (BACKLOG.md BUG-027 / §7.5).
+                    let exact = CONFIG.io_mode() == IoMode::Exact;
+                    for _ in 0..batch_size {
+                        // The tick counter and the reservations advance tick by
+                        // tick in both modes; only the sampling is batched in
+                        // `performance`.
+                        self.step_tick(exact);
+                    }
+                    self.redpiler.flush(&mut self.world);
+                    // Flush-time IO events (`EVENT`) were removed in
+                    // 0.5.2-alpha; drain them so the backend buffer stays
+                    // empty.
+                    self.redpiler.take_io_events();
+                    if !exact {
+                        self.sample_io_groups();
                     }
                 } else {
                     for i in 0..batch_size {
@@ -1670,13 +1913,6 @@ impl Plot {
                     }
                 }
                 self.last_nspt = Some(self.last_update_time.elapsed() / ticks_completed);
-            }
-
-            if self.auto_redpiler
-                && !self.redpiler.is_active()
-                && (self.tps == Tps::Unlimited || self.timings.is_running_behind())
-            {
-                self.start_redpiler(Default::default(), None);
             }
 
             let now = Instant::now();
@@ -1786,7 +2022,6 @@ impl Plot {
             players: Vec::new(),
             locked_players: HashSet::new(),
             running: true,
-            auto_redpiler: CONFIG.auto_redpiler,
             tps,
             always_running,
             redpiler: Default::default(),
@@ -1801,9 +2036,14 @@ impl Plot {
             owner: database::get_plot_owner(x, z).map(|s| s.parse::<HyphenatedUUID>().unwrap().0),
             async_rt: Plot::create_async_rt(),
             scoreboard: Default::default(),
-            pout_ports: FxHashMap::default(),
-            sub_watches: FxHashMap::default(),
-            sub_prev: FxHashMap::default(),
+            // `io.txt` is parsed once, at plot start; the groups are validated
+            // against the graph after every successful compile.
+            io: io::IoTable::load(Path::new(IO_FILE)),
+            tick: 0,
+            pout_bindings: FxHashMap::default(),
+            reservations: Vec::new(),
+            seq_mode: false,
+            exclusive: None,
             world,
         }
     }

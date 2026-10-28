@@ -6,6 +6,16 @@ use toml_edit::{value, DocumentMut};
 
 pub static CONFIG: LazyLock<ServerConfig> = LazyLock::new(|| ServerConfig::load("Config.toml"));
 
+/// How often the automation bridge samples its data ports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IoMode {
+    /// Sample every tick, so no state change is ever merged or dropped.
+    Exact,
+    /// Sample once per tick batch (faster on accelerated plots, but automation
+    /// reacts later).
+    Performance,
+}
+
 trait ConfigSerializeDefault {
     fn fix_config(self, name: &str, doc: &mut DocumentMut);
 }
@@ -47,6 +57,25 @@ macro_rules! gen_config {
                 let str = fs::read_to_string("Config.toml").unwrap_or_default();
                 let mut doc = str.parse::<DocumentMut>().unwrap();
 
+                // 0.4.x keys are rewritten in place so an old `Config.toml`
+                // keeps working without the user editing anything.
+                if let Some(old) = doc.remove("automation_port") {
+                    if !doc.contains_key("io_port") {
+                        doc["io_port"] = old;
+                    }
+                }
+                for legacy in [
+                    "automation_data_port_events",
+                    "automation_per_tick_push",
+                    "auto_redpiler",
+                    // 0.5.2-alpha: `mode` became the boolean `performance`; the
+                    // old value is ignored and the line is dropped (BACKLOG.md
+                    // BUG-001).
+                    "mode",
+                ] {
+                    doc.remove(legacy);
+                }
+
                 $(
                     <$type as ConfigSerializeDefault>::fix_config($default, stringify!($name), &mut doc);
                 )*
@@ -58,6 +87,16 @@ macro_rules! gen_config {
                 }
 
                 toml::from_str(&patched).unwrap()
+            }
+
+            /// The sampling mode from `Config.toml`: `performance = true`
+            /// samples once per tick batch, `false` (the default) every tick.
+            pub fn io_mode(&self) -> IoMode {
+                if self.performance {
+                    IoMode::Performance
+                } else {
+                    IoMode::Exact
+                }
             }
         }
     };
@@ -72,21 +111,11 @@ gen_config! {
     schemati: bool = false,
     luckperms: Option<PermissionsConfig> = None,
     block_in_hitbox: bool = true,
-    auto_redpiler: bool = false,
     velocity: Option<VelocityConfig> = None,
-    automation_port: i64 = 25585,
-    /// Whether a `POUT` data port additionally pushes per-element `EVENT`
-    /// lines for output points that the same connection has also `SUB`scribed
-    /// to. When enabled, such points receive their `EVENT` twice (once
-    /// through the watch, once through the data port); when disabled
-    /// (default) the data port skips them and their `EVENT` arrives only
-    /// through the watch.
-    automation_data_port_events: bool = false,
-    /// Correctness-first mode: sample every `SUB` watch and every `POUT`
-    /// data port once per tick instead of once per tick batch, so no state
-    /// change is ever merged or dropped. Costs extra CPU on accelerated
-    /// plots; disabled by default.
-    automation_per_tick_push: bool = false
+    /// TCP port of the automation bridge. The listener is bound to 127.0.0.1.
+    io_port: i64 = 25585,
+    /// `false` samples every tick (exact); `true` samples once per tick batch.
+    performance: bool = false
 }
 
 #[derive(Serialize, Deserialize)]

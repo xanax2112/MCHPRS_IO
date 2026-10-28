@@ -22,7 +22,6 @@ use mchprs_network::packets::serverbound::{
 use mchprs_network::packets::{PacketEncoderExt, PlayerProperty, SlotData, COMPRESSION_THRESHOLD};
 use mchprs_blocks::BlockPos;
 use mchprs_network::{NetworkServer, NetworkState};
-use mchprs_redpiler::backend::IoEvent;
 use mchprs_text::TextComponent;
 use mchprs_utils::map;
 use mchprs_world::{MC_VERSION, PROTOCOL_VERSION};
@@ -58,18 +57,22 @@ pub enum Message {
     /// This message is sent to the server thread when a plot thread answers
     /// an automation request. The u64 is the automation connection id.
     IoResponse(u64, AutomationResponse),
-    /// This message is sent to the server thread when a redpiler circuit
-    /// emits IO state change events.
-    IoEvents(Vec<IoEvent>),
-    /// This message is sent to the server thread when a plot samples a
-    /// registered `POUT` data port. The server pushes the packed hex state
-    /// line to the owning automation connection; per-element `EVENT` lines
-    /// are only ever produced by the `SUB` watch, never by a data port.
+    /// This message is sent to the server thread when a plot samples a group
+    /// that an automation connection bound with `POUT`. The server pushes the
+    /// `OUTPUT <name> <tick> <hex>` line to that connection.
     IoDataPortOutput {
         conn_id: u64,
         name: String,
+        tick: u32,
         hex: String,
     },
+    /// The plot entered reservation mode (`/tick seq`) or left it. On entry the
+    /// automation bridge drops every connection and lets the next one become
+    /// the exclusive script; leaving only unlocks (BACKLOG.md BUG-004).
+    SeqModeChanged { on: bool },
+    /// A line typed into the server terminal (BUG-031); it is forwarded to the
+    /// plot thread, which runs it like an operator command.
+    ConsoleCommand(String),
 }
 
 /// `BroadcastMessage` gets broadcasted from the server thread to all the plot threads.
@@ -103,11 +106,10 @@ pub enum PrivMessage {
         conn_id: u64,
         request: AutomationRequest,
     },
-    /// An automation connection sent a command line (`/...`); the plot must
-    /// execute it as an operator and reply.
-    AutomationCommand { conn_id: u64, line: String },
     /// An automation connection closed; the plot must drop its data ports.
     AutomationDisconnect { conn_id: u64 },
+    /// A `/` command typed into the server terminal (BUG-031).
+    ConsoleCommand(String),
 }
 
 /// This is the data that gets sent in the `PlayerJoinedInfo` broadcast message.
@@ -176,6 +178,13 @@ impl MinecraftServer {
         })
         .expect("There was an error setting the ctrlc handler");
 
+        // Terminal console (BUG-031): every line that starts with `/` is
+        // forwarded to the plot thread as an operator command.
+        let console_sender = plot_tx.clone();
+        crate::console::spawn(move |line| {
+            let _ = console_sender.send(Message::ConsoleCommand(line));
+        });
+
         if let Some(permissions_config) = &CONFIG.luckperms {
             permissions::init(permissions_config.clone()).unwrap();
         }
@@ -188,14 +197,14 @@ impl MinecraftServer {
             plot_sender: plot_tx,
             online_players: FxHashMap::default(),
             running_plots: Vec::new(),
-            automation: match AutomationServer::bind(CONFIG.automation_port) {
+            automation: match AutomationServer::bind(CONFIG.io_port) {
                 Ok(server) => Some(server),
                 Err(err) => {
                     warn!(
                         "Failed to bind the automation bridge on 127.0.0.1:{}: {}. \
                          The MCHPRS_IO automation protocol is DISABLED; the game \
                          server keeps running.",
-                        CONFIG.automation_port, err
+                        CONFIG.io_port, err
                     );
                     None
                 }
@@ -307,34 +316,6 @@ impl MinecraftServer {
                     "Cannot place player {} on plot {},{}: that plot is not loaded",
                     player.username, plot_x, plot_z
                 );
-            }
-        }
-    }
-
-    /// Routes a script-issued command to the plot it applies to.
-    ///
-    /// Commands are plot-scoped but the protocol line carries no coordinates,
-    /// so they always target p0,0 — the only plot this server ever has
-    /// (BACKLOG.md BUG-010).
-    fn route_automation_command(&mut self, conn_id: u64, line: String) {
-        const PLOT_X: i32 = 0;
-        const PLOT_Z: i32 = 0;
-
-        let target = self
-            .running_plots
-            .iter()
-            .find(|p| p.plot_x == PLOT_X && p.plot_z == PLOT_Z);
-        match target {
-            Some(plot_list_entry) => {
-                let _ = plot_list_entry
-                    .priv_message_sender
-                    .send(PrivMessage::AutomationCommand { conn_id, line });
-            }
-            None => {
-                if let Some(automation) = &mut self.automation {
-                    automation
-                        .handle_reply(conn_id, AutomationResponse::CommandError("INACTIVE"));
-                }
             }
         }
     }
@@ -573,6 +554,21 @@ impl MinecraftServer {
                     .broadcast(BroadcastMessage::PlayerLeft(uuid));
             }
             Message::PlotUnload(plot_x, plot_z) => self.handle_plot_unload(plot_x, plot_z),
+            Message::ConsoleCommand(line) => {
+                // Single-plot server: console commands always target p0,0.
+                match self
+                    .running_plots
+                    .iter()
+                    .find(|plot| plot.plot_x == 0 && plot.plot_z == 0)
+                {
+                    Some(plot) => {
+                        let _ = plot
+                            .priv_message_sender
+                            .send(PrivMessage::ConsoleCommand(line));
+                    }
+                    None => crate::console::error("No plot is loaded (p0,0)."),
+                }
+            }
             Message::ChatInfo(uuid, username, message) => {
                 info!("<{}> {}", username, message);
                 self.broadcaster.broadcast(BroadcastMessage::Chat(
@@ -637,20 +633,19 @@ impl MinecraftServer {
                     automation.handle_reply(conn_id, response);
                 }
             }
-            Message::IoEvents(events) => {
-                if let Some(automation) = &mut self.automation {
-                    for event in events {
-                        automation.push_event(event);
-                    }
-                }
-            }
             Message::IoDataPortOutput {
                 conn_id,
                 name,
+                tick,
                 hex,
             } => {
                 if let Some(automation) = &mut self.automation {
-                    automation.push_data_port_output(conn_id, &name, &hex);
+                    automation.push_output(conn_id, &name, tick, &hex);
+                }
+            }
+            Message::SeqModeChanged { on } => {
+                if let Some(automation) = &mut self.automation {
+                    automation.set_seq_mode(on);
                 }
             }
         }
@@ -674,9 +669,6 @@ impl MinecraftServer {
                     pos,
                     request,
                 } => self.route_automation_request(conn_id, pos, request),
-                AutomationAction::Command { conn_id, line } => {
-                    self.route_automation_command(conn_id, line)
-                }
                 AutomationAction::Disconnect {
                     conn_id,
                     plot_x,
