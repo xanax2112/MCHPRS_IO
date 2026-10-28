@@ -78,7 +78,7 @@ width = 2
 `memory/*.rom.txt`（只读）与 `*.ram.txt`（可写），Logisim 兼容：
 
 ```text
-v0.5.2-alpha hex words addressed
+v0.5.3-alpha hex words addressed
 origin = 0
 clk = 0
 
@@ -102,7 +102,7 @@ width = 8
 连 `127.0.0.1:25585`，一行一条报文，**动词只接受全大写**，没有 `/` 命令。
 
 ```text
-HELLO MCHPRS_IO 0.5.2-alpha <tick>
+HELLO MCHPRS_IO 0.5.3-alpha <tick>
 INPUT <name> <hex>            → OK INPUT <name> <tick>
 POUT <name>                   → OUTPUT <name> <tick> <hex>
 READ <name>:<bit>             → OK READ <name>:<bit> <tick> <power>
@@ -118,21 +118,28 @@ RADV <x>                      → OK RADV <x> <tick>
 | --- | --- |
 | `/tick` | 当前 tick |
 | `/tick seq` | 预约模式：踢脚本、rtps 0、锁定第一个重连 |
+| `/tick freeze` / `/tick unfreeze` | 冻结（`rtps 0`）、恢复冻结前的 rtps |
+| `/tick step <偶数>` | 手动推进，`step 2` = `/radv 1` |
+| `/tick rate [数值]` | 设置速率，不带参数等于设为 20 |
 | `/rtps [n\|unlimited]` | 推进速度（不带参数显示实测速率） |
 | `/radv <n>` | 手动推进 n 个 tick |
 | `/redpiler compile [参数]` | 编译（`-d` 点、`-c` 十字、`-i` 只刷新 IO） |
 | `/redpiler inspect` / `reset` | 编译统计 / 退出编译状态 |
-| `/io list`、`/memory reload` | `io.txt` 汇总、重读存储器 |
+| `/io list`、`/io reload` | `io.txt` 汇总、重读 `io.txt` |
+| `/memory reload` | 重读存储器文件 |
+| `/coord in\|new\|add\|undo\|redo` | 木斧第二点写进文件坐标 |
+| `//schem load\|save\|list` | 投影文件 |
 | `/version`、`/stop` | 版本信息、优雅关服 |
 
 终端里同样可用；需要玩家目标的命令在终端会被拒绝。
 
 ## 文档
 
-- [docs/file-formats_zh.md](docs/file-formats_zh.md) —— `io.txt` 与存储器文件参考
-- [docs/protocol_zh.md](docs/protocol_zh.md) —— 自动化协议
-- `MANUAL-0.5.2-alpha.md` —— 完整说明书（中文）
-- `BACKLOG.md` —— 项目台账与设计决策
+- [docs/manual_zh.md](docs/manual_zh.md) —— **完整说明书**（[English](docs/manual.md)）
+- [docs/file-formats_zh.md](docs/file-formats_zh.md) —— `io.txt` 与存储器文件参考（[English](docs/file-formats.md)）
+- [docs/protocol_zh.md](docs/protocol_zh.md) —— 自动化协议（[English](docs/protocol.md)）
+- [docs/Redpiler.md](docs/Redpiler.md)、[docs/RIL.md](docs/RIL.md)、[docs/Adding_a_block.md](docs/Adding_a_block.md) —— 编译器内部（英文）
+- [BACKLOG.md](BACKLOG.md) —— 项目台账与设计决策
 
 ## 衍生版声明
 

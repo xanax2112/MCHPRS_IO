@@ -78,7 +78,7 @@ Full syntax, validation rules and examples: **[docs/file-formats.md](docs/file-f
 `memory/*.rom.txt` (read-only) and `*.ram.txt` (writable), Logisim-compatible:
 
 ```text
-v0.5.2-alpha hex words addressed
+v0.5.3-alpha hex words addressed
 origin = 0
 clk = 0
 
@@ -102,7 +102,7 @@ The header must be version 0.5.0 or newer; every port list starts with `width = 
 Connect to `127.0.0.1:25585`. One message per line, **upper-case verbs only**, no `/` commands.
 
 ```text
-HELLO MCHPRS_IO 0.5.2-alpha <tick>
+HELLO MCHPRS_IO 0.5.3-alpha <tick>
 INPUT <name> <hex>            → OK INPUT <name> <tick>
 POUT <name>                   → OUTPUT <name> <tick> <hex>
 READ <name>:<bit>             → OK READ <name>:<bit> <tick> <power>
@@ -118,21 +118,28 @@ Two modes: **normal** (default) and **timing-control** (`/tick seq`), which free
 | --- | --- |
 | `/tick` | current tick |
 | `/tick seq` | reservation mode: kick scripts, rtps 0, lock the first reconnect |
+| `/tick freeze` / `/tick unfreeze` | freeze (`rtps 0`), restore the previous rtps |
+| `/tick step <even>` | manual advance, `step 2` = `/radv 1` |
+| `/tick rate [n]` | set the tick rate, bare form sets 20 |
 | `/rtps [n\|unlimited]` | advance rate (bare form prints measured rates) |
 | `/radv <n>` | advance n ticks manually |
 | `/redpiler compile [flags]` | compile (`-d` dots, `-c` crosses, `-i` io-only) |
 | `/redpiler inspect` / `reset` | stats / leave compiled state |
-| `/io list`, `/memory reload` | `io.txt` summary, re-read memories |
+| `/io list` / `/io reload` | `io.txt` summary, re-read `io.txt` |
+| `/memory reload` | re-read memory files |
+| `/coord in\|new\|add\|undo\|redo` | turn the wand's second point into file coordinates |
+| `//schem load\|save\|list` | schematic files |
 | `/version`, `/stop` | version, graceful shutdown |
 
 The same commands work from the server console; commands needing a player are refused there.
 
 ## Documentation
 
-- [docs/file-formats.md](docs/file-formats.md) — `io.txt` and memory file reference
-- [docs/protocol.md](docs/protocol.md) — automation protocol
-- `MANUAL-0.5.2-alpha.md` — full manual (Chinese)
-- `BACKLOG.md` — project ledger and design decisions
+- [docs/manual.md](docs/manual.md) — **full manual** ([中文](docs/manual_zh.md))
+- [docs/file-formats.md](docs/file-formats.md) — `io.txt` and memory file reference ([中文](docs/file-formats_zh.md))
+- [docs/protocol.md](docs/protocol.md) — automation protocol ([中文](docs/protocol_zh.md))
+- [docs/Redpiler.md](docs/Redpiler.md), [docs/RIL.md](docs/RIL.md), [docs/Adding_a_block.md](docs/Adding_a_block.md) — compiler internals
+- [BACKLOG.md](BACKLOG.md) — project ledger and design decisions
 
 ## Derivative notice
 

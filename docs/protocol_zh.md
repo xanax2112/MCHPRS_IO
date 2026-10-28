@@ -9,8 +9,8 @@
 ## 连接
 
 ```text
-HELLO MCHPRS_IO 0.5.2-alpha 1234      ← 电路已编译，当前 tick 是 1234
-HELLO MCHPRS_IO 0.5.2-alpha           ← 还没编译
+HELLO MCHPRS_IO 0.5.3-alpha 1234      ← 电路已编译，当前 tick 是 1234
+HELLO MCHPRS_IO 0.5.3-alpha           ← 还没编译
 ```
 
 第三个字段没有，说明电路还没编译，先在游戏里执行 `/redpiler compile`。
@@ -81,6 +81,8 @@ OUTPUT    add_out 1002 05    ← 在 tick 1002 末尾采样
 
 `POUT 组名` 订阅一个输出组，服务器立刻回一条 `OUTPUT` 表示当前值，没有单独的“成功”应答。
 
+对已经订阅过的组再发一次 `POUT`，服务器会**再推一条当前值**；订阅关系与下面的推送规则都不变。
+
 之后值变化时服务器会推送 `OUTPUT`。有时钟的组只在按钮上升沿推一次，没有时钟的组任一位变化就推。重新编译会清空所有订阅，需要重新 `POUT`。
 
 ### `READ`
@@ -130,7 +132,7 @@ A=1 B=0 C=1 D=1  →  1011  →  b
 
 ```text
 $ nc 127.0.0.1 25585
-HELLO MCHPRS_IO 0.5.2-alpha 0
+HELLO MCHPRS_IO 0.5.3-alpha 0
 POUT display
 OUTPUT display 0 00
 INPUT switches b

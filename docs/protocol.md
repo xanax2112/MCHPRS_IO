@@ -9,8 +9,8 @@ This document is the short version. File formats are in `file-formats.md`.
 ## Connecting
 
 ```text
-HELLO MCHPRS_IO 0.5.2-alpha 1234      ← circuit compiled, tick is 1234
-HELLO MCHPRS_IO 0.5.2-alpha           ← nothing compiled yet
+HELLO MCHPRS_IO 0.5.3-alpha 1234      ← circuit compiled, tick is 1234
+HELLO MCHPRS_IO 0.5.3-alpha           ← nothing compiled yet
 ```
 
 If the third field is missing, run `/redpiler compile` in game first.
@@ -81,6 +81,8 @@ Writes a whole group at once; `<hex>` is the bits of the group packed into one i
 
 `POUT name` subscribes this connection to an output group, and the server immediately sends its current value as `OUTPUT`. There is no separate "OK" line.
 
+Sending `POUT` again for a group this connection already listens to pushes the current value once more; the subscription itself and the push rules below do not change.
+
 After that the server pushes `OUTPUT` whenever the value changes. Groups with a clock push once per rising edge, groups without a clock push on any bit change. A recompile clears all subscriptions, so send `POUT` again.
 
 ### `READ`
@@ -130,7 +132,7 @@ An error is one line: `ERR <code>`. Codes are lower case and short:
 
 ```text
 $ nc 127.0.0.1 25585
-HELLO MCHPRS_IO 0.5.2-alpha 0
+HELLO MCHPRS_IO 0.5.3-alpha 0
 POUT display
 OUTPUT display 0 00
 INPUT switches b

@@ -208,18 +208,20 @@ The `matrix:` form takes 1–3 `step, count` pairs and expands row-major; the fu
 ### 3.1 Names and header
 
 - `memory/<name>.rom.txt` for ROM, `memory/<name>.ram.txt` for RAM.
-- The first line is a version stamp; any version from **0.5.0 or newer** is accepted:
+- The first line is a version stamp; any version from **0.5.0 or newer** is accepted. A bare version (`v0.5.3-alpha`) is accepted as well, which is what a generated `io.txt` uses:
 
 ```text
-v0.5.2-alpha hex words addressed
+v0.5.3-alpha hex words addressed
 ```
 
 A file whose stamp does not match is rejected at load and only logs the reason.
 
+Files whose name starts with a dot (`memory/.rom.txt`, `memory/.ram.txt`) are the skeleton templates written on the first start; the loader skips them.
+
 ### 3.2 Layout
 
 ```text
-v0.5.2-alpha hex words addressed
+v0.5.3-alpha hex words addressed
 origin = 0
 clk = 0
 
@@ -311,7 +313,7 @@ After a compile-time failure the unsaved RAM contents are discarded; a disabled 
 ROM with a 4-bit address and 8-bit data:
 
 ```text
-v0.5.2-alpha hex words addressed
+v0.5.3-alpha hex words addressed
 origin = 0
 clk = 0
 
@@ -331,7 +333,7 @@ width = 8
 RAM with a clock and enables:
 
 ```text
-v0.5.2-alpha hex words addressed
+v0.5.3-alpha hex words addressed
 origin = 0
 clk = 20, 64, 0
 
@@ -479,5 +481,5 @@ Before starting the server:
 - [ ] coordinate counts equal the declared widths
 - [ ] group names are unique
 - [ ] clocks are buttons and appear once per io group
-- [ ] memory files start with `v0.5.2-alpha hex words addressed`
+- [ ] memory files start with `v0.5.3-alpha hex words addressed`
 - [ ] analog circuits will be compiled with `-d` (and `-c` if crosses are used)

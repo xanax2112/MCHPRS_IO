@@ -208,18 +208,20 @@ matrix: 0, 64, 30, +2x, 3, +3z, 2
 ### 3.1 文件名与首行
 
 - 只读：`memory/<名字>.rom.txt`；可写：`memory/<名字>.ram.txt`。
-- 首行是版本声明，**0.5.0 及以后**的版本都接受：
+- 首行是版本声明，**0.5.0 及以后**的版本都接受；**只写版本号**（`v0.5.3-alpha`，服务器生成的 `io.txt` 就是这种）也可加载：
 
 ```text
-v0.5.2-alpha hex words addressed
+v0.5.3-alpha hex words addressed
 ```
 
 版本不符的文件在加载时被拒绝，只写日志说明原因。
 
+文件名以点号开头的（`memory/.rom.txt`、`memory/.ram.txt`）是首次启动写下的骨架模板，加载器会跳过它们。
+
 ### 3.2 结构
 
 ```text
-v0.5.2-alpha hex words addressed
+v0.5.3-alpha hex words addressed
 origin = 0
 clk = 0
 
@@ -311,7 +313,7 @@ RAM 运行期不写盘，只在下列时机落盘：
 4 位地址、8 位数据的 ROM：
 
 ```text
-v0.5.2-alpha hex words addressed
+v0.5.3-alpha hex words addressed
 origin = 0
 clk = 0
 
@@ -331,7 +333,7 @@ width = 8
 带时钟与使能的 RAM：
 
 ```text
-v0.5.2-alpha hex words addressed
+v0.5.3-alpha hex words addressed
 origin = 0
 clk = 20, 64, 0
 
@@ -476,5 +478,5 @@ A=(0,64,30)、B=(2,64,30)、C=(4,64,30)、D=(0,64,33)、E=(2,64,33)、F=(4,64,33
 - [ ] 坐标数等于声明的位宽
 - [ ] 组名不重复
 - [ ] 时钟是按钮，且每个 io 组只出现一次
-- [ ] memory 文件首行是 `v0.5.2-alpha hex words addressed`
+- [ ] memory 文件首行是 `v0.5.3-alpha hex words addressed`
 - [ ] 模电电路会用 `-d` 编译（用到十字时还要 `-c`）
