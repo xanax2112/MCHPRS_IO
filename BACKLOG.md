@@ -74,6 +74,7 @@
   2. 红石灯的行为**与活板门一致**（亮、灭都在当 tick 生效）。
 - 代码位置（读码事实，未改动）：按钮在 `crates/redpiler/src/backend/direct/mod.rs:224`（`on_use_block`）与 `:328`（`try_use_block`）排 `schedule_tick(node_id, 10, ...)`，由 `tick.rs:60` 释放；红石灯在 `crates/redpiler/src/backend/direct/update.rs:74-80` 排 `schedule_tick(..., 2, ...)`，由 `tick.rs:54` 熄；活板门在 `update.rs` 的 `NodeType::Trapdoor` 分支直接 `set_node`。
 - 已定位的改动点（仅供估算，未改）：`crates/core/src/config.rs` 的 `gen_config!` 块（`performance` 之后）。
+  - **修正（2026-10-29，用户发现）**：`betterio` 之前**只在已编译电路里生效**——标志只存在于 `mchprs_redpiler`，未编译时走 `crates/redstone/src/lib.rs` 的原版式模拟器，按钮固定 10 tick、灯固定 2 tick。现已把标志下移到 `mchprs_redstone`（`set_betterio` / `betterio`），未编译路径的按钮（`lib.rs:442` 附近）与红石灯分支也读该标志；`mchprs_redpiler` 改为转调同一标志，`server.rs` 启动时按 `CONFIG.betterio` 设一次。已编译、未编译两条路径现在一致。
 - 已确认（用户）：生效时机**与其他配置项完全一致**（启动时读 `Config.toml`，改完重启后生效），不额外引入“改完要重新编译电路”的步骤。
 - 已确认（用户）：旧 `Config.toml` 缺 `betterio` 键时，启动时**补写默认值** `betterio = false`。
 - 已确认（用户）：作用范围是**全局**——整个世界只剩一块地皮（p0,0），不存在按组/按地皮区分的需求。

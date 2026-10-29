@@ -255,6 +255,9 @@ width = 8
 | Read enable | `read enable` | — | input |
 | Byte write enable | `byte write enable` | — | input |
 
+- `write enable` / `read enable` are **single coordinates** (`write enable = x, y, z`), they are mandatory and do not accept `0`.
+- `byte write enable` is a **list**; `byte write enable = [ width = 0 ]` means "no byte write enable", so writes are gated by `we` alone. With coordinates its count must equal `ceil(width / 8)`.
+- Byte write enable only takes effect while `write enable = 1`, matching real hardware.
 - Analog names are **space separated, no underscores**.
 - One list per role; digital and analog keys are mutually exclusive for the same role.
 - Digital vs analog is a per-line choice: one memory may mix them.
@@ -352,15 +355,8 @@ width = 8
 2, 64, 4, +2x, 8
 ]
 
-write enable = [
-width = 1
--8, 64, 4
-]
-
-read enable = [
-width = 1
--8, 64, 6
-]
+write enable = -8, 64, 4
+read enable = -8, 64, 6
 
 00: 00
 ```

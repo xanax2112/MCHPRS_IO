@@ -11,6 +11,22 @@ use mchprs_blocks::block_entities::BlockEntity;
 use mchprs_blocks::blocks::{Block, LeverFace, RedstoneWire};
 use mchprs_blocks::{BlockDirection, BlockFace, BlockPos};
 use mchprs_world::{TickPriority, World};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// `betterio` timing mode, shared by the uncompiled redstone simulator and the
+/// compiled backend (BACKLOG.md BUG-021). Set once on startup from
+/// `Config.toml`; read when a button is pressed or a lamp turns off.
+static BETTERIO: AtomicBool = AtomicBool::new(false);
+
+/// Enables or disables the `betterio` timing tweaks everywhere.
+pub fn set_betterio(enabled: bool) {
+    BETTERIO.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether the `betterio` timing tweaks are on.
+pub fn betterio() -> bool {
+    BETTERIO.load(Ordering::Relaxed)
+}
 
 pub fn bool_to_ss(b: bool) -> u8 {
     match b {
@@ -224,7 +240,13 @@ pub fn update(block: Block, world: &mut impl World, pos: BlockPos) {
         }
         Block::RedstoneLamp { lit } => {
             let should_be_lit = redstone_lamp_should_be_lit(world, pos);
-            if lit && !should_be_lit {
+            if betterio() {
+                // betterio makes the lamp behave like a trapdoor: both edges
+                // apply immediately (BACKLOG.md BUG-021).
+                if lit != should_be_lit {
+                    world.set_block(pos, Block::RedstoneLamp { lit: should_be_lit });
+                }
+            } else if lit && !should_be_lit {
                 world.schedule_tick(pos, 2, TickPriority::Normal);
             } else if !lit && should_be_lit {
                 world.set_block(pos, Block::RedstoneLamp { lit: true });
@@ -439,7 +461,14 @@ pub fn on_use(block: Block, world: &mut impl World, pos: BlockPos) -> bool {
                         facing,
                     },
                 );
-                world.schedule_tick(pos, 10, TickPriority::Normal);
+                // betterio releases a pressed button after 2 ticks instead
+                // of 10, for the compiled circuit and the plain simulator
+                // alike (BACKLOG.md BUG-021).
+                world.schedule_tick(
+                    pos,
+                    if betterio() { 2 } else { 10 },
+                    TickPriority::Normal,
+                );
                 update_surrounding_blocks(world, pos);
                 match face {
                     LeverFace::Ceiling => {

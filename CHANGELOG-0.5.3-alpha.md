@@ -134,6 +134,19 @@ betterio = false
 
 ---
 
+## 三·补充、更新说明之后的后续修复
+
+下面几项是在本说明首次写出之后才修掉的，同一个 0.5.3-alpha 版本号内有效（未另打 tag）。
+
+| # | 问题 | 修复 |
+| --- | --- | --- |
+| 1 | `/coord in` 的补全只是静态节点，不会列出任何文件/组名，也无法体现“禁用文件不出现在候选里” | 改成 `minecraft:ask_server` 动态补全（照 `//load` 的现成范式）：`/coord in` 给 `io.txt` + 能解析通过的 `memory/*.rom|ram` 短名；`io.txt` 之后给组名；文件之后给 `type` 短码；`new`/`add` 之后按当前目标给类型。**文件级被禁用的 `io.txt`、加载被拒的 memory 文件不再出现在候选里** |
+| 2 | 编译前不会自动整理世界状态 | `/redpiler compile` 现在默认带上 `--update`：编译完成后对整块地皮逐块 `mchprs_redstone::update`，**静默**、只扫非空 section、玩家与控制台两条入口以及 `-i` 编译都生效 |
+| 3 | 生成的 `.ram.txt` 模板把 `write enable` / `read enable` 写成了列表，真加载会报 `not a number` | 模板改为单坐标 `0, 0, 0`，并把三个使能块移到 `address coordinate` 之前；`ROM` 模板无使能未动 |
+| 4 | `protocol` 文档没说清“只取值不要推送”该怎么做 | 补：想轮询 `POUT` 端口就给输出组绑**永不触发的时钟**，带时钟的组只在上升沿推送，重复 `POUT` 就等于按需读取 |
+| 5 | **`betterio` 在未编译时不生效**：编译前按钮仍是 10 tick、灯仍是 2 tick 熄灭，编译后才变 | 标志下移到 `mchprs_redstone`，未编译模拟器的按钮（10→2 tick）与红石灯（2 tick→即时）也读同一标志；`mchprs_redpiler` 改为转调；启动时按 `CONFIG.betterio` 设一次。**已编译与未编译两条路径现在一致** |
+| 6 | `file-formats` 文档里 `write enable` / `read enable` 的示例仍是列表写法 | 中英两份都改成单坐标，并补上三条规则：`we`/`re` 必写单坐标且不接受 `0`；`bwe = [ width = 0 ]` 表示不使用；`bwe` 只在 `we = 1` 时生效、条数须等于 `ceil(位宽/8)` |
+
 ## 四、已知限制 / 待验证
 
 - **`/coord` 尚未实机验证**：需要玩家在游戏里用木斧取点才能跑通，本轮只做到编译通过 + 启动验证。

@@ -255,6 +255,9 @@ width = 8
 | 读使能 | `read enable` | — | 输入 |
 | 字节写使能 | `byte write enable` | — | 输入 |
 
+- `write enable` / `read enable` 是**单坐标**（`write enable = x, y, z`），**必须写**，不接受 `0`。
+- `byte write enable` 是**列表**；写 `byte write enable = [ width = 0 ]` 表示**不使用字节写使能**（写使能只受 `we` 控制）；带坐标时条数必须等于 `ceil(数据位宽 / 8)`。
+- 字节写使能**只在 `write enable = 1` 时生效**，与现实电路一致。
 - 模电键名**用空格分隔，不带下划线**。
 - 每个角色只能有一个列表；同一角色的数电键与模电键互斥。
 - 数电/模电**按每条线选**，一个 memory 里可以混搭。
@@ -352,15 +355,8 @@ width = 8
 2, 64, 4, +2x, 8
 ]
 
-write enable = [
-width = 1
--8, 64, 4
-]
-
-read enable = [
-width = 1
--8, 64, 6
-]
+write enable = -8, 64, 4
+read enable = -8, 64, 6
 
 00: 00
 ```

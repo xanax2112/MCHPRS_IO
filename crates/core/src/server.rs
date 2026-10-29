@@ -167,6 +167,9 @@ impl MinecraftServer {
         // (BACKLOG.md BUG-011).
         crate::memory::ensure_dir_and_templates();
         crate::io::ensure_file();
+        // The `betterio` flag is read by the uncompiled simulator too, so it has
+        // to be set at startup, not only before a compile (BACKLOG.md BUG-021).
+        mchprs_redstone::set_betterio(CONFIG.betterio);
 
         plot::database::init();
 

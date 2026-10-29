@@ -126,6 +126,7 @@ With `betterio = false` everything behaves exactly like the older releases. With
 Notes:
 
 - It is **completely independent** of `performance`; any combination is allowed.
+- It applies **before compiling too**: buttons and lamps use the same timing whether or not the circuit is compiled.
 - A button can only produce one rising edge per press in any mode; presses during the release window are ignored. `betterio` only shortens that window from 10 to 2 ticks.
 - When a `clk` in `io.txt` drives the clock, that window is the minimum spacing between two clock edges.
 
@@ -274,7 +275,7 @@ In-game commands are typed in chat; console commands are typed on the server's s
 
 | Command | Where | Purpose |
 | --- | --- | --- |
-| `/redpiler compile [flags]` | both | compile the plot (`/rp c`) |
+| `/redpiler compile [flags]` | both | compile the plot (`/rp c`); a silent whole-plot update runs right after the compile (non-empty sections only, `-i` included) |
 | `/redpiler inspect` | player | print debug info |
 | `/redpiler reset` | both | leave the compiled state |
 | `/rtps <n>` | both | set ticks per second; without an argument prints the 10s/1m/5m/15m report |
