@@ -1,0 +1,42 @@
+[workspace]
+members = ["bedrock", "crates/*", "xtask"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+thiserror = "2.0"
+vek = "0.17"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.22"
+byteorder = "1.5.0"
+bytemuck = "1.25.0"
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "sync", "time", "tracing"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_repr = "0.1.20"
+facet = "0.50.0-rc.7"
+facet-json = "0.50.0-rc.7"
+facet-format = "0.50.0-rc.7"
+paste = "1.0"
+tar = "0.4.44"
+tempfile = "3.26.0"
+flate2 = "1.0"
+snap = "1.1"
+criterion = { version = "0.8.2", features = ["html_reports"] }
+seq-macro = "0.3"
+proc-macro2 = "1.0"
+syn = { version = "3.0.3", features = ["derive", "parsing", "printing", "proc-macro"] }
+quote = { version = "1.0" }
+base64 = "0.23.0"
+# TODO: switch this back to crates.io after 4.0.0 release
+nbtx = { git = "https://github.com/bedrock-crustaceans/nbtx" }
+uuid = { version = "1.11.0", features = ["v4", "serde"] }
+p384 = "0.14.0"
+sha2 = "0.11.0"
+rand = "0.10"
+strum = "0.28.0"
+strum_macros = "0.28.0"
+reqwest = "0.13.2"

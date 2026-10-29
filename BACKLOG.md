@@ -4,7 +4,7 @@
 > 旧台账（含 0.1–0.4.3 历史与 0.5.0-alpha 讨论过程）归档在 `~/.ssset/backup/BACKLOG.pre-rewrite-2026-10-28.md`，
 > 更早的档案在 `~/.ssset/backup/BACKLOG.archive-2026-10-27.md`。
 >
-> **最后更新**：2026-10-28
+> **最后更新**：2026-10-29
 
 ---
 
@@ -493,7 +493,7 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
 
 | 编号 | 条目 | 状态 |
 | --- | --- | --- |
-| BUG-032 | 基岩版（Bedrock）客户端接入 | 📋 仅完成可行性调研（2026-10-29），未安装环境、未验证、未改代码 |
+| BUG-032 | 基岩版（Bedrock）客户端接入 | 🚧 spike 三项验收已通过（2026-10-29），转入主仓库接入；见下方「接入进展」 |
 
 **BUG-032 基岩版客户端接入（调研）**
 
@@ -525,6 +525,42 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
   - 复用：`bedrock::network`（RakNet/压缩/AES/登录 helper）、`bedrock_protocol`（只开 `v766`）、`bedrock::auth`（offline 路径）、`bedrock::level::SubChunk`（Limitless v9）。
   - 风险：①`v766` 是差分生成、默认版本是 `v2225`，实际可用性要实测；②Bedrock 客户端对高频方块更新敏感，必须按 `world_send_rate` 节流；③`ResourcePack` 信息包不发会卡在加载界面。
   - 第一步（待用户说"写代码"）：在 `~/dsh/scratch/` 建独立 spike crate，只开 `v766`，验收三件事——**连上、看到一块 16×16 方块、能按一个按钮**；同时验证 1.21.51 客户端能连。跑通再改主仓库。
+
+**BUG-032 接入进展（2026-10-29 夜）——spike 验收全部通过，开始并入主仓库**
+
+- spike 落地位置（**不在本仓库内**）：Windows 侧 `D:\computer\mchprs\bedrock\bedrock\spike`，独立 crate，只依赖 bedrock-rs 的 `bedrock` 门面；上游用 bedrock-rs 的本地副本（打了 5 处补丁，见 `docs/BEDROCK-SPIKE-STATUS.md`）。
+- 三项验收结果（均有人类实机确认 + 服务端日志/字节对拍证据）：
+  - **S1 进世界稳定不掉**：✅ 登录 → 出生 → 区块 → 持续在线无断线；重连正常。
+  - **S2 方块正确渲染可见**：✅ 根因是 `NetworkChunkPublisherUpdate` 的半径单位是**方块**而非区块（`ceil((视距+1)*√2)<<4` = 208），给 4 等于没给可渲染区域。已排除"state id 错 / 子段版本 / 发包时序 / 压缩"。
+  - **S3 交互事件到达服务端**：✅ 客户端点方块 → 服务端收到 `PlayerAuthInput.player_block_actions`，含 `StartDestroyBlock` 与方块坐标 `(0,80,2)`、face=5。
+- 已对齐本服务端的运行形态：**创造模式 + 允许飞行 + 无限资源**（`LevelSettings.game_type=Creative`、`UpdateAbilities.ability_values=0x0FBF`），与"只支持创造/旁观"一致；人类实测无血条、双击起飞、可悬停。
+- 踩死并记录的三条协议坑（`docs/BEDROCK-SPIKE-STATUS.md` §0–§0.4 有完整证据链）：
+  1. Bedrock 1.21 起必须下发 `SetActorData.FLAGS` 的 **`BREATHING`（bit 36 / FLAGS_2 bit 26 是另一组）**，否则客户端画空氧气条且移动变慢。
+  2. bedrock-rs 把 **LONG 型实体元数据按 zigzag** 编码，线上实际是**无符号 varint**（本地补丁 PATCH-005）。
+  3. 子区块用 **v9 + subchunk index**（负段补码 0xFC…0xFF），末尾必须有边界方块计数与方块实体数组。
+- 二进制正确性的固定做法（此后所有编码改动沿用）：**先用 Geyser 自带 Cloudburst v766 codec 生成参考字节，再逐字节对拍**，通过 `--selftest=meta|spawn|abilities` 三个自测入口复现；不靠肉眼和试错。
+- **本仓库改动清单（维护者只看这一段）** —— 用户 2026-10-29 已定：`vendor/bedrock-rs/` 入库、Bedrock 代码放**与 Java 协议同级**（`crates/network/src/bedrock/`）、验收文档搬进 `docs/`。
+  - 新增：`vendor/bedrock-rs/`（上游完整副本 1042 个文件，含如下 5 处本地补丁；`target/`、`.git` 已排除）
+    - PATCH-001 `crates/level/src/greedy.rs`：AVX-2 快路径加 `cfg(target_arch)` 守卫（aarch64 编不过）
+    - PATCH-002 `crates/protocol/src/version/v662/packets/start_game.rs`：`player_property_data` 改手写 newtype（绕开 facet 指针标记 ∧ Android 堆 tagging 冲突）
+    - PATCH-003 同上：该 newtype 的 NBT 编码 = 无长度前缀 + varint 字符串
+    - PATCH-004 `crates/protocol/src/version/v662/enums/player_permission_level.rs`：改 `#[enum_repr(i8)]`（上游 u8 会把 `Member` 写成 2 → 客户端当成 Operator）
+    - PATCH-005 `crates/protocol/src/version/v662/enums/data_item_type.rs`：`Int64` 由 `i64` 改 `u64`（LONG 型元数据是无符号 varint，zigzag 会让标志位整体错位）
+  - 新增：`crates/network/src/bedrock/mod.rs`（模块入口、协议版本常量）
+  - 新增：`crates/network/src/bedrock/protocol.rs`（玩家初始元数据、创造模式能力 + **两条字节级回归测试**）
+  - 修改：`crates/network/src/lib.rs`（仅加一行 `pub mod bedrock;`）
+  - 修改：`crates/network/Cargo.toml`（新增 `bedrock`（path → vendored）与 `tokio` 依赖）
+  - 修改：`Cargo.toml`（根）：workspace 加 `exclude = ["vendor/bedrock-rs"]`——不加会被当成本仓库成员，进而去继承我们的 `workspace.dependencies` 并报 `dependency.uuid was not found`
+  - 修改：`Cargo.lock`（由新增依赖自动生成，非手改）
+  - **注意**：工作区里 `crates/core/src/plot/coord.rs` 的改动**不是本次接入产生的**，是 0.5.4-alpha 之后 `/coord` 步长修复的既有工作成果，勿与 Bedrock 接入混为一谈。
+  - 新增：`docs/bedrock-integration.md`（面向维护者的接入说明：改动清单、补丁表、验证方法、后续接入点）
+  - 新增：`docs/BEDROCK-SPIKE-STATUS.md`（spike 阶段验收记录，含三条协议坑的完整证据链）
+  - 修改：`BACKLOG.md`（本条目）
+  - `crates/core`、`crates/world`、`src/main.rs` **一行未动**（本阶段只落协议层）
+- 验证方式（不需要 Bedrock 客户端）：
+  - `cargo test -p mchprs_network bedrock` → `set_actor_data_matches_geyser_codec`、`update_abilities_matches_geyser_codec` 两条断言，字节与 Cloudburst v766 codec 输出完全一致（2026-10-29 已跑通，2 passed）。
+  - `cargo check -p mchprs_network` 通过（1m10s，首次需联网拉 `nbtx` 等 git 依赖）。
+- 未做（下一步接入点）：①会话层（登录→`StartGame`→区块→交互）代码目前只在仓库外的 spike 里跑通；②把 `crates/world` 的方块数据编码成 `LevelChunk` 下发（注意本服务端 `y ∈ 0..383` 与 Bedrock 主世界 `-64..319` 差 64，需全局 `y -= 64`）；③方块映射表（约 100 多种方块 → Bedrock 运行时 state id）；④`PlayerAuthInput.player_block_actions` 回灌红石事件；⑤创造背包物品表（`CreativeContent` 现为空表，1788 条数据表已生成但未接入）、`SyncEntityProperty`、`PlayerList(ADD)`。
 
 ### 2.12 文档（J）
 

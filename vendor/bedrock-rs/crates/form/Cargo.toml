@@ -1,0 +1,11 @@
+[package]
+name = "bedrock_form"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+facet.workspace = true
+facet-json.workspace = true
+facet-format.workspace = true

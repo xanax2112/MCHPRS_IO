@@ -1,4 +1,5 @@
 mod nbt_util;
+pub mod bedrock;
 pub mod packets;
 
 use packets::serverbound::ServerBoundPacket;

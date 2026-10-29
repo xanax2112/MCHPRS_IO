@@ -22,3 +22,13 @@ serde = { workspace = true }
 byteorder = { workspace = true }
 tracing = { workspace = true }
 bitvec = { workspace = true }
+
+# 基岩版（Bedrock）协议栈，见 BACKLOG.md BUG-032。
+# 上游 bedrock-rs 以 vendored 副本引入（vendor/bedrock-rs），因为我们对它有 5 处本地补丁，
+# 细节见 docs/BEDROCK-SPIKE-STATUS.md 与 docs/bedrock-integration.md。
+bedrock = { path = "../../vendor/bedrock-rs/bedrock", default-features = false, features = [
+    "network-tokio",
+    "protocol-unknown",
+    "protocol-v766",
+] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
