@@ -48,7 +48,7 @@ use std::net::{TcpListener, TcpStream};
 use tracing::{debug, info, warn};
 
 /// The protocol version announced in `HELLO`.
-pub const PROTOCOL_VERSION: &str = "0.5.3-alpha";
+pub const PROTOCOL_VERSION: &str = "0.5.4-alpha";
 
 /// Maximum length of a single request or response line (BACKLOG.md §7.11).
 const MAX_LINE_LEN: usize = 65_536;
@@ -672,6 +672,11 @@ fn parse_request(line: &str, exclusive: bool) -> Parsed {
 /// the front of the whole value (BACKLOG.md §7.6). A `matrix` group pads every
 /// row to a whole number of hex digits, exactly like the memory files do.
 pub fn encode_hex(bits: &[bool], matrix: Option<MatrixShape>) -> String {
+    // A zero-width port always reports `0`; an empty string would produce
+    // `OUTPUT <name> <tick> `, which no script can parse (BACKLOG.md BUG-008).
+    if matrix.is_none() && bits.is_empty() {
+        return "0".to_string();
+    }
     let padded = match matrix {
         Some(shape) => {
             let pad = (4 - shape.first % 4) % 4;
@@ -718,6 +723,12 @@ pub fn encode_hex(bits: &[bool], matrix: Option<MatrixShape>) -> String {
 /// per-row padded width for a `matrix` list, and every digit must be
 /// hexadecimal. `bits` is the group width and is ignored for `matrix` groups.
 pub fn decode_hex(hex: &str, bits: usize, matrix: Option<MatrixShape>) -> Result<Vec<bool>, ()> {
+    // A zero-width port carries no data at all: its word is the single digit
+    // `0`, so the line protocol always has a third argument (BACKLOG.md
+    // BUG-008).
+    if matrix.is_none() && bits == 0 {
+        return if hex == "0" { Ok(Vec::new()) } else { Err(()) };
+    }
     let expected_digits = match matrix {
         Some(shape) => shape.row_digits() * shape.rows,
         None => bits.div_ceil(4),

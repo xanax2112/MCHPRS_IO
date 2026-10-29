@@ -115,7 +115,7 @@ An optional first line `v<version> hex words addressed` is accepted when the ver
 | Key | Required in | Meaning |
 | --- | --- | --- |
 | `origin` | every block | offset added to all coordinates of the block |
-| `clk` | every block | clock element, **must be a button**; `0` means no clock |
+| `clk` | every block | clock element, **must be a button**; `0` means no clock. A `width = 0` group needs a real coordinate (see 2.5) |
 | `width` | every block | digital: number of points; analog: total bits |
 | `rs_width` | analog blocks only | number of analog points |
 
@@ -139,6 +139,7 @@ Analog group: **both** `rs_width` and `width` are required, in either order, bef
 | Wrong element type (input needs lever/plate, output needs lamp/trapdoor/note block, clock needs button) | after compile | only that block disabled |
 | `clk` equals another io group's `clk` | load | later block disabled |
 | `clk` equals a memory clock | after compile | io block disabled, memory unaffected |
+| `width = 0` without a `clk` | post-compile | that group is disabled (no data bits and no clock, nothing to do) |
 
 Line numbers in messages always refer to the whole file.
 
@@ -151,6 +152,14 @@ Line numbers in messages always refer to the whole file.
 | Output group without a clock | `OUTPUT` pushed whenever any bit changes |
 | Output group with a clock | `OUTPUT` pushed once on the rising edge only |
 | Recompile | every `POUT` binding and every reservation is cleared |
+
+**`width = 0` ports** (no data bits, only the clock matters; `clk` must be a real coordinate, otherwise the group is disabled as above):
+
+| Case | Behaviour |
+| --- | --- |
+| `INPUT <name> 0` | `<hex>` is always `0` and means "press the button once": one `clk` pulse, no data bits written |
+| `OUTPUT` / `POUT` | `<hex>` is always `0`, pushed on every rising edge of `clk` (the binding confirmation frame is `0` as well) |
+| no `clk` | the whole group is disabled after compilation |
 
 Analog points exist in the compiled graph only when the compiler was told to keep them: dots need `-d` (`--wire-dot-out`), crosses need `-c` (`--wire-cross-out`). Without the flag the point is reported as a missing element and the group is disabled.
 
@@ -239,11 +248,49 @@ width = 8
 ```
 
 - `origin` and `clk` are top-level keys of the file; `origin` is added to every port coordinate, including `clk`.
-- `clk = 0` means no clock. **RAM requires a real block for `clk`**; ROM may run clockless (it then follows the address).
+- The full meaning of `clk` (the three spellings, the ROM/RAM difference, what a rising edge does, which block types are allowed) is in **3.3 The `clk` key** below.
 - Every port list starts with `width = N` and expands to exactly N points.
 - The list of key lines ends where the data section begins (first line that looks like `addr:` or hex words).
 
-### 3.3 Port keys
+### 3.3 The `clk` key
+
+`clk` is a **file-level key** holding one coordinate; `origin` is added to it. It names the element that clocks this memory.
+
+| Spelling | Meaning |
+| --- | --- |
+| `clk = x, y, z` | real clock: the server reads that block's **level** and acts only on a **rising edge** (low on the previous tick, high on this one) |
+| `clk = 0`, `clk = 0, 0, 0` | no clock |
+| key omitted | same as no clock |
+
+**ROM: the clock is optional**
+
+- With a clock: the word for the current address is driven onto `data` only on a rising edge; address changes between edges do nothing.
+- Without a clock: the ROM follows the address instead — whenever the sampled address differs from the previous one, the new word is written.
+- In both cases only bits whose level actually changes are touched, so a wide data bus does not retrigger its consumers every tick.
+
+**RAM: the clock is mandatory**
+
+- `clk = 0` is rejected (`a RAM requires a clock element: write clk = x, y, z`) and the whole file is not loaded.
+
+**What one rising edge does (RAM)**, in this order:
+
+1. assemble the current `address`;
+2. if `read enable` is high, drive the **old** word onto `read data` (reads win: the value read on an edge is always the one from before that edge's write);
+3. if `write enable` is high, take the new word from `write data`, merge it byte-wise according to `byte write enable` and store it;
+4. no rising edge: neither read nor write happens.
+
+**The clock element must be an output-type block**: redstone lamp, iron trapdoor or note block, because the server *reads* its level.
+This is the opposite of `io.txt`, where `clk` must be a **button**, because there the server *presses* it.
+A wrong element type, or a clock outside the compiled circuit, disables the whole memory at post-compile validation.
+
+**Other clock rules**
+
+- The clock may not sit on a data point, nor be orthogonally adjacent to one (a signal written to the data bus would drive the line it is supposed to read).
+- Two memories may not share one clock block: every memory that shares it is disabled and the log says why.
+- When an `io.txt` group shares the clock with a memory, **only the io group is disabled**; the memory keeps working.
+- Edges are sampled **per tick**: `run_memories()` runs on every tick, so `performance` mode does not merge edges (unlike io group sampling).
+
+### 3.4 Port keys
 
 | Role | Digital key | Analog key | Direction |
 | --- | --- | --- | --- |
@@ -264,7 +311,7 @@ width = 8
 - Analog lists need both `rs_width` (points) and `width` (bits = points × 4), like `io.txt`.
 - Address width is at most 63 bits (`address coordinate` width × 4 for analog).
 
-### 3.4 Data section
+### 3.5 Data section
 
 ```
 00: 0f 3c 69 00 00 00 00 00
@@ -278,7 +325,7 @@ width = 8
 - For a `matrix` port each word is padded per row before packing.
 - Addresses without data read as 0.
 
-### 3.5 RAM write-back
+### 3.6 RAM write-back
 
 RAM never writes during operation. It is flushed on:
 
@@ -297,7 +344,7 @@ Written format (Logisim compatible):
 - the header line is rewritten to the running kernel version,
 - the file is replaced atomically (temp file + rename).
 
-### 3.6 Validation
+### 3.7 Validation
 
 | Check | When | Result |
 | --- | --- | --- |
@@ -311,7 +358,7 @@ That adjacency rule exists because a signal written to the data bus would direct
 
 After a compile-time failure the unsaved RAM contents are discarded; a disabled memory never writes back.
 
-### 3.7 Examples
+### 3.8 Examples
 
 ROM with a 4-bit address and 8-bit data:
 

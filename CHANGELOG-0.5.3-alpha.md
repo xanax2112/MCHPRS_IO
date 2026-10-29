@@ -159,7 +159,6 @@ betterio = false
 
 ## 五、相关文档
 
-- 完整说明书：[docs/manual_zh.md](docs/manual_zh.md)（[English](docs/manual.md)）
 - 协议：[docs/protocol_zh.md](docs/protocol_zh.md)（[English](docs/protocol.md)）
 - 文件格式：[docs/file-formats_zh.md](docs/file-formats_zh.md)（[English](docs/file-formats.md)）
 - 台账与设计决策：[BACKLOG.md](BACKLOG.md)

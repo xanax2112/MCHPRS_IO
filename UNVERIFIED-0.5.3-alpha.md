@@ -46,7 +46,7 @@
 
 | 文档 | 内容 | 状态 |
 | --- | --- | --- |
-| `docs/manual_zh.md` / `manual.md` | 完整手册（含 `/coord`、`betterio`、命令表、排错） | 已写入并复制到共享存储，**未逐条校对** |
+| `docs/manual_zh.md` / `manual.md` | 完整手册 | 2026-10-29 用户要求**删除**（内容与 `file-formats*` / `protocol*` / `README*` 重复） |
 | `CHANGELOG-0.5.3-alpha.md` | 更新说明 + 后续修复 6 项 | 已写入，未校对 |
 | `docs/protocol*.md` | tick 语义（差值 +1）、重复 `POUT`、轮询需绑永不触发的时钟 | 已写入，未校对 |
 | `docs/file-formats*.md` | `we`/`re` 单坐标、`bwe` 宽松、`bwe` 仅 `we=1` 生效 | 已写入，未校对 |

@@ -106,6 +106,8 @@ A=1 B=0 C=1 D=1  →  1011  →  b
 
 Analog groups use one hex digit per point, each 0–15.
 
+A `width = 0` port has no data bits, so its `<hex>` is always the single digit `0`: `INPUT` with `0` means "press the button once" (one `clk` pulse), and `OUTPUT` reports `0` on every rising edge of `clk`. A `width = 0` group without a `clk` is disabled after compilation.
+
 ## Errors
 
 An error is one line: `ERR <code>`. Codes are lower case and short:

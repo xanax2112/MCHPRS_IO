@@ -135,7 +135,6 @@ The same commands work from the server console; commands needing a player are re
 
 ## Documentation
 
-- [docs/manual.md](docs/manual.md) — **full manual** ([中文](docs/manual_zh.md))
 - [docs/file-formats.md](docs/file-formats.md) — `io.txt` and memory file reference ([中文](docs/file-formats_zh.md))
 - [docs/protocol.md](docs/protocol.md) — automation protocol ([中文](docs/protocol_zh.md))
 - [docs/Redpiler.md](docs/Redpiler.md), [docs/RIL.md](docs/RIL.md), [docs/Adding_a_block.md](docs/Adding_a_block.md) — compiler internals

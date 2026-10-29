@@ -358,13 +358,22 @@ fn check_group(group: &IoGroup, redpiler: &Compiler, world: &impl World) -> Resu
             }
         }
     }
+    // A port with no coordinates has nothing to drive or sample; it is only
+    // meaningful as a clock event, where `INPUT <name> 0` presses the button
+    // once and `OUTPUT` reports `0` on every rising edge (BACKLOG.md BUG-008).
+    if group.bits() == 0 && group.clock.is_none() {
+        return Err(
+            "`width = 0` needs a clock (`clk = x, y, z`), otherwise the group has nothing to do"
+                .to_string(),
+        );
+    }
     Ok(())
 }
 
 /// `io.txt` skeleton written when the file is missing. Only the version line
 /// plus an empty input and output group (BACKLOG.md BUG-011).
 const IO_TEMPLATE: &str = "\
-v0.5.3-alpha
+v0.5.4-alpha
 input none_in = [
 origin = 0
 clk = 0

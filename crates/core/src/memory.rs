@@ -49,7 +49,7 @@ use tracing::{info, warn};
 /// ROM/RAM templates written on startup. They are dot-prefixed so the loader
 /// skips them; they only document the format (BACKLOG.md BUG-011).
 const ROM_TEMPLATE: &str = "\
-v0.5.3-alpha hex words addressed
+v0.5.4-alpha hex words addressed
 origin = 0
 clk = 0
 address coordinate = [
@@ -61,7 +61,7 @@ width = 0
 ";
 
 const RAM_TEMPLATE: &str = "\
-v0.5.3-alpha hex words addressed
+v0.5.4-alpha hex words addressed
 origin = 0
 clk = 0, 0, 0
 write enable = 0, 0, 0
@@ -1439,7 +1439,7 @@ pub(crate) fn version_stamp(line: &str) -> Option<(u32, u32)> {
     let mut parts = line.split_whitespace();
     let token = parts.next()?;
     let tail: Vec<&str> = parts.collect();
-    // A bare `v0.5.3-alpha` line is accepted as well, which is what the
+    // A bare `v0.5.4-alpha` line is accepted as well, which is what the
     // generated `io.txt` uses (BACKLOG.md BUG-011); memory files keep the
     // full `hex words addressed` form.
     if !tail.is_empty() && tail != ["hex", "words", "addressed"] {

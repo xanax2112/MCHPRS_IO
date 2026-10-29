@@ -36,11 +36,11 @@
 | Termux 通道 | SSH 端口 8022，`tx '<命令>'` 直连；sshd 不随重启自启 |
 | 仓库 | Termux 侧 `~/mchprs/source/MCHPRS_IO`，git 分支 `main`，远程 `https://github.com/xanax2112/MCHPRS_IO.git` |
 | 上游对照副本 | `~/mchprs/source/MCHPRS`（只读，基线 `master` @ `d492e43`） |
-| 线上二进制 | `~/mchprs/mchprs`，**0.5.2-alpha**（8,478,984 字节，sha256 `19320ca2…`）；0.5.1-alpha（`8c98c83b…`）备份在 `/storage/emulated/0/termux/old/mchprs-0.5.1-alpha-b` |
+| 线上二进制 | `~/mchprs/mchprs`，**0.5.4-alpha**（8,572,208 字节，sha256 `ca895885…`，2026-10-29 14:17 构建）；旧版备份在 `/storage/emulated/0/termux/old/`：`mchprs-0.5.3-alpha-e`（8,574,720）、`-d`、`-c`、`-b`、`-a`、`mchprs-0.5.2-alpha`、`mchprs-0.5.1-alpha-b` |
 | 服务器运行目录 | `/storage/emulated/0/termux/MCHPRS_IO/`（`Config.toml`、`io.txt`、`memory/`、`logs/`、`world/`） |
 | 归档目录 | `/storage/emulated/0/termux/old/`（2026-10-28 起）：`backup-2026-10-28/`（旧版本二进制、改动前源码、台账快照）、`scratch-2026-10-28/`（构建日志与临时脚本）、`drafts-2026-10-28/`（旧 rom 草稿） |
 | 最近提交 | `7a36df6`（0.4.2+0.4.3 合并提交，已推送）；0.5.0-alpha 与 0.5.2-alpha 的改动**全部未提交** |
-| 构建 | `cargo build --release`，aarch64 Termux，约 1m45s；`/tmp` 不可写，日志写 `~/dsh/scratch/` |
+| 构建 | `cargo build --release`，aarch64 Termux；`/tmp` 不可写，日志写 `~/dsh/scratch/`。**只改源码时约 2 分钟**（只重编 `mchprs_core` 与根包）；**改 `Cargo.toml` 的版本号时约 8 分钟**——15 个 crate 全是 `version.workspace = true`，版本参与 Cargo 指纹，等于全量冷编（2026-10-29 实测：2 个 crate = 2m06s，13 个 crate = 7m42s）；release 开着 `lto = "fat"`，最后链接阶段最贵 |
 
 ---
 
@@ -152,7 +152,7 @@
 
 | 编号 | 条目 | 状态 |
 | --- | --- | --- |
-| BUG-008 | 时钟与推送规则 | ✅ 已完成 |
+| BUG-008 | 时钟与推送规则 | ✅ 已完成（0.5.4-alpha：`width = 0` 端口，hex 固定 `0`，无时钟则禁用） |
 | BUG-009 | `io.txt` 解析、校验与坐标复用 | ✅ 已完成 |
 | BUG-010 | 模电组、红石粉与点状粉判定 | ✅ 已完成（含模电 `matrix:`，0.5.2-alpha） |
 | BUG-024 | `io.txt` 输入组白名单支持按钮（脉冲语义） | 🚧 0.5.3-alpha 已实现，待实机验证 |
@@ -162,6 +162,24 @@
 - 输入组 `INPUT` 后脉冲一次 `clk`，数据与脉冲同在生效 tick。
 - 输出组：无 `clk` 时任一位变化就推 `OUTPUT`；有 `clk` 时只在按钮上升沿推。
 - 时钟不得与端口坐标重合；io 组之间 `clk` 唯一，重复者拒绝；io 组与 memory 的 `clk` 撞车**只禁用 io 组**。
+
+**`width = 0` 的时钟端口（2026-10-29 用户定，0.5.4-alpha 已实现）**
+
+- `width = 0` 且 `clk` 写了具体坐标 → **合法端口**：没有数据点，只有时钟有意义。
+  - `INPUT <name> 0`：`<hex>` **固定写 `0`**，语义是"按一次按钮"，即脉冲一次 `clk`。
+  - `OUTPUT`：只在 `clk` 上升沿推送，`<hex>` **固定为 `0`**（含 `POUT` 绑定确认那一帧）。
+- `width = 0` 且 `clk = 0, 0, 0`（没有时钟）→ **无意义，编译后校验时整组禁用**并给 reason；`INPUT` 与 `POUT` 都回 `ERR disabled`。此状态可由 `/coord in` 之后的空组自然出现，不必在加载期报错。
+- 实现差距（只读代码确认，未改）：
+  1. `decode_hex`（`automation.rs:720-728`）位宽 0 时期望 **0 个** hex 字符，而行协议按空白分词写不出空参数 → 现在 `INPUT <name> ` 直接 `ERR arg`；改为"位宽 0 时只接受恰好一个 `0` 字符"。
+  2. `encode_hex`（`automation.rs:676-716`）对空位向量返回空串，推送成 `OUTPUT <name> <tick> `（行尾空格）无法解析；改为输出 `0`。
+  3. `IoGroup::write`（`io.rs:125-160`）空组照样脉冲 `clk`，数据通道不用改。
+  4. 校验落点：`check_group`（`io.rs:283-345`）末尾加"无时钟且位宽 0 → Err"分支。
+  5. 文档连带：`docs/protocol*.md` 的 hex 位数规则、`docs/file-formats*.md` 的 `width = 0` 说明。
+- ✅ **已实现（0.5.4-alpha，2026-10-29 14:17 构建并安装）**：
+  - `decode_hex` 开头加分支：位宽 0 且非 matrix 时，`<hex>` 必须恰好是 `0`，其余一律 `ERR hex`。
+  - `encode_hex` 开头加分支：位宽 0 且非 matrix 时恒返回 `0`（修掉原先推送 `OUTPUT <名字> <tick> `、脚本无法解析的问题）。
+  - `check_group` 末尾加分支：`bits() == 0` 且 `clk` 为 `None` → `Err("`width = 0` needs a clock (`clk = x, y, z`), ...")`，编译后整组禁用。
+  - 文档：`protocol*.md` 的 hex 节、`file-formats*.md` §2.2 / §2.4 / §2.5 均已同步。
 
 **BUG-009 `io.txt` 解析与校验**
 
@@ -212,7 +230,7 @@
   - 启动时若没有 `io.txt`，也**自动生成**；生成的 `io.txt` 开头必须有版本信息，写法为**只写版本号**：`v0.5.2-alpha`（不带后面的 `hex words addressed`）。
   - 现状（读码事实）：`crates/core/src/server.rs:163-165` 启动只建 `./world/players`、`./world/plots`、`./schems` 三个目录，**不建 `memory/`、不建 `io.txt`**；memory 加载器按 `*.rom.txt` / `*.ram.txt` 扫描 `memory/`，所以落地时要保证点号开头的模板文件**不会被当成存储器加载**。
   - 已定（用户）：模板内容是**骨架，不带任何注释**——基本格式的键全部写出来，`width` / `clk` / `origin` 都填 0；其中 **RAM 模板的 `clk` 填 `0, 0, 0`**。
-  - 参考格式（`docs/file-formats_zh.md` §3.2）：文件级键是 `origin` 与 `clk`，端口列表内首项是 `width = N`；`clk = 0` 在文档里表示无时钟（RAM 的 `clk` 一般必须指向真实按钮）。
+  - 参考格式（`docs/file-formats_zh.md` §3.2 / §3.3）：文件级键是 `origin` 与 `clk`，端口列表内首项是 `width = N`；`clk = 0` 表示无时钟。**注意**：memory 的 `clk` 必须是**输出类元件**（红石灯 / 铁活板门 / 音符盒，服务器读它的电平），不是按钮——按钮只用于 `io.txt` 的 `clk`（服务器去按它）。此处早期记录写成"按钮"，2026-10-29 已更正。
   - 已定（用户）：`.rom.txt` 模板的 `clk` 写 `clk = 0`（无时钟）；`.ram.txt` 写 `clk = 0, 0, 0`。
   - 已定（用户）：自动生成的 `io.txt` = 版本行 `v0.5.2-alpha` + **一个 `input` 组和一个 `output` 组的骨架**（`origin = 0` / `clk = 0` / `width = 0`），**组名分别为 `none_in`（input）与 `none_out`（output）**。
   - 已定（用户）：骨架里 `width = 0` 的端口列表**不写坐标行**。
@@ -447,6 +465,53 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
 
 影响：**仅日志观感**，功能无影响；`/io list` 输出只列行号与组数，不受这条影响。修它需要重新编译。
 
+### 2.11 客户端兼容（J）
+
+| 编号 | 条目 | 状态 |
+| --- | --- | --- |
+| BUG-032 | 基岩版（Bedrock）客户端接入 | 📋 仅完成可行性调研（2026-10-29），未安装环境、未验证、未改代码 |
+
+**BUG-032 基岩版客户端接入（调研）**
+
+用户 2026-10-29 提出：借助现有轮子，分析服务端与基岩版客户端连接的可行性。
+
+- 结论：**直连不可行**——Geyser 只模拟最新 Java 版本，而本服务端 `server.rs:732` 的握手检查只放行 765（1.20.4），会被自己断开；可行链路是 **Geyser(standalone) + ViaProxy → 本服务端**，零改动我们的代码。
+- 关键代码事实（约束来源）：
+  - 协议固定 765、握手硬校验：`crates/core/src/server.rs:732`。
+  - 自定义维度类型 `min_y = 0`、`height = 384`、不发 `skybox` / `default_clock`：`server.rs:800-825`、`crates/network/src/packets/clientbound.rs:130-150`。
+  - 光照全零 + `ambient_light = 1.0`：`clientbound.rs:672-700`。
+  - 只发原版包子集（约 40 个），无 Update Health / Set Spawn Position / Set Experience。
+  - 聊天走 `CSystemChatMessage`（绕开聊天签名问题）：`crates/core/src/player.rs:412`。
+  - `/coord`、`//load` 依赖 Brigadier `ask_server` 动态补全，Bedrock 侧无对应机制。
+  - 玩家走远不卸载区块（卸载分支被注释）：`plot/mod.rs:654-656`。
+- 风险分级：
+  - P0：维度高度 0..383 落到 Bedrock 主世界 -64..319 之外，y>319 可能被裁；registry 抬版本时 `skybox` 等缺失字段是否被补全未知。
+  - P1：动态补全失效；缺原版包导致出生点 / HUD 异常；计分板与 tab 列表显示。
+  - P2：红石线 dot state 观感（Geyser 官方列为不可修复）；全零光照观感。
+- 环境可行性：Termux `pkg` 可装 openjdk-21（21.0.13 aarch64）；本机 8 核 / 15GB 内存 / 62GB 空闲，足够跑两个 JVM。
+- 其它路线：Rust 原生 Bedrock（bedrock-rs）等于重写 Geyser，不划算；把服务端追平最新 Java 协议工程量远大于 0.5.3 全部工作。
+- 详细分析（含链路图、最小验证清单、引用）：`~/dsh/BEDROCK-CLIENT-FEASIBILITY-0.5.3.md`。
+- 待定：是否落地最小验证（需用户同意装 JDK 与下载 jar）。
+
+### 2.12 文档（J）
+
+| 编号 | 条目 | 状态 |
+| --- | --- | --- |
+| BUG-034 | 删除 `manual.md` / `manual_zh.md`，把 memory 的 `clk` 行为写进 `file-formats*` | ✅ 已完成（2026-10-29） |
+
+**BUG-034 文档整理：删 manual，补 memory `clk` 行为**
+
+用户 2026-10-29 指示：删除两份 `manual`，在 `file-formats` 里写清楚 memory 里 `clk` 的行为。
+
+- 删除：`docs/manual.md`、`docs/manual_zh.md`（共享镜像 `/storage/emulated/0/termux/docs/` 的两份副本同步删除）；`README.md`、`README_zh.md`、`CHANGELOG-0.5.3-alpha.md` 里的指向已移除，`UNVERIFIED-0.5.3-alpha.md` 那一行改成"已按要求删除"。
+- 新增：`docs/file-formats_zh.md` / `file-formats.md` 的 **3.3 时钟 `clk`** 专节（原 3.3–3.7 顺延为 3.4–3.8），内容：
+  - 三种写法：`clk = x, y, z` / `clk = 0`（含 `0, 0, 0`）/ 省略，都归到"有/无时钟"两态。
+  - ROM：有时钟只在**上升沿**写 `data`；无时钟**跟随地址变化**；两种情况都只改电平真正变化的位。
+  - RAM：时钟**必填**，`clk = 0` 直接拒绝整文件；上升沿顺序固定为"汇编地址 → `read enable` 高则送**旧字**到 `read data` → `write enable` 高则按 `byte write enable` 合并写回"，读优先于写。
+  - 元件类型：必须是**输出类**（红石灯 / 铁活板门 / 音符盒），与 `io.txt` 的 `clk`（必须是**按钮**）正好相反。
+  - 其它约束：不得与数据点重合或正交相邻；两个存储器不得共用时钟（共用者全禁用）；与 io 组共用时钟时**只禁用 io 组**；边沿按 tick 采样，`performance` 模式不会漏边沿。
+- 依据（只读代码确认）：`memory.rs:360-395`（ROM 上升沿 / 无时钟跟随地址）、`memory.rs:397-470`（RAM 上升沿、读优先、字节合并）、`memory.rs:629-631`（`expect_output` 校验时钟）、`memory.rs:768-787`（输出类定义）、`memory.rs:543-560`（同一时钟多存储器拒绝）、`plot/mod.rs:412-421`（`run_memories` 每 tick 都跑）。
+
 ## 3. 规格：脚本协议（0.5.2-alpha）
 
 > 本节是协议的唯一文字依据；面向用户的文档是 `docs/protocol.md`（英）与 `docs/protocol_zh.md`（中），
@@ -558,7 +623,7 @@ RADV <x>                      → OK RADV <x> <tick>           仅 rtps = 0
 - `input` = 输入数据端口（拉杆 / 压力板，脚本写入）；`output` = 输出端口（灯 / 活板门 / 音符盒，脚本读出）。
 - 块内**必填** `origin`、`clk`、`width`，键顺序任意；`clk = 0` 表示无时钟。
 - `origin` 加到所有坐标，**含 `clk`**（与 memory 一致）。
-- 空组报错；`width = 0` 的数电组也报错。
+- **空组不报错**：`width = 0` 且不写坐标在加载期是合法的（启动模板就是这种骨架，供 `/coord` 之后填充）；但从 **0.5.4-alpha** 起，编译后校验要求这种组必须有真实 `clk`，否则整组禁用（见 §2.5 与 BUG-008）。
 
 ### 4.2 坐标写法
 
@@ -581,6 +646,7 @@ RADV <x>                      → OK RADV <x> <tick>           仅 rtps = 0
 - **io 组之间**的 `clk` 必须唯一，撞了后出现的组拒绝。
 - io 组与 memory 的 `clk` 撞车：**只禁用 io 组**，memory 不受影响。
 - 输入组写入后**脉冲一次** `clk`；数据与脉冲同在 `INPUT` 生效的那个 tick。
+- `width = 0` 的组（0.5.4-alpha）：没有数据位，`INPUT <组名> 0` 只脉冲一次 `clk`（按一次按钮）；`OUTPUT`/`POUT` 的 `<hex>` 固定为 `0`，只在上升沿推送（绑定确认帧也是 `0`）；没有 `clk` 的组编译后禁用。
 
 ### 4.5 数模混写
 
@@ -657,6 +723,8 @@ analog_output <组名> = [ origin / clk / rs_width / width / 坐标 ]
 | 8 | 指令“写法升级”（BUG-023） | ✅ 已定：规格见 §2.7 |
 | 9 | 输入组用按钮（BUG-024） | ✅ 已定：B 脉冲语义、输出组不加按钮 |
 | 10 | 0.5.3-alpha 未验收清单（含已改未编译的 3 项） | 📋 `UNVERIFIED-0.5.3-alpha.md`（仓库根目录，已复制到共享存储 `docs/`），随验收逐项打勾 |
+| 11 | 基岩版客户端接入（BUG-032） | 📋 仅调研：Geyser + ViaProxy 链路可行，P0 风险未验证；分析见 `~/dsh/BEDROCK-CLIENT-FEASIBILITY-0.5.3.md` |
+| 12 | `width = 0` 时钟端口规格（并入 BUG-008） | ✅ 已完成（0.5.4-alpha）：hex 固定 `0`，上升沿推送；无时钟的组编译后禁用 |
 
 ---
 
@@ -664,6 +732,7 @@ analog_output <组名> = [ origin / clk / rs_width / width / 坐标 ]
 
 | 版本 | 内核 / 协议 | 状态 |
 | --- | --- | --- |
+| `0.5.4-alpha` | 0.5.4-alpha / 0.5.4-alpha | ✅ `width = 0` 端口（hex 固定 `0`、无时钟禁用）+ 文档整理（删 manual、`file-formats` 增 3.3 时钟节）；编译通过（7m42s，仅既有的 3 条死代码/弃用警告）+ 已替换二进制（sha256 `ca895885…`，8,572,208 字节，备份 `old/mchprs-0.5.3-alpha-e`）；**未打 tag、未发 Release** |
 | `0.5.2-alpha` | 0.5.2-alpha / 0.5.2-alpha | ✅ 模电 `matrix:`、日志去重、文件版本兼容（0.5.0+）均已完成；编译通过（1m42s）+ 三组冒烟测试通过 + 已替换线上二进制（sha256 `19320ca2…`）；2026-10-28 提交 `main`（`328e2ca`）+ 打标签 `v0.5.2-alpha` + 发布 Release（CI 编译 7 个平台二进制） |
 | `0.5.1-alpha` | 0.5.1-alpha / 0.5.1-alpha | ✅ 二次构建：模电双键（`rs_width` + `width`）与动词全大写，编译通过（3m40s）+ 冒烟测试通过 + 已替换线上二进制（sha256 `8c98c83b…`） |
 | `0.5.0-alpha` | 0.5.0-alpha / 0.5.0-alpha | ✅ 编译通过、冒烟测试通过、已替换线上二进制（sha256 `5a07ee1c…`） |

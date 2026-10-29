@@ -135,7 +135,6 @@ RADV <x>                      → OK RADV <x> <tick>
 
 ## 文档
 
-- [docs/manual_zh.md](docs/manual_zh.md) —— **完整说明书**（[English](docs/manual.md)）
 - [docs/file-formats_zh.md](docs/file-formats_zh.md) —— `io.txt` 与存储器文件参考（[English](docs/file-formats.md)）
 - [docs/protocol_zh.md](docs/protocol_zh.md) —— 自动化协议（[English](docs/protocol.md)）
 - [docs/Redpiler.md](docs/Redpiler.md)、[docs/RIL.md](docs/RIL.md)、[docs/Adding_a_block.md](docs/Adding_a_block.md) —— 编译器内部（英文）
