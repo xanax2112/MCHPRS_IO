@@ -39,7 +39,7 @@
 | 线上二进制 | `~/mchprs/mchprs`，**0.5.4-alpha**（8,572,208 字节，sha256 `ca895885…`，2026-10-29 14:17 构建）；旧版备份在 `/storage/emulated/0/termux/old/`：`mchprs-0.5.3-alpha-e`（8,574,720）、`-d`、`-c`、`-b`、`-a`、`mchprs-0.5.2-alpha`、`mchprs-0.5.1-alpha-b` |
 | 服务器运行目录 | `/storage/emulated/0/termux/MCHPRS_IO/`（`Config.toml`、`io.txt`、`memory/`、`logs/`、`world/`） |
 | 归档目录 | `/storage/emulated/0/termux/old/`（2026-10-28 起）：`backup-2026-10-28/`（旧版本二进制、改动前源码、台账快照）、`scratch-2026-10-28/`（构建日志与临时脚本）、`drafts-2026-10-28/`（旧 rom 草稿） |
-| 最近提交 | `7a36df6`（0.4.2+0.4.3 合并提交，已推送）；0.5.0-alpha 与 0.5.2-alpha 的改动**全部未提交** |
+| 最近提交 | `36a63e6`（0.5.4-alpha，已推送 `main`）+ 附注标签 `v0.5.4-alpha`（已推送）；`main` 上更早的是 `433e0d9`（0.5.3 的 `/coord` 修复）与 `f945285` |
 | 构建 | `cargo build --release`，aarch64 Termux；`/tmp` 不可写，日志写 `~/dsh/scratch/`。**只改源码时约 2 分钟**（只重编 `mchprs_core` 与根包）；**改 `Cargo.toml` 的版本号时约 8 分钟**——15 个 crate 全是 `version.workspace = true`，版本参与 Cargo 指纹，等于全量冷编（2026-10-29 实测：2 个 crate = 2m06s，13 个 crate = 7m42s）；release 开着 `lto = "fat"`，最后链接阶段最贵 |
 
 ---
@@ -732,7 +732,7 @@ analog_output <组名> = [ origin / clk / rs_width / width / 坐标 ]
 
 | 版本 | 内核 / 协议 | 状态 |
 | --- | --- | --- |
-| `0.5.4-alpha` | 0.5.4-alpha / 0.5.4-alpha | ✅ `width = 0` 端口（hex 固定 `0`、无时钟禁用）+ 文档整理（删 manual、`file-formats` 增 3.3 时钟节）；编译通过（7m42s，仅既有的 3 条死代码/弃用警告）+ 已替换二进制（sha256 `ca895885…`，8,572,208 字节，备份 `old/mchprs-0.5.3-alpha-e`）；**未打 tag、未发 Release** |
+| `0.5.4-alpha` | 0.5.4-alpha / 0.5.4-alpha | ✅ `width = 0` 端口（hex 固定 `0`、无时钟禁用）+ 文档整理（删 manual、`file-formats` 增 3.3 时钟节）；编译通过（7m42s，仅既有的 3 条死代码/弃用警告）+ 已替换二进制（sha256 `ca895885…`，8,572,208 字节，备份 `old/mchprs-0.5.3-alpha-e`）；2026-10-29 提交 `main`（`36a63e6`）+ 附注标签 `v0.5.4-alpha` 推送；GitHub Actions Build 的 8 个任务（6 个目标 + macOS universal + publish）全部成功，自动创建 Release 并挂上 7 个二进制；随后把 Release 改成 **prerelease** 并写入中文更新说明（`CHANGELOG-0.5.4-alpha.md`） |
 | `0.5.2-alpha` | 0.5.2-alpha / 0.5.2-alpha | ✅ 模电 `matrix:`、日志去重、文件版本兼容（0.5.0+）均已完成；编译通过（1m42s）+ 三组冒烟测试通过 + 已替换线上二进制（sha256 `19320ca2…`）；2026-10-28 提交 `main`（`328e2ca`）+ 打标签 `v0.5.2-alpha` + 发布 Release（CI 编译 7 个平台二进制） |
 | `0.5.1-alpha` | 0.5.1-alpha / 0.5.1-alpha | ✅ 二次构建：模电双键（`rs_width` + `width`）与动词全大写，编译通过（3m40s）+ 冒烟测试通过 + 已替换线上二进制（sha256 `8c98c83b…`） |
 | `0.5.0-alpha` | 0.5.0-alpha / 0.5.0-alpha | ✅ 编译通过、冒烟测试通过、已替换线上二进制（sha256 `5a07ee1c…`） |
