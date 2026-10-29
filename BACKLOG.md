@@ -548,8 +548,13 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
     - PATCH-005 `crates/protocol/src/version/v662/enums/data_item_type.rs`：`Int64` 由 `i64` 改 `u64`（LONG 型元数据是无符号 varint，zigzag 会让标志位整体错位）
   - 新增：`crates/network/src/bedrock/mod.rs`（模块入口、协议版本常量）
   - 新增：`crates/network/src/bedrock/protocol.rs`（玩家初始元数据、创造模式能力 + **两条字节级回归测试**）
+  - 新增：`crates/network/src/bedrock/session.rs`（会话层：RakNet 监听 → 登录 → StartGame → 区块 → 交互收包）
+  - 新增：`crates/network/src/bedrock/chunk.rs`（`LevelChunk` 负载编码：子区块 v9 + subchunk index、调色板、生物群系段）
+  - 新增：`crates/network/src/bedrock/items_gen.rs`（1788 条物品表，`StartGame.item_list` 必须完整）
+  - 新增：`crates/network/src/bedrock/data/{biome_definitions,entity_identifiers}.dat`（**来自 Geyser，MIT 许可**，原样内嵌）
+  - 新增：`crates/network/examples/bedrock_server.rs`（真机验证入口）
   - 修改：`crates/network/src/lib.rs`（仅加一行 `pub mod bedrock;`）
-  - 修改：`crates/network/Cargo.toml`（新增 `bedrock`（path → vendored）与 `tokio` 依赖）
+  - 修改：`crates/network/Cargo.toml`（新增 `bedrock`（path → vendored）、`tokio`、`nbtx`、`uuid`）
   - 修改：`Cargo.toml`（根）：workspace 加 `exclude = ["vendor/bedrock-rs"]`——不加会被当成本仓库成员，进而去继承我们的 `workspace.dependencies` 并报 `dependency.uuid was not found`
   - 修改：`Cargo.lock`（由新增依赖自动生成，非手改）
   - **注意**：工作区里 `crates/core/src/plot/coord.rs` 的改动**不是本次接入产生的**，是 0.5.4-alpha 之后 `/coord` 步长修复的既有工作成果，勿与 Bedrock 接入混为一谈。
@@ -560,7 +565,10 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
 - 验证方式（不需要 Bedrock 客户端）：
   - `cargo test -p mchprs_network bedrock` → `set_actor_data_matches_geyser_codec`、`update_abilities_matches_geyser_codec` 两条断言，字节与 Cloudburst v766 codec 输出完全一致（2026-10-29 已跑通，2 passed）。
   - `cargo check -p mchprs_network` 通过（1m10s，首次需联网拉 `nbtx` 等 git 依赖）。
-- 未做（下一步接入点）：①会话层（登录→`StartGame`→区块→交互）代码目前只在仓库外的 spike 里跑通；②把 `crates/world` 的方块数据编码成 `LevelChunk` 下发（注意本服务端 `y ∈ 0..383` 与 Bedrock 主世界 `-64..319` 差 64，需全局 `y -= 64`）；③方块映射表（约 100 多种方块 → Bedrock 运行时 state id）；④`PlayerAuthInput.player_block_actions` 回灌红石事件；⑤创造背包物品表（`CreativeContent` 现为空表，1788 条数据表已生成但未接入）、`SyncEntityProperty`、`PlayerList(ADD)`。
+- **真机验证（2026-10-29 22:42）**：`cargo run -p mchprs_network --example bedrock_server` 起端点（UDP 19132），人类用 Bedrock 1.21.51 客户端实测——**进世界、看到方块、点方块有反应，全部正常**。这条链路跑的是仓库内代码（`crates/network/src/bedrock/`），不是仓库外的 spike。
+  - 会话层与它依赖的资源也已入库：`session.rs`（登录 → StartGame → 区块 → 交互收包）、`chunk.rs`（LevelChunk 编码）、`items_gen.rs`（1788 条物品表）、`data/*.dat`（生物群系表 / 实体标识表，**来自 Geyser 项目，MIT 许可**，原样内嵌）。
+  - 这一版下发的仍是**最小测试世界**（一层石头 + 空气），只为把“协议层是否正常”与“世界数据是否正常”隔离开；真实世界数据是下一步。
+- 未做（下一步接入点）：①把 `crates/world` 的方块数据编码成 `LevelChunk` 下发（注意本服务端 `y ∈ 0..383` 与 Bedrock 主世界 `-64..319` 差 64，需全局 `y -= 64`）；②方块映射表（约 100 多种方块 → Bedrock 运行时 state id）；③`PlayerAuthInput.player_block_actions` 回灌红石事件（地块坐标 `+64`）；④按 `world_send_rate` 合并节流；⑤创造背包物品表（`CreativeContent` 现为空表，1788 条数据表已生成但未接入）、`SyncEntityProperty`、`PlayerList(ADD)`。
 
 ### 2.12 文档（J）
 

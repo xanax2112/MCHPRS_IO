@@ -1682,9 +1682,11 @@ dependencies = [
  "hematite-nbt",
  "mchprs_proc_macros",
  "mchprs_text",
+ "nbtx",
  "serde",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

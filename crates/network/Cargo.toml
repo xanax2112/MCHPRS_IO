@@ -32,3 +32,6 @@ bedrock = { path = "../../vendor/bedrock-rs/bedrock", default-features = false, 
     "protocol-v766",
 ] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+# Bedrock 会话层需要：NBT 编解码（生物群系/实体标识表是 NBT 文件）、玩家 UUID
+nbtx = { git = "https://github.com/bedrock-crustaceans/nbtx" }
+uuid = { version = "1", features = ["v4"] }

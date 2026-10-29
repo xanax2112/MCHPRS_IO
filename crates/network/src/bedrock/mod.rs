@@ -11,7 +11,10 @@
 //! - 任何二进制编码都必须先与开源参考实现（Geyser 内置的 Cloudburst v766 codec）
 //!   逐字节对齐，见本模块的 `#[cfg(test)]` 回归测试。
 
+pub mod chunk;
+pub mod items_gen;
 pub mod protocol;
+pub mod session;
 
 /// 本服务端锁定的 Bedrock 协议版本：766 = 1.21.51。
 pub const PROTOCOL_VERSION: i32 = 766;
