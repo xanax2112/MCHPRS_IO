@@ -64,6 +64,11 @@ const RAM_TEMPLATE: &str = "\
 v0.5.3-alpha hex words addressed
 origin = 0
 clk = 0, 0, 0
+write enable = 0, 0, 0
+read enable = 0, 0, 0
+byte write enable = [
+width = 0
+]
 address coordinate = [
 width = 0
 ]
@@ -71,15 +76,6 @@ write data coordinate = [
 width = 0
 ]
 read data coordinate = [
-width = 0
-]
-write enable = [
-width = 0
-]
-read enable = [
-width = 0
-]
-byte write enable = [
 width = 0
 ]
 ";

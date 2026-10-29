@@ -83,6 +83,8 @@ Writes a whole group at once; `<hex>` is the bits of the group packed into one i
 
 Sending `POUT` again for a group this connection already listens to pushes the current value once more; the subscription itself and the push rules below do not change.
 
+To poll a `POUT` group instead of receiving pushes, give the output group a clock that never fires (an `io.txt` `clk` pointing at a button nobody presses): with a clock the group only pushes on a rising edge, so re-sending `POUT` becomes a pure on-demand read.
+
 After that the server pushes `OUTPUT` whenever the value changes. Groups with a clock push once per rising edge, groups without a clock push on any bit change. A recompile clears all subscriptions, so send `POUT` again.
 
 ### `READ`

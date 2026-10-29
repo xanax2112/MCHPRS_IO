@@ -216,6 +216,28 @@
   - 已定（用户）：自动生成的 `io.txt` = 版本行 `v0.5.2-alpha` + **一个 `input` 组和一个 `output` 组的骨架**（`origin = 0` / `clk = 0` / `width = 0`），**组名分别为 `none_in`（input）与 `none_out`（output）**。
   - 已定（用户）：骨架里 `width = 0` 的端口列表**不写坐标行**。
   - 已定（用户）：因 `io.txt` 要求**组名全局唯一**（BUG-009），骨架改用可区分的名字——**`none_in` / `none_out`**，不改校验规则。
+  - **模板不可加载（用户 2026-10-29 指出，已实测确认）**：`.ram.txt` 模板里的 `write enable = [ width = 0 ]` / `read enable = [ width = 0 ]` 是错的——这两个键在解析器里是**单坐标**（`memory.rs:1163-1195`，`parse_single_or_triple`），写到真实文件名下会被拒绝：
+    ```text
+    Memory t.ram.txt rejected: line 7: `write enable`: `[` is not a number
+    ```
+    - 另外：`write enable` / `read enable` 写 `0` 也不合法（`must be a coordinate, not 0`）；`byte write enable` 才是列表（`parse_list`，带 `width`）；`address coordinate` 的 `width` 必须 > 0（`memory.rs` 校验），所以模板里的 `width = 0` 同样不合法。
+    - 结论：现有模板**整体不可加载**，只因点号开头被加载器跳过才没报错。
+  - **恢复的遗失规则（2026-10-29 从 `old/backup-2026-10-28/BACKLOG.archive-2026-10-27.md` 找回）**——是我重写台账时丢了这条，不是新需求：
+    - `write enable` / `read enable`：**必须写**，且是**单坐标**（`0, 0, 0` 形式），**不接受 `0`**。
+    - `byte write enable`：**宽松**——`byte write enable = [ width = 0 ]` 表示**没有字节写使能**（写使能只受 `we` 控制）；旧版允许写空列表 `[]`，后来废止，统一写 `[ width = 0 ]`。
+    - 带坐标时，`byte write enable` 的条数必须严格等于 `ceil(数据位宽 / 8)`，否则报错并禁用该 RAM。
+    - 实测（0.5.3-alpha 二进制）：`we = 1, 1, 1` + `re = 2, 1, 1` + `byte write enable = [ width = 0 ]` 能正常解析；报错只会来自其它键（如 `write data coordinate` 的 `width` 与坐标数不符）。
+    - 更正：我先前把“`byte write enable = 0`”记成新需求，属于误记；模板里的 `[ width = 0 ]` 本来就是正确写法。
+    - **`bwe` 只在 `we = 1` 时生效（用户 2026-10-29 确认，与现实电路一致）**——现状代码已符合：`crates/core/src/memory.rs:410-418` 先算 `write_enabled`，`if !write_enabled { return; }` 直接返回，之后才读 `byte write enable` 并 `merge_word`；`enables` 为空（`[ width = 0 ]`）时整字写入。另有一层运行期保护：`enables.len()` 与 `ceil(width/8)` 不符时静默不写（加载校验本应提前拒绝）。
+  - 已定（用户 2026-10-29）：模板**只要求语法形式正确**，不要求能被加载：
+    - `write enable` / `read enable` 改成**单坐标**写法：`write enable = 0, 0, 0`、`read enable = 0, 0, 0`；
+    - `byte write enable` 保持**列表**写法（`[ width = 0 ]`）；
+    - 各列表的 `width = 0` 保留（语法正确，但加载时仍会因 `width` 必须 > 0 被拒，这是“示意用”的预期）；
+    - 顺序按前一条：三个使能块排在 `address coordinate` 上面。
+  - 实现（2026-10-29，已编译未提交）：`RAM_TEMPLATE` 改为 `write enable = 0, 0, 0` / `read enable = 0, 0, 0` / `byte write enable = [ width = 0 ]`，并把三个使能块排在 `address coordinate` 之前；`ROM_TEMPLATE` 无使能，未改。二进制已确认包含新写法。
+  - 新增调整（用户 2026-10-29，**先不写代码**）：`.ram.txt` 模板里 `write enable` / `read enable` / `byte write enable` 三个块要**放在 `address coordinate` 上面**。
+    - 当前模板顺序：`address coordinate` → `write data coordinate` → `read data coordinate` → `write enable` → `read enable` → `byte write enable`。
+    - 目标顺序：`write enable` → `read enable` → `byte write enable` → 其余（`address coordinate` 等）。
   - 实现状态（0.5.3-alpha，未提交）：启动创建 `memory/` 与 `.rom.txt` / `.ram.txt` 隐藏模板、`io.txt` 骨架（版本行 `v0.5.3-alpha`）；加载器跳过点号文件；`io.txt` 的版本行现在也接受**只写版本号**；`width = 0` 的空组不再报错而是作为空组加载。启动实测三个文件都正确生成。
 
 ### 2.7 终端、命令与其它修复（F）
@@ -242,6 +264,9 @@
 **BUG-013**：`/gamemode` 等命令的 **Tab 补全**补齐（0.2.0）；`/whitelist` 因静默失败**整个功能删除**（0.2.1）；告示牌朝向修正（yaw 未归一化，0.4.3）。
 
 **BUG-022 木斧取点写入坐标（`/coord`）**
+- 新增需求（用户 2026-10-29）：**文件级被禁用的文件不出现在 `/coord in` 的补全里**——即 `io.txt` 整文件被禁用、或某个 memory 文件加载被拒时，`/coord in` 的文件列表里不显示它们。
+  - 待确认：手敲完整文件名是否也拒绝（还是仅从补全里隐藏、仍允许强制写入后再修）。
+  - 现状（0.5.3-alpha 事实）：`/coord in` 的文件与组名补全目前**只是静态节点**（补全树里 `Parser::String(0)`，见 `commands.rs` 的 `/coord in [file]` 节点），**并没有真的列出目录/组名**；动态补全（含本条的“过滤被禁用文件”）尚未实现。
 - 实现状态（0.5.3-alpha，未提交）：新增 `crates/core/src/plot/coord.rs`（`in`/`new`/`add`/`undo`/`redo`、8 步历史、`type` 短码表、按行编辑 `io.txt` 与 `memory/*.txt`、紫色回馈）；`/coord` 改过文件后下一次 `/redpiler compile` 会重载一次。**未验证**：需要玩家在游戏里用木斧取点才能跑通，本轮只做到编译通过 + 启动验证。
 
 - 用户 2026-10-28 提出；指令名 `/coord`；取点用 WorldEdit 木斧右键的**第二点**（`Player::second_position`）。
@@ -309,7 +334,16 @@
 - 需求原话：能用小木斧右键点击方块，输入指令，能够把点击的坐标直接赋值给 `rom.txt`、`ram.txt`、`io.txt`。
 
 **BUG-023 指令写法升级 + Tab 补全覆盖全部指令**
-- 实现状态（0.5.3-alpha，未提交）：`//schem load|save|list`（`load`/`save` 复用 `//load`/`//save`，`list` 列 `./schems`）、`/tick freeze|unfreeze|step|rate`（玩家与控制台）、补全树新增 `/tick` 四个子命令、`/io`、`/coord` 与 `/redpiler compile` 的 10 个长参数（含 `--passes=`）。已用控制台实测 `freeze`/`unfreeze`/`rate`/`step` 奇偶校验。**未做**：派发仍是 `match`，只有补全由扩展后的节点表驱动，完整“单一来源”重构未进行。
+- 实现状态（0.5.3-alpha，未提交）：`//schem load|save|list`（`load`/`save` 复用 `//load`/`//save`，`list` 列 `./schems`）
+- 新增需求（用户 2026-10-29）：**输入编译指令时，先自动执行一次 `//update -p`**（更新整块地皮的所有方块），再开始编译。
+  - 现状依据：`//update` 在 `crates/core/src/plot/worldedit/mod.rs:733`，`-p` 的含义是“Update the entire plot”；执行体是 `execute_update`（`worldedit/execute.rs:1001`），对整块地皮逐块调用 `mchprs_redstone::update`。
+  - 已定（用户 2026-10-29）：**玩家与控制台两条编译入口都执行**；**每次编译都执行**（含 `-i` 与重复编译）。
+  - 已定（用户 2026-10-29）：**放在编译之后**，复用现有 `CompilerOptions::update`（`--update`）路径——`crates/redpiler/src/lib.rs:244` 在编译结束后对 bounds 逐块 `mchprs_redstone::update`，不新增第二套遍历逻辑。
+  - 已定（用户 2026-10-29）：扫描范围**只扫非空 section**——现有 `for_each_block_mut_optimized`（`crates/world/src/lib.rs:194-217`）已经 `block_count() == 0` 就跳过整段，所以天然满足，无需改动。
+  - 更正：此前我说“整块地皮 512×512×384 ≈ 1 亿次 update”是错的——空 section 会被跳过，实际只遍历有方块的 section；真实成本需要在有电路的世界实测。
+  - 已定（用户 2026-10-29）：**先只记录，等明确说“写代码”再实现**。
+  - 待定（实现时确认）：自动执行是否绕过 `mchprs.we.update` 权限；是否回显一行提示。
+、`/tick freeze|unfreeze|step|rate`（玩家与控制台）、补全树新增 `/tick` 四个子命令、`/io`、`/coord` 与 `/redpiler compile` 的 10 个长参数（含 `--passes=`）。已用控制台实测 `freeze`/`unfreeze`/`rate`/`step` 奇偶校验。**未做**：派发仍是 `match`，只有补全由扩展后的节点表驱动，完整“单一来源”重构未进行。
 
 - 用户 2026-10-28 提出，原话：「指令写法升级，顺带 tab 键补全支持所有指令」。
 - 当前只登记，**未改任何代码**（铁律 2/3）。

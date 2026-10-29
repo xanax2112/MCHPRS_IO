@@ -166,7 +166,131 @@ impl CoordState {
     }
 }
 
+/// Candidate names for `/coord in <file>`: `io.txt` (only when it loaded at
+/// least one group) plus memory files that parse cleanly. Files disabled at load
+/// level are never offered (BACKLOG.md BUG-022).
+fn file_candidates() -> Vec<String> {
+    let mut out = Vec::new();
+    let io_table = crate::io::IoTable::load(std::path::Path::new(crate::io::IO_FILE));
+    if !io_table.groups.is_empty() {
+        out.push(crate::io::IO_FILE.to_string());
+    }
+    let dir = std::path::Path::new(super::memory::MEMORY_DIR);
+    let Ok(entries) = fs::read_dir(dir) else {
+        return out;
+    };
+    let mut names: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        let kind = if name.ends_with(".ram.txt") {
+            super::memory::Kind::Ram
+        } else if name.ends_with(".rom.txt") {
+            super::memory::Kind::Rom
+        } else {
+            continue;
+        };
+        let Ok(text) = fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        if super::memory::parse(&name, &text, kind).is_err() {
+            continue;
+        }
+        names.push(name.trim_end_matches(".txt").to_string());
+    }
+    names.sort();
+    out.extend(names);
+    out
+}
+
+/// Type short codes for a memory file.
+fn type_candidates(rom: bool) -> Vec<&'static str> {
+    let mut out = vec!["clk", "addr", "rd", "a_addr", "a_rd"];
+    if !rom {
+        out.extend(["wd", "we", "re", "bwe", "a_wd"]);
+    }
+    out
+}
+
+/// `io.txt` group names, or an empty list when the file is disabled.
+fn io_group_candidates() -> Vec<String> {
+    crate::io::IoTable::load(std::path::Path::new(crate::io::IO_FILE))
+        .groups
+        .iter()
+        .map(|group| group.name.clone())
+        .collect()
+}
+
 impl Plot {
+    /// Suggestions for the `/coord` arguments (BACKLOG.md BUG-022).
+    ///
+    /// Returns the byte offset where the word being completed starts plus the
+    /// matching candidates, or `None` when the text is not a `/coord` command we
+    /// know how to complete.
+    pub(super) fn coord_suggestions(&self, text: &str) -> Option<(usize, Vec<String>)> {
+        let rest = text.strip_prefix("/coord ")?;
+        let words: Vec<&str> = rest.split(' ').collect();
+        let current = words.last().copied().unwrap_or("");
+        // Offset of the word being completed.
+        let mut start = "/coord ".len();
+        for word in &words[..words.len().saturating_sub(1)] {
+            start += word.len() + 1;
+        }
+        let filter = |candidates: Vec<String>| -> Vec<String> {
+            candidates
+                .into_iter()
+                .filter(|candidate| candidate.starts_with(current))
+                .collect()
+        };
+        match words.first().copied() {
+            Some("in") => {
+                if words.len() <= 2 {
+                    Some((start, filter(file_candidates())))
+                } else {
+                    let file = words[1];
+                    if file == crate::io::IO_FILE {
+                        Some((start, filter(io_group_candidates())))
+                    } else if file.ends_with(".rom") || file.ends_with(".ram") {
+                        Some((
+                            start,
+                            filter(
+                                type_candidates(file.ends_with(".rom"))
+                                    .into_iter()
+                                    .map(str::to_string)
+                                    .collect(),
+                            ),
+                        ))
+                    } else {
+                        Some((start, Vec::new()))
+                    }
+                }
+            }
+            Some("new") | Some("add") => {
+                if words.len() > 2 {
+                    // Step / count / direction positions: no suggestions.
+                    return Some((start, Vec::new()));
+                }
+                let candidates = match &self.coord.target {
+                    Some(Target::Io(_)) => vec!["clk".to_string(), "data".to_string()],
+                    Some(Target::Memory(file)) => type_candidates(file.ends_with(".rom"))
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    None => type_candidates(false)
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                };
+                Some((start, filter(candidates)))
+            }
+            _ => None,
+        }
+    }
+
     /// Entry point for `/coord ...`.
     pub(super) fn handle_coord_command(&mut self, player: usize, args: &[&str]) {
         match args.first().copied() {

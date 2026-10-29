@@ -1466,6 +1466,11 @@ impl Plot {
 
     fn start_redpiler(&mut self, options: CompilerOptions, source: Option<usize>) {
         debug!("Starting redpiler");
+        // Every compile updates the whole plot first, silently: `--update`
+        // runs `mchprs_redstone::update` over every non-empty section after the
+        // graph is built (BACKLOG.md BUG-023).
+        let mut options = options;
+        options.update = true;
         // `betterio` is a runtime timing switch, not a compile option
         // (BACKLOG.md BUG-021): push the Config value into the backend
         // before every compile so a restart is all it takes.

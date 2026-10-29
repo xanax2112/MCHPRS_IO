@@ -1610,7 +1610,7 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
             // 82: /coord in
             Node {
                 flags: CommandFlags::LITERAL.bits() as i8,
-                children: vec![85, 86],
+                children: vec![85],
                 redirect_node: None,
                 name: Some("in"),
                 parser: None,
@@ -1636,30 +1636,39 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
             },
             // 85: /coord in [file]
             Node {
-                flags: (CommandFlags::ARGUMENT | CommandFlags::EXECUTABLE).bits() as i8,
-                children: vec![],
+                flags: (CommandFlags::ARGUMENT
+                    | CommandFlags::EXECUTABLE
+                    | CommandFlags::HAS_SUGGESTIONS_TYPE)
+                    .bits() as i8,
+                children: vec![86],
                 redirect_node: None,
                 name: Some("file"),
                 parser: Some(Parser::String(0)),
-                suggestions_type: None,
+                suggestions_type: Some("minecraft:ask_server"),
             },
-            // 86: /coord in io.txt [name]
+            // 86: /coord in <file> [name|type]
             Node {
-                flags: (CommandFlags::ARGUMENT | CommandFlags::EXECUTABLE).bits() as i8,
+                flags: (CommandFlags::ARGUMENT
+                    | CommandFlags::EXECUTABLE
+                    | CommandFlags::HAS_SUGGESTIONS_TYPE)
+                    .bits() as i8,
                 children: vec![],
                 redirect_node: None,
-                name: Some("io name"),
+                name: Some("target"),
                 parser: Some(Parser::String(0)),
-                suggestions_type: None,
+                suggestions_type: Some("minecraft:ask_server"),
             },
             // 87: /coord new|add [type]
             Node {
-                flags: (CommandFlags::ARGUMENT | CommandFlags::EXECUTABLE).bits() as i8,
+                flags: (CommandFlags::ARGUMENT
+                    | CommandFlags::EXECUTABLE
+                    | CommandFlags::HAS_SUGGESTIONS_TYPE)
+                    .bits() as i8,
                 children: vec![],
                 redirect_node: None,
                 name: Some("type"),
                 parser: Some(Parser::String(0)),
-                suggestions_type: None,
+                suggestions_type: Some("minecraft:ask_server"),
             },
             // 88: /coord undo
             Node {

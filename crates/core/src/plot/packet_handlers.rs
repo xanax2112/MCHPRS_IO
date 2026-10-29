@@ -30,6 +30,25 @@ impl ServerBoundPacketHandler for Plot {
         packet: SCommandSuggestionsRequest,
         player_idx: usize,
     ) {
+        // `/coord` completes files, `io.txt` groups and type codes
+        // (BACKLOG.md BUG-022).
+        if let Some((start, matches)) = self.coord_suggestions(&packet.text) {
+            let res = CCommandSuggestionsResponse {
+                id: packet.transaction_id,
+                start: start as i32,
+                length: (packet.text.len().saturating_sub(start)) as i32,
+                matches: matches
+                    .into_iter()
+                    .map(|match_| CCommandSuggestionsResponseMatch {
+                        match_,
+                        tooltip: None,
+                    })
+                    .collect(),
+            };
+            self.players[player_idx].send_packet(&res.encode());
+            return;
+        }
+
         if !packet.text.starts_with("//load ") {
             return;
         }
