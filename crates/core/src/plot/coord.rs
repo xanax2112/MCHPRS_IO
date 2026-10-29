@@ -167,8 +167,9 @@ impl CoordState {
 }
 
 /// Candidate names for `/coord in <file>`: `io.txt` (only when it loaded at
-/// least one group) plus memory files that parse cleanly. Files disabled at load
-/// level are never offered (BACKLOG.md BUG-022).
+/// least one group) plus every non-dot `.rom`/`.ram` memory file, whether or
+/// not it parses (BACKLOG.md BUG-022). `io.txt` disabled at load level is
+/// never offered.
 fn file_candidates() -> Vec<String> {
     let mut out = Vec::new();
     let io_table = crate::io::IoTable::load(std::path::Path::new(crate::io::IO_FILE));
@@ -187,17 +188,7 @@ fn file_candidates() -> Vec<String> {
         if name.starts_with('.') {
             continue;
         }
-        let kind = if name.ends_with(".ram.txt") {
-            super::memory::Kind::Ram
-        } else if name.ends_with(".rom.txt") {
-            super::memory::Kind::Rom
-        } else {
-            continue;
-        };
-        let Ok(text) = fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        if super::memory::parse(&name, &text, kind).is_err() {
+        if !name.ends_with(".ram.txt") && !name.ends_with(".rom.txt") {
             continue;
         }
         names.push(name.trim_end_matches(".txt").to_string());
@@ -216,13 +207,35 @@ fn type_candidates(rom: bool) -> Vec<&'static str> {
     out
 }
 
-/// `io.txt` group names, or an empty list when the file is disabled.
+/// Every group name declared in `io.txt`, read from the file text.
+///
+/// Group-level validation errors must not hide a group here: those groups are
+/// exactly the ones `/coord` is used to repair. Only a file that fails at file
+/// level is hidden, which `file_candidates` already decides
+/// (BACKLOG.md BUG-022).
 fn io_group_candidates() -> Vec<String> {
-    crate::io::IoTable::load(std::path::Path::new(crate::io::IO_FILE))
-        .groups
-        .iter()
-        .map(|group| group.name.clone())
-        .collect()
+    let Ok(text) = fs::read_to_string(crate::io::IO_FILE) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let rest = match line
+            .strip_prefix("input ")
+            .or_else(|| line.strip_prefix("output "))
+        {
+            Some(rest) => rest,
+            None => continue,
+        };
+        let Some((name, _)) = rest.split_once(" = [") else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty() {
+            names.push(name.to_string());
+        }
+    }
+    names
 }
 
 impl Plot {
@@ -441,9 +454,12 @@ impl Plot {
             WriteMode::Append => coords.len() as u32 + produced,
             WriteMode::Replace => produced,
         };
-        if width != 0 && total > width {
+        // `width` in the file is the hard limit, `width = 0` included: a group
+        // declared with zero points accepts no coordinates at all
+        // (BACKLOG.md BUG-022).
+        if total > width {
             return Err(format!(
-                "Refused: that would need {} points but `width = {}`.",
+                "Refused: that would need {} point(s) but the file says `width = {}`.",
                 total, width
             ));
         }
@@ -514,9 +530,9 @@ impl Plot {
             WriteMode::Replace => produced,
             WriteMode::Append => existing.len() as u32 + produced,
         };
-        if width != 0 && total > width {
+        if total > width {
             return Err(format!(
-                "Refused: that would need {} points but `{} = {}`.",
+                "Refused: that would need {} point(s) but the file says `{} = {}`.",
                 total, width_key, width
             ));
         }
@@ -544,6 +560,8 @@ impl Plot {
             return;
         }
         self.coord.push_undo(path.clone(), old);
+        // The next compile has to re-read the touched files (BACKLOG.md BUG-022).
+        self.coord_dirty = true;
     }
 
     fn coord_undo(&mut self, player: usize) {
