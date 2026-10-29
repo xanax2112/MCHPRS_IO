@@ -136,7 +136,7 @@ fn build_fragment(
             let (name, sign) = axis(facing.unwrap_or(BlockFacing::East));
             let signed = if sign > 0 { step as i64 } else { -(step as i64) };
             (
-                format!("{}, {}, {}, {:+}{}{}, {}", x, y, z, signed, step, name, count),
+                format!("{}, {}, {}, {:+}{}, {}", x, y, z, signed, name, count),
                 count,
             )
         }

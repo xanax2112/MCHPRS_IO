@@ -24,7 +24,8 @@
 - 新建的临时文件一律放 `~/dsh/scratch/`，不留散落文件。
 - 写含单引号的源码必须走 Python 脚本（`chr(39)` 构造），直接用 shell heredoc 会剥掉引号。
 - 状态标记：`✅ 已完成` / `📝 已定待写码` / `🚧 进行中` / `📋 待做` / `⛔ 作废` / `⏳ 等用户`。
-- **以后新增报错 / 新功能**：先判断能不能并进现有条目——同一机制、同一处行为、只是补充细节或换个现象，就并进对应条目（追加说明、必要时改状态），**不新开编号**；只有当它跟现有 19 条都不属于同一回事时，才新增条目，编号接着往后排（当前最后一条是 `BUG-019`）。合并还是新增拿不准时先问，不要自己定。
+- **接替 / 新窗口**：先读 `~/dsh/HANDOFF-TO-SUCCESSOR.md`（项目交接：概况、进度、踩过的坑、协作规则、基岩版分工），共享目录有同一份副本。
+- **以后新增报错 / 新功能**：先判断能不能并进现有条目——同一机制、同一处行为、只是补充细节或换个现象，就并进对应条目（追加说明、必要时改状态），**不新开编号**；只有当它跟现有条目都不属于同一回事时，才新增条目，编号接着往后排（当前最后一条是 `BUG-034`）。合并还是新增拿不准时先问，不要自己定。（2026-10-29 自查：`width = 0` 端口已并入 BUG-008、`/coord` 步长问题已并入 BUG-022，均按此规则。）
 
 ---
 
@@ -36,7 +37,7 @@
 | Termux 通道 | SSH 端口 8022，`tx '<命令>'` 直连；sshd 不随重启自启 |
 | 仓库 | Termux 侧 `~/mchprs/source/MCHPRS_IO`，git 分支 `main`，远程 `https://github.com/xanax2112/MCHPRS_IO.git` |
 | 上游对照副本 | `~/mchprs/source/MCHPRS`（只读，基线 `master` @ `d492e43`） |
-| 线上二进制 | `~/mchprs/mchprs`，**0.5.4-alpha**（8,572,208 字节，sha256 `ca895885…`，2026-10-29 14:17 构建）；旧版备份在 `/storage/emulated/0/termux/old/`：`mchprs-0.5.3-alpha-e`（8,574,720）、`-d`、`-c`、`-b`、`-a`、`mchprs-0.5.2-alpha`、`mchprs-0.5.1-alpha-b` |
+| 线上二进制 | `~/mchprs/mchprs`，**0.5.4-alpha + /coord 步长修复**（8,570,096 字节，sha256 `b53325b0…`，2026-10-29 16:01 本机构建）；替换前 0.5.4 原版（`ca895885…`）备份在 `~/dsh/scratch/mchprs-0.5.4-alpha-pre-coordfix`。注意：原归档目录 `/storage/emulated/0/termux/old/` 已不存在（docs 已并入 `MCHPRS_IO/docs/`）
 | 服务器运行目录 | `/storage/emulated/0/termux/MCHPRS_IO/`（`Config.toml`、`io.txt`、`memory/`、`logs/`、`world/`） |
 | 归档目录 | `/storage/emulated/0/termux/old/`（2026-10-28 起）：`backup-2026-10-28/`（旧版本二进制、改动前源码、台账快照）、`scratch-2026-10-28/`（构建日志与临时脚本）、`drafts-2026-10-28/`（旧 rom 草稿） |
 | 最近提交 | `36a63e6`（0.5.4-alpha，已推送 `main`）+ 附注标签 `v0.5.4-alpha`（已推送）；`main` 上更早的是 `433e0d9`（0.5.3 的 `/coord` 修复）与 `f945285` |
@@ -404,6 +405,29 @@
   6. `//schem` 除 `load` / `save` 外，**再加 `//schem list`**（列出 schems 目录里的文件）。
 - 至此 BUG-023 的规格已完整，等你下“写代码”指令。
 
+**BUG-022 补充：`/coord new|add` 的步长被写两次（2026-10-29 用户实测；已编译并替换，未提交）**
+
+用户 2026-10-29 实测：`/coord add` 时步长参数输入 `2` 变成 `22`、输入 `4` 变成 `44`。
+
+原因（已定位，`crates/core/src/plot/coord.rs:139`）：`build_fragment` 拼步进坐标时把 step 输出了两次——
+
+```rust
+format!("{}, {}, {}, {:+}{}{}, {}", x, y, z, signed, step, name, count)
+//                             ^^^^^^  ^^^^^
+//                             "+2"    "2"   →  "+22x, 4"
+```
+
+`{:+}` 已经带上了数字本身（带符号），后面又多接了一个 `{}`（step），于是 `step = 2` 写成 `+22x`。
+
+**危害不止写错字符**：`+22x, 4` 在解析器看来是合法的"步长 22、数量 4"，所以**不会报错**，而是静默生成间隔 22 的 4 个坐标——比语法错误更危险。凡是用 `/coord new|add` 带过步长+数量的文件，坐标都可能是错的，需要复核或手工修。
+
+修法（一行）：把格式串改成只输出一次，例如
+`format!("{}, {}, {}, {:+}{}, {}", x, y, z, signed, name, count)`。
+
+影响面：`build_fragment` 同时被 `write_io`（io.txt）与 `write_memory`（memory）调用，两边都受影响；`step`/`count` 只有一个或 `count <= 1` 时走单坐标分支（`coord.rs:143`），不受影响。
+
+状态（2026-10-29）：**已编译并替换线上二进制（未提交）**——`cargo build --release` 1m52s、EXIT:0；产物 8,570,096 字节 sha256 `b53325b0…` 已 `mv` 到 `~/mchprs/mchprs`（chmod 700），旧版 `ca895885…` 备份在 `~/dsh/scratch/`。尚未实机验证 `/coord`、未提交。
+
 ### 2.8 编译与稳定性（G）
 
 | 编号 | 条目 | 状态 |
@@ -492,6 +516,15 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
 - 其它路线：Rust 原生 Bedrock（bedrock-rs）等于重写 Geyser，不划算；把服务端追平最新 Java 协议工程量远大于 0.5.3 全部工作。
 - 详细分析（含链路图、最小验证清单、引用）：`~/dsh/BEDROCK-CLIENT-FEASIBILITY-0.5.3.md`。
 - 待定：是否落地最小验证（需用户同意装 JDK 与下载 jar）。
+- **已定（用户 2026-10-29）：路径 D —— 自研 Bedrock 协议栈，协议锁定 766（1.21.51），不进 Geyser/ViaProxy。**
+  - 版本组合：**Bedrock 1.21.51（协议 766）+ Java 1.20.4（协议 765）**；客户端固定在 1.21.51 由用户保证（侧载 APK + 关自动更新），服务端不做版本协商。
+  - 依据（2026-10-29 查证，源码用 `~/storage/shared/termux/bedrock-rs-main`）：`crates/protocol/Cargo.toml` 有 `v766` feature；`crates/protocol/src/generated/v766.rs:8514` 的 `GAME_VERSION = "1.21.50"`；`def/versions.def.rs:498` 为 `(766, "r/21_u5", "1.21.50")`。1.21.51 是补丁版，同协议。
+  - 为什么锁定比追新版简单：协议冻结 ⇒ 包结构冻结、方块状态表冻结、映射表只生成一次、无版本差分维护；代价是以后的 Bedrock 新内容与我们无关。
+  - 关键结论：我们 `0..383` 的土地与 Bedrock 主世界 `-64..319` **正好差 64**，全局 `y -= 64` 即可，P0 的"高度被裁"风险消失。
+  - 体量估计：会话层约 3–5k 行 Rust + 一张方块映射表（我们只有约 100 多种方块，可从 Geyser 的 MIT 映射数据裁剪生成）+ 生成脚本；无 JVM、无 ViaProxy，二进制增加几 MB。
+  - 复用：`bedrock::network`（RakNet/压缩/AES/登录 helper）、`bedrock_protocol`（只开 `v766`）、`bedrock::auth`（offline 路径）、`bedrock::level::SubChunk`（Limitless v9）。
+  - 风险：①`v766` 是差分生成、默认版本是 `v2225`，实际可用性要实测；②Bedrock 客户端对高频方块更新敏感，必须按 `world_send_rate` 节流；③`ResourcePack` 信息包不发会卡在加载界面。
+  - 第一步（待用户说"写代码"）：在 `~/dsh/scratch/` 建独立 spike crate，只开 `v766`，验收三件事——**连上、看到一块 16×16 方块、能按一个按钮**；同时验证 1.21.51 客户端能连。跑通再改主仓库。
 
 ### 2.12 文档（J）
 
@@ -725,6 +758,7 @@ analog_output <组名> = [ origin / clk / rs_width / width / 坐标 ]
 | 10 | 0.5.3-alpha 未验收清单（含已改未编译的 3 项） | 📋 `UNVERIFIED-0.5.3-alpha.md`（仓库根目录，已复制到共享存储 `docs/`），随验收逐项打勾 |
 | 11 | 基岩版客户端接入（BUG-032） | 📋 仅调研：Geyser + ViaProxy 链路可行，P0 风险未验证；分析见 `~/dsh/BEDROCK-CLIENT-FEASIBILITY-0.5.3.md` |
 | 12 | `width = 0` 时钟端口规格（并入 BUG-008） | ✅ 已完成（0.5.4-alpha）：hex 固定 `0`，上升沿推送；无时钟的组编译后禁用 |
+| 13 | `/coord` 步长写两次（并入 BUG-022） | 🐞 已编译并替换线上二进制（未提交），待实机验证 |
 
 ---
 
