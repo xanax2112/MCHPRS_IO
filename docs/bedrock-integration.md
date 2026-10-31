@@ -53,8 +53,10 @@ Java 协议实现仍在 `crates/network/src/packets/`，Bedrock 与它**平级**
 | PATCH-003 | 同上 | 该 newtype 的 NBT 编码：无长度前缀 + varint 字符串 | 与 766 规范一致 |
 | PATCH-004 | `crates/protocol/src/version/v662/enums/player_permission_level.rs` | 改成 `#[enum_repr(i8)]` | 上游按 u8 序列化，`Member` 被写成 2，客户端当成 Operator |
 | PATCH-005 | `crates/protocol/src/version/v662/enums/data_item_type.rs` | `Int64` 由 `i64` 改 `u64` | Bedrock 的 LONG 型元数据是无符号 varint；用 zigzag 会让标志位整体错位（→ 空氧气条、移动变慢） |
+| PATCH-006 | `crates/protocol/src/version/v662/types/command_origin_data.rs` | 去掉 run-on 写法（不再 `read_to_end`），改为按顺序读写：编号 varint → uuid → requestId | 上游 `deserialize` 用 `read_to_end` 把**整个包剩余字节**吞掉，导致 `CommandRequestPacket` 的 `internal`/`version` 读到 EOF → 客户端一输入 `/xxx` 就掉线。权威字节见 `refs/ProbeCommandRequest.java`（Cloudburst v766） |
+| PATCH-007 | `crates/protocol/src/version/v712/enums/item_stack_request_action_type.rs`（`V766` 实际用这一份；`v662` 的同名文件同步改了保持一致） | `CraftCreative`：`creative_item_network_id` 由 `i32`(zigzag) 改 **`u32`(无符号 varint)**，`number_of_requested_crafts` 改 `u8` | 上游用 zigzag 解 `creativeItemNetworkId`（id=128 会读成 -64），且 `V766` 走的是 v712 那份枚举。宽度由 `refs/ProbeCraftCreative.java` 反推：id=128 → `8001`（无符号）、crafts=127/128 → `7f`/`80`（1 字节）、crafts=300 被截成 `2c` |
 
-升级上游时**必须重放这 5 个补丁**，否则会出现“能连上但玩家状态怪异”的回归。
+升级上游时**必须重放这 7 个补丁**，否则会出现“能连上但玩家状态怪异”的回归。
 
 ## 5. 怎么验证
 
@@ -93,7 +95,8 @@ cargo run -p mchprs_network --example bedrock_server
 3. **交互回传**：`PlayerAuthInput.player_block_actions` 的坐标要落到 `crates/core` 的红石事件里；
    地块坐标同样要 `+64` 换回。
 4. **节流**：Bedrock 客户端对高频方块更新敏感，必须按 `world_send_rate` 合并下发。
-5. **创造背包物品表**：`CreativeContent` 现在发的是合法空表（数据表已生成但未接入）。
+5. ~~**创造背包物品表**~~：已接入 Geyser 的 `creative_items.1_21_50.json`（1712 条全量面板），
+   见 BACKLOG.md BUG-032 的「R1 全量面板实现」。
 
 ## 7. 约束（来自项目要求，改代码时别破坏）
 

@@ -1,4 +1,5 @@
 use crate::player::{PacketSender, Player};
+use mchprs_network::bedrock::bridge::{BedrockSidebar, BedrockSidebarLine};
 use mchprs_network::packets::clientbound::{
     CDisplayObjective, CResetScore, CUpdateObjectives, CUpdateScore, ClientBoundPacket,
     ObjectiveNumberFormat,
@@ -72,6 +73,36 @@ impl Scoreboard {
         }
     }
 
+    /// 当前状态在 Bedrock 侧的等价物（R3）。
+    ///
+    /// 分数与 Java 完全一致（`len - line`，降序排列），文本降级成 `§` legacy 码。
+    /// **平台差异**：Bedrock 没有 `number_format: Blank`，分数数字一定会显示出来。
+    fn bedrock_sidebar(&self) -> BedrockSidebar {
+        let total = self.current_state.len();
+        BedrockSidebar {
+            // 与 Java 的 `TextComponentBuilder::new("Redpiler Status").color_code(Red)` 对应
+            title: "§cRedpiler Status".to_string(),
+            lines: self
+                .current_state
+                .iter()
+                .enumerate()
+                .map(|(line, content)| BedrockSidebarLine {
+                    name: content.entity_name.clone(),
+                    score: (total - line) as i32,
+                    text: content.text.to_legacy_text(),
+                })
+                .collect(),
+        }
+    }
+
+    /// 把当前状态推给所有 Bedrock 玩家（Java 玩家由上面的 Java 包负责）。
+    fn push_bedrock(&self, players: &[Player]) {
+        let sidebar = self.bedrock_sidebar();
+        players
+            .iter()
+            .for_each(|player| player.send_bedrock_sidebar(&sidebar));
+    }
+
     fn set_lines(&mut self, players: &[Player], lines: Vec<ScoreboardLine>) {
         for line in 0..self.current_state.len() {
             let removal_packet = self.make_removal_packet(line).encode();
@@ -84,6 +115,9 @@ impl Scoreboard {
             let update_packet = self.make_update_packet(line).encode();
             players.iter().for_each(|p| p.send_packet(&update_packet));
         }
+
+        // Bedrock 侧整份覆写（行数可能变少，会话线程会顺带删掉多余行）。
+        self.push_bedrock(players);
     }
 
     fn set_line(&mut self, players: &[Player], line: usize, text: ScoreboardLine) {
@@ -98,6 +132,8 @@ impl Scoreboard {
 
         let update_packet = self.make_update_packet(line).encode();
         players.iter().for_each(|p| p.send_packet(&update_packet));
+
+        self.push_bedrock(players);
     }
 
     pub fn add_player(&self, player: &Player) {
@@ -123,6 +159,9 @@ impl Scoreboard {
         for i in 0..self.current_state.len() {
             player.send_packet(&self.make_update_packet(i).encode());
         }
+
+        // Bedrock 玩家进 plot 时补一份右侧计分板（R3）。
+        player.send_bedrock_sidebar(&self.bedrock_sidebar());
     }
 
     pub fn remove_player(&mut self, player: &Player) {

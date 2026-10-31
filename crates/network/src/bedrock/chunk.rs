@@ -101,11 +101,30 @@ pub fn paletted_subchunk(index: i8, blocks: &[i32; 4096]) -> Vec<u8> {
         }
     }
 
+    // 位宽必须是 Bedrock 允许的那几个值（见 `vendor/bedrock-rs/crates/level/src/bits.rs`：
+    // `VALID_BITS = [1, 2, 3, 4, 5, 6, 8, 16]`）。用 ceil(log2(n)) 会算出 7/9/10/… 这类
+    // 客户端不接受的值。单值时走下面的 bits = 0 特例。
+    //
+    // **不要 `.min(8)`**：一段 4096 个方块最多 4096 种状态 → 需要 16 位；
+    // 截到 8 位会让索引静默截断成错方块（BUG-032 第 18 条）。
+    const VALID_BITS: [u8; 8] = [1, 2, 3, 4, 5, 6, 8, 16];
     let bits: u8 = if palette.len() <= 1 {
         0
     } else {
-        (16 - ((palette.len() as u16 - 1).leading_zeros() as u8)).min(8)
+        *VALID_BITS
+            .iter()
+            .find(|&&b| (1usize << b) >= palette.len())
+            .unwrap_or(&16)
     };
+
+    // 每个 u32 只能放 `32 / bits` 个索引（Bedrock 是**按 word 补位**，索引不跨 word）。
+    //
+    // 这一点极其关键：`bits = 1/2/4/8/16` 时补位与"连续打包"结果相同，所以过去的区块
+    // 看起来都正常；一旦调色板涨到 5..=8 种（bits = 3），两种算法完全不同 ——
+    // 客户端会把整段解析错，表现为**脚下的区块消失、玩家掉进虚空、甚至客户端崩溃**。
+    // 参考实现：`vendor/bedrock-rs/crates/level/src/greedy.rs::to_disk`
+    // （`let per_word = u32::BITS / bits; ... self.array.chunks(per_word)`）。
+    let per_word: usize = 32 / bits.max(1) as usize;
 
     let mut out = Vec::new();
     out.push(9); // 子区块版本 9
@@ -114,15 +133,12 @@ pub fn paletted_subchunk(index: i8, blocks: &[i32; 4096]) -> Vec<u8> {
     out.push((bits << 1) | 1); // 运行时调色板
 
     if bits > 0 {
-        let mut words = vec![0u32; (4096 * bits as usize).div_ceil(32)];
+        let word_count = 4096usize.div_ceil(per_word);
+        let mut words = vec![0u32; word_count];
         for (i, &id) in ids.iter().enumerate() {
-            let bit = i * bits as usize;
-            let w = bit / 32;
-            let off = bit % 32;
-            words[w] |= (id as u32) << off;
-            if off + bits as usize > 32 {
-                words[w + 1] |= (id as u32) >> (32 - off);
-            }
+            let w = i / per_word;
+            let shift = (i % per_word) * bits as usize;
+            words[w] |= (id as u32) << shift;
         }
         for w in words {
             out.extend_from_slice(&w.to_le_bytes());
@@ -170,4 +186,231 @@ pub fn build_payload(spec: &ChunkSpec) -> Vec<u8> {
 
 pub fn sub_chunk_count(min_section: i8, highest_non_empty: i8) -> u32 {
     (highest_non_empty as i32 - min_section as i32 + 1) as u32
+}
+
+/// MCHPRS 的 y 从 0 开始，Bedrock 主世界的 y 从 -64 开始，两者相差 64。
+pub const Y_OFFSET: i32 = 64;
+
+/// Bedrock 主世界最低的子区块序号（y = -64）。
+pub const BEDROCK_MIN_SECTION: i8 = -4;
+
+/// Bedrock 主世界一共 24 个 16 格段（y = -64..319）。
+pub const BEDROCK_SECTION_COUNT: i32 = 24;
+
+/// 从任意方块来源生成一个 Bedrock `LevelChunk` 负载。
+///
+/// `get_block(x, y, z)` 返回 **MCHPRS（Java 1.20.4）的方块状态 id**，
+/// 坐标是 MCHPRS 的方块坐标（y ∈ 0..383）。这里**不依赖 `mchprs_world::World`**：
+/// 调用方传一个闭包即可（plot 线程传 `|x,y,z| self.world.get_block_raw(...)`），
+/// 这样协议层不会反向依赖世界层，测试也不需要伪造整个 `World` trait。
+///
+/// `chunk_x` / `chunk_z` 是 **Bedrock 的区块坐标**。Bedrock 与 MCHPRS 的方块 x/z 直接对应，
+/// y 相差 [`Y_OFFSET`]：Bedrock `y` 的方块 = MCHPRS 的 `y + 64`。
+pub fn build_chunk_from_world<F>(
+    mut get_block: F,
+    chunk_x: i32,
+    chunk_z: i32,
+    biome_id: i32,
+) -> Vec<u8>
+where
+    F: FnMut(i32, i32, i32) -> u32,
+{
+    let mut out = Vec::new();
+
+    // 诊断（BUG-032 第 33 条）：`MCHPRS_BEDROCK_DEBUG_CHUNK=1` 时把每个区块里出现的
+    // 方块对（java 状态 id → 基岩 runtime id）打出来。方块映射出问题时唯一可靠的办法就是
+    // 看客户端**实际收到了什么**，而不是推测映射表。
+    let debug_chunk = std::env::var_os("MCHPRS_BEDROCK_DEBUG_CHUNK").is_some();
+    let mut seen: Vec<(u32, i32)> = Vec::new();
+
+    for section in 0..BEDROCK_SECTION_COUNT {
+        // 索引顺序：Bedrock 是 `(x << 8) | (z << 4) | y` —— **y 是最低 4 位**。
+        // 之前写成 `y*256 + z*16 + x`（x 最低位），方块会整体错位，表现为“条纹状”渲染。
+        let mut blocks = [crate::bedrock::AIR_STATE; 4096];
+        for x in 0..16 {
+            for z in 0..16 {
+                for y in 0..16 {
+                    let id = get_block(
+                        chunk_x * 16 + x,
+                        section * 16 + y, // Bedrock y + 64 == MCHPRS y
+                        chunk_z * 16 + z,
+                    );
+                    let bedrock_id = crate::bedrock::bedrock_block_state(id);
+                    blocks[((x << 8) | (z << 4) | y) as usize] = bedrock_id;
+                    if debug_chunk && !seen.contains(&(id, bedrock_id)) && seen.len() < 64 {
+                        seen.push((id, bedrock_id));
+                    }
+                }
+            }
+        }
+        let index = (section as i32 + BEDROCK_MIN_SECTION as i32) as i8;
+        out.extend(paletted_subchunk(index, &blocks));
+    }
+
+    // 全部 24 段都要有生物群系数据，否则客户端会自己猜。
+    for _ in 0..BEDROCK_SECTION_COUNT {
+        out.push(1); // 生物群系层头：(bits=0)<<1 | 1
+        zigzag(&mut out, biome_id);
+    }
+
+    out.push(0); // 边界方块计数（本阶段不下发方块实体）
+
+    if debug_chunk && !seen.is_empty() {
+        let list: Vec<String> = seen
+            .iter()
+            .map(|(java, bedrock)| format!("{java}->{bedrock}"))
+            .collect();
+        println!(
+            "[CHUNK] ({chunk_x},{chunk_z}) 方块对 {} 个: {}",
+            seen.len(),
+            list.join(" ")
+        );
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **钉死"按 word 补位"的位打包**（BUG-032 第 33 条的真凶）。
+    ///
+    /// 5 种方块 → bits = 3、每 word 只能放 10 个索引（`32 / 3 = 10`），
+    /// 所以是 `ceil(4096 / 10) = 410` 个 u32，而不是"连续打包"的 384 个。
+    /// 过去写成连续打包，`bits ≤ 2` 时两者恰好一致所以看不出问题；一到 bits = 3，
+    /// 客户端整段解析错位 —— 脚下区块消失、玩家掉进虚空、甚至崩溃。
+    #[test]
+    fn palette_packs_words_without_straddling() {
+        // 5 种状态循环，保证调色板大小正好是 5
+        let mut blocks = [0i32; 4096];
+        for (i, b) in blocks.iter_mut().enumerate() {
+            *b = (i % 5) as i32;
+        }
+        let payload = paletted_subchunk(0, &blocks);
+
+        let bits = 3usize;
+        let per_word = 32 / bits; // 10
+        let word_count = 4096usize.div_ceil(per_word); // 410
+
+        // 头部 4 字节：版本、层数、subchunk index、层头
+        assert_eq!(payload[0], 9);
+        assert_eq!(payload[1], 1);
+        assert_eq!(payload[3], (bits as u8) << 1 | 1);
+
+        // 第一个 word：索引 0..=9 依次是 0,1,2,3,4,0,1,2,3,4
+        let mut expected: u32 = 0;
+        for k in 0..per_word {
+            expected |= ((k % 5) as u32) << (k * bits);
+        }
+        let w0 = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+        assert_eq!(w0, expected, "第一个 word 必须是补位打包");
+
+        // 最后一个 word 之前的所有 word 都必须能被精确写出
+        let after_words = 4 + word_count * 4;
+        assert!(
+            payload.len() > after_words,
+            "负载里必须真的写了 {word_count} 个 word"
+        );
+        // 紧接着是调色板长度（zigzag(5) = 10）与 5 个调色板项
+        assert_eq!(payload[after_words], 10, "调色板长度应为 zigzag(5)");
+        assert_eq!(payload.len(), after_words + 1 + 5);
+
+        // 抽样校验第 10 个索引（应当进入第二个 word 的第 0 位）
+        let w1 = u32::from_le_bytes([
+            payload[8],
+            payload[9],
+            payload[10],
+            payload[11],
+        ]);
+        assert_eq!(w1 & 0b111, (10 % 5) as u32, "索引 10 必须落在第二个 word");
+    }
+
+    /// 单值子区块的字节数：版本(9) + 层数(1) + index + 层头 + zigzag(状态 id)。
+    fn uniform_section_len(state: i32) -> usize {
+        let zigzag_len = {
+            let mut out = Vec::new();
+            zigzag(&mut out, state);
+            out.len()
+        };
+        4 + zigzag_len
+    }
+
+    /// 全空气世界：24 段单值空气 + 24 段生物群系 + 边界方块计数。
+    #[test]
+    fn empty_world_payload_has_expected_size() {
+        let payload = build_chunk_from_world(|_, _, _| 0, 0, 0, 1);
+        let expected = 24 * uniform_section_len(crate::bedrock::AIR_STATE) + 24 * 2 + 1;
+        assert_eq!(payload.len(), expected);
+    }
+
+    /// 整段都是石头的 4 个段会用到**更短**的 zigzag（石头 2403 比空气 11996 小），
+    /// 于是整块负载比全空气**略小**。这条固化“单值段按 zigzag 长度变化”这个事实，
+    /// 免得以后有人误以为区块负载长度是固定的。
+    #[test]
+    fn uniform_stone_sections_are_shorter_than_air() {
+        let empty = build_chunk_from_world(|_, _, _| 0, 0, 0, 1);
+        // MCHPRS 的 y ∈ 0..63 全是石头 → 段 0..3 是纯石头单值段
+        let stone = build_chunk_from_world(|_, y, _| if y < 64 { 1 } else { 0 }, 0, 0, 1);
+        assert!(
+            stone.len() < empty.len(),
+            "纯石头段应当比纯空气段短：{} vs {}",
+            stone.len(),
+            empty.len()
+        );
+    }
+
+    /// 段内**混合**时才会走高位的调色板路径（写 128 个 u32），负载显著变大。
+    #[test]
+    fn mixed_section_is_much_larger() {
+        let empty = build_chunk_from_world(|_, _, _| 0, 0, 0, 1);
+        // 每段下半是石头、上半是空气 → 24 段全部变多值
+        let mixed = build_chunk_from_world(|_, y, _| if y % 16 < 8 { 1 } else { 0 }, 0, 0, 1);
+        assert!(
+            mixed.len() > empty.len() + 1000,
+            "混合段应当显著更大：{} vs {}",
+            mixed.len(),
+            empty.len()
+        );
+    }
+
+    /// 区块坐标必须真的作用到取方块上：chunk (1,0) 读的是 x ∈ 16..31。
+    #[test]
+    fn chunk_coordinates_are_applied() {
+        let mut max_x = i32::MIN;
+        let _ = build_chunk_from_world(
+            |x, _, _| {
+                max_x = max_x.max(x);
+                0
+            },
+            1,
+            0,
+            1,
+        );
+        assert_eq!(max_x, 31);
+    }
+
+    /// **钉死段内索引顺序**：Bedrock 是 `(x << 8) | (z << 4) | y`，y 最低 4 位。
+    ///
+    /// 世界为空，只在 (1, 0, 0) 放一块石头 → 该段变两值调色板（bits=1），
+    /// 石头在索引 (1<<8)|(0<<4)|0 = 256 处，即第 8 个 u32 word 的第 0 位。
+    /// 段头固定 4 字节，所以 payload[4 + 8*4] 必须是 0x01。
+    #[test]
+    fn block_index_uses_bedrock_order() {
+        let payload = build_chunk_from_world(
+            |x, y, z| if (x, y, z) == (1, 0, 0) { 1 } else { 0 },
+            0,
+            0,
+            1,
+        );
+        assert_eq!(payload[4 + 8 * 4], 0x01, "石头应当落在索引 256（y 为最低位）");
+
+        // 再验一次 y 方向：在 (0, 1, 0) 放石头 → 索引 1，即 word 0 的第 1 位 = 0x02。
+        let payload = build_chunk_from_world(
+            |x, y, z| if (x, y, z) == (0, 1, 0) { 1 } else { 0 },
+            0,
+            0,
+            1,
+        );
+        assert_eq!(payload[4], 0x02, "y=1 的方块应当落在索引 1");
+    }
 }

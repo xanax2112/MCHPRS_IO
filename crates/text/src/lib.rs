@@ -74,6 +74,84 @@ impl ColorCode {
             Obfuscated | Bold | Strikethrough | Underline | Italic | Reset
         )
     }
+
+    /// `parse` 的逆运算：这个颜色码对应 `§` 后面的那个字符。
+    pub fn code_char(self) -> char {
+        use ColorCode::*;
+        match self {
+            Black => '0',
+            DarkBlue => '1',
+            DarkGreen => '2',
+            DarkAqua => '3',
+            DarkRed => '4',
+            DarkPurple => '5',
+            Gold => '6',
+            Gray => '7',
+            DarkGray => '8',
+            Blue => '9',
+            Green => 'a',
+            Aqua => 'b',
+            Red => 'c',
+            LightPurple => 'd',
+            Yellow => 'e',
+            White => 'f',
+            Obfuscated => 'k',
+            Bold => 'l',
+            Strikethrough => 'm',
+            Underline => 'n',
+            Italic => 'o',
+            Reset => 'r',
+        }
+    }
+}
+
+/// Bedrock 的 `§` 码只有 16 色，十六进制颜色按 RGB 距离取最近的那个。
+fn nearest_code_for_hex(hex: &str) -> ColorCode {
+    use ColorCode::*;
+
+    // (颜色, r, g, b)：Minecraft 的 16 个基础色
+    const PALETTE: &[(ColorCode, u8, u8, u8)] = &[
+        (Black, 0x00, 0x00, 0x00),
+        (DarkBlue, 0x00, 0x00, 0xAA),
+        (DarkGreen, 0x00, 0xAA, 0x00),
+        (DarkAqua, 0x00, 0xAA, 0xAA),
+        (DarkRed, 0xAA, 0x00, 0x00),
+        (DarkPurple, 0xAA, 0x00, 0xAA),
+        (Gold, 0xFF, 0xAA, 0x00),
+        (Gray, 0xAA, 0xAA, 0xAA),
+        (DarkGray, 0x55, 0x55, 0x55),
+        (Blue, 0x55, 0x55, 0xFF),
+        (Green, 0x55, 0xFF, 0x55),
+        (Aqua, 0x55, 0xFF, 0xFF),
+        (Red, 0xFF, 0x55, 0x55),
+        (LightPurple, 0xFF, 0x55, 0xFF),
+        (Yellow, 0xFF, 0xFF, 0x55),
+        (White, 0xFF, 0xFF, 0xFF),
+    ];
+
+    let digits = hex.trim_start_matches('#');
+    let parsed = (digits.len() == 6)
+        .then(|| u32::from_str_radix(digits, 16).ok())
+        .flatten();
+    let Some(rgb) = parsed else {
+        return White;
+    };
+    let (r, g, b) = (
+        ((rgb >> 16) & 0xFF) as i32,
+        ((rgb >> 8) & 0xFF) as i32,
+        (rgb & 0xFF) as i32,
+    );
+
+    PALETTE
+        .iter()
+        .min_by_key(|(_, pr, pg, pb)| {
+            let dr = r - *pr as i32;
+            let dg = g - *pg as i32;
+            let db = b - *pb as i32;
+            dr * dr + dg * dg + db * db
+        })
+        .map(|(color, _, _, _)| *color)
+        .unwrap_or(White)
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -170,6 +248,50 @@ pub struct TextComponent {
 }
 
 impl TextComponent {
+    /// 把组件渲染成客户端可直接显示的 **`§` legacy 文本**。
+    ///
+    /// Bedrock 的计分板、聊天等字段是纯字符串（没有 Java 那套 JSON 组件），
+    /// 颜色只能降级成 `§` 码（BUG-032 R3）。这里只处理我们能产出的形态：
+    /// 单层 `text` + `color` + 若干格式位，`extra` 递归拼接。
+    ///
+    /// `TextColor::Hex` 转成 `§` + 最近似的 16 色之一（Bedrock 的 `§` 码没有十六进制颜色；
+    /// Java 的 `§x` 扩展写法在计分板这类字段里不可靠，所以按亮度粗略映射）。
+    pub fn to_legacy_text(&self) -> String {
+        use std::fmt::Write as _;
+
+        let mut out = String::new();
+        if let Some(color) = &self.color {
+            match color {
+                TextColor::ColorCode(code) => {
+                    let _ = write!(out, "§{}", code.code_char());
+                }
+                TextColor::Hex(hex) => {
+                    let _ = write!(out, "§{}", nearest_code_for_hex(hex).code_char());
+                }
+            }
+        }
+        if self.bold {
+            out.push_str("§l");
+        }
+        if self.italic {
+            out.push_str("§o");
+        }
+        if self.underlined {
+            out.push_str("§n");
+        }
+        if self.strikethrough {
+            out.push_str("§m");
+        }
+        if self.obfuscated {
+            out.push_str("§k");
+        }
+        out.push_str(&self.text);
+        for child in &self.extra {
+            out.push_str(&child.to_legacy_text());
+        }
+        out
+    }
+
     pub fn from_legacy_text(message: &str) -> Vec<TextComponent> {
         let mut components = Vec::new();
 

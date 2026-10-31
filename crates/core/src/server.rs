@@ -110,6 +110,19 @@ pub enum PrivMessage {
     AutomationDisconnect { conn_id: u64 },
     /// A `/` command typed into the server terminal (BUG-031).
     ConsoleCommand(String),
+    /// A Bedrock client just logged in and needs a read-only world snapshot
+    /// (BACKLOG.md BUG-032「最小只读通路」). The plot builds it on its own thread
+    /// and answers through `reply`.
+    ///
+    /// `chunk_radius` 来自 `CONFIG.view_distance`：plot 按它决定快照覆盖多大，
+    /// 必须和发给客户端的 `ChunkRadiusUpdated` 一致（BUG-032 第 16/26 条）。
+    BedrockSnapshot {
+        reply: Sender<mchprs_network::bedrock::bridge::PlotSnapshot>,
+        chunk_radius: i32,
+        /// 出生点（**MCHPRS/Java 坐标**）：有存档就用存档位置，否则 None（用默认出生点）。
+        /// 登录时直接出生在这里，避免"先出生再传送"（BUG-032 第 31 条）。
+        spawn: Option<(f64, f64, f64)>,
+    },
 }
 
 /// This is the data that gets sent in the `PlayerJoinedInfo` broadcast message.
@@ -146,6 +159,13 @@ pub struct MinecraftServer {
     online_players: FxHashMap<u128, PlayerListEntry>,
     running_plots: Vec<PlotListEntry>,
     automation: Option<AutomationServer>,
+    /// Events coming from the Bedrock listener thread (BACKLOG.md BUG-032).
+    bedrock_events: Receiver<mchprs_network::bedrock::bridge::BedrockEvent>,
+    /// Bedrock 玩家身份表：uuid → 会话句柄。
+    ///
+    /// 用途：拒绝"同名 Java + Bedrock 同时在线"（两者 UUID 相同，会互相打架），
+    /// 以及在需要时（超时/重复登录）主动断开对应的 Bedrock 会话。
+    bedrock_players: FxHashMap<u128, mchprs_network::bedrock::bridge::BedrockHandle>,
 }
 
 impl MinecraftServer {
@@ -197,6 +217,8 @@ impl MinecraftServer {
         }
 
         // Create server struct
+        // Bedrock listener (BACKLOG.md BUG-032): `bedrock = 0` disables it.
+        let (bedrock_tx, bedrock_rx) = mpsc::channel();
         let mut server = MinecraftServer {
             network: NetworkServer::new(bind_addr),
             broadcaster: bus,
@@ -216,7 +238,25 @@ impl MinecraftServer {
                     None
                 }
             },
+            bedrock_events: bedrock_rx,
+            bedrock_players: FxHashMap::default(),
         };
+
+        // 基岩版监听：`bedrock = 0` 表示关闭（BACKLOG.md BUG-032）。
+        // 视距用 `CONFIG.view_distance`，与 Java 侧 `CLogin` 同源：Bedrock 的世界大小
+        // 不能和 Java 玩家看到的不一样（第 16/26 条）。
+        if CONFIG.bedrock > 0 {
+            let chunk_radius = CONFIG.view_distance.clamp(1, 32) as i32;
+            mchprs_network::bedrock::session::spawn_mchprs_listener(
+                format!("0.0.0.0:{}", CONFIG.bedrock),
+                bedrock_tx,
+                chunk_radius,
+            );
+            info!(
+                "Bedrock listener on udp 0.0.0.0:{} (view distance {chunk_radius} chunks)",
+                CONFIG.bedrock
+            );
+        }
 
         // Load the spawn area plot on server start
         // This plot should be always active
@@ -355,13 +395,116 @@ impl MinecraftServer {
         }
     }
 
+    /// 把一个 Bedrock 客户端登记成**真正的玩家**并送进 spawn plot (0,0)。
+    ///
+    /// 复用 Java 玩家的加载路径（背包、权限缓存、存档格式完全一致），只把连接后端换成
+    /// `PlayerBackend::Bedrock`。见 BACKLOG.md BUG-032「玩家化」。
+    fn handle_bedrock_register(
+        &mut self,
+        username: String,
+        position: (f64, f64, f64),
+        link: mchprs_network::bedrock::bridge::BedrockPlayerLink,
+    ) {
+        // 与同名 Java 离线玩家共用身份：权限、存档都一致（符合"与 Java 版一致"）。
+        let uuid = Player::generate_offline_uuid(&username);
+
+        // 同名 Java + Bedrock 同时在线会撞同一个 UUID，直接拒绝后连的这个。
+        if self.online_players.contains_key(&uuid) || self.bedrock_players.contains_key(&uuid) {
+            warn!(
+                "拒绝 Bedrock 玩家 {username}：同名玩家已在线（UUID {:032x}）",
+                uuid
+            );
+            link.handle.close_connection();
+            return;
+        }
+
+        // 先确认 spawn plot 在跑，再登记句柄：否则句柄会永远留在身份表里，
+        // 这个用户名以后再也连不上（复盘第 14 条）。p0,0 是常驻 plot，正常不会走到这里。
+        if !self
+            .running_plots
+            .iter()
+            .any(|plot| plot.plot_x == 0 && plot.plot_z == 0)
+        {
+            warn!("Bedrock 玩家 {username} 要进 plot (0,0)，但该 plot 不在运行，断开");
+            link.handle.close_connection();
+            return;
+        }
+
+        // 先把句柄登记进身份表（用于后续断开/拒绝重复登录），再把 link 交给 Player。
+        self.bedrock_players.insert(uuid, link.handle.clone());
+
+        let mut player = Player::load_player(
+            uuid,
+            username,
+            Vec::new(),
+            crate::player::PlayerBackend::Bedrock(link),
+        );
+        // 位置：**有存档就用存档里的**，只有第一次进服才用 Bedrock 会话给的出生点
+        // （BUG-032 第 32 条）。以前这里无条件覆盖，于是每次进服都被扔到默认出生点
+        // (128,128,128) 再从天上掉下来 —— 存档其实一直是好的。
+        if Player::save_exists(uuid) {
+            // `do_login` 已经按默认出生点把客户端传送过一次，这里纠正到存档位置。
+            player.teleport(player.pos.clone());
+            info!(
+                "Bedrock 玩家 {} 使用存档位置 ({:.2}, {:.2}, {:.2})；存档字段 flying={} fly_speed={:.2} walk_speed={:.2} gamemode={:?} on_ground={}",
+                player.username,
+                player.pos.x,
+                player.pos.y,
+                player.pos.z,
+                player.flying,
+                player.fly_speed,
+                player.walk_speed,
+                player.gamemode,
+                player.on_ground
+            );
+        } else {
+            player.pos = PlayerPos {
+                x: position.0,
+                y: position.1,
+                z: position.2,
+            };
+            info!(
+                "Bedrock 玩家 {} 首次进服，使用默认出生点 ({:.2}, {:.2}, {:.2})",
+                player.username, player.pos.x, player.pos.y, player.pos.z
+            );
+        }
+
+        // **走和 Java 完全相同的入服流程**（复查第 13 条）：`Message::PlayerJoined` 那一支
+        // 会做 `database::ensure_user`、广播 `PlayerJoinedInfo`（Java 玩家 tab 里可见）、
+        // 登记 `online_players`，然后 `send_player_to_plot` 把玩家送进 p0,0。
+        // 之前手写这一段漏掉了上面三件事，导致 Bedrock 玩家对 Java 侧"不存在"。
+        // 消息投进 `plot_sender` 后由下一轮 `update()` 的 `handle_message` 处理。
+        if self
+            .plot_sender
+            .send(Message::PlayerJoined(player))
+            .is_err()
+        {
+            // 走到这里说明服务端正在退出（接收端已 drop）：把身份表清掉，别留下永久失效的名字。
+            warn!("Bedrock 玩家无法投递 PlayerJoined（服务端已关闭），已回滚身份表");
+            self.bedrock_players.remove(&uuid);
+        }
+    }
+
     fn handle_player_enter_play(&mut self, client_idx: usize) {
         let client = self.network.handshaking_clients.remove(client_idx);
 
         let uuid = client.uuid.unwrap();
         let username = client.username.clone().unwrap();
         let properties = client.properties.clone();
-        let player = Player::load_player(uuid, username, properties, client.into());
+
+        // 同名 Bedrock 玩家已在线时，拒绝这次 Java 登录（同一个 UUID 不能同时在线）。
+        if self.bedrock_players.contains_key(&uuid) {
+            warn!("拒绝 Java 玩家 {username}：同名 Bedrock 玩家已在线");
+            client.close_connection();
+            return;
+        }
+
+        let player = Player::load_player(
+            uuid,
+            username,
+            properties,
+            crate::player::PlayerBackend::Java(client.into()),
+        );
 
         let join_game = CLogin {
             entity_id: player.entity_id as i32,
@@ -557,6 +700,8 @@ impl MinecraftServer {
                 if let Some((_, player)) = self.online_players.remove_entry(&uuid) {
                     info!("{} left the game", player.username);
                 }
+                // Bedrock 玩家离开时把身份表里的句柄一起清掉，否则同名玩家再也连不上。
+                self.bedrock_players.remove(&uuid);
                 self.broadcaster
                     .broadcast(BroadcastMessage::PlayerLeft(uuid));
             }
@@ -662,6 +807,47 @@ impl MinecraftServer {
         while let Ok(message) = self.receiver.try_recv() {
             self.handle_message(message);
         }
+
+        // Bedrock listener 的请求：转给常驻的 spawn plot（0,0）去打包只读快照。
+        // 见 BACKLOG.md BUG-032「最小只读通路」。
+        while let Ok(event) = self.bedrock_events.try_recv() {
+            match event {
+                mchprs_network::bedrock::bridge::BedrockEvent::SnapshotRequest {
+                    reply,
+                    chunk_radius,
+                    username,
+                } => {
+                    let spawn = {
+                        let uuid = Player::generate_offline_uuid(&username);
+                        Player::saved_position(uuid).map(|p| (p.x, p.y, p.z))
+                    };
+                    match self
+                        .running_plots
+                        .iter()
+                        .find(|plot| plot.plot_x == 0 && plot.plot_z == 0)
+                    {
+                        Some(entry) => {
+                            let _ = entry
+                                .priv_message_sender
+                                .send(PrivMessage::BedrockSnapshot {
+                                    reply,
+                                    chunk_radius,
+                                    spawn,
+                                });
+                        }
+                        None => {
+                            warn!("Bedrock 客户端请求世界快照，但 spawn plot (0,0) 不在运行");
+                        }
+                    }
+                }
+                mchprs_network::bedrock::bridge::BedrockEvent::RegisterPlayer {
+                    username,
+                    position,
+                    link,
+                } => self.handle_bedrock_register(username, position, link),
+            }
+        }
+
         self.network.update();
 
         // Poll the automation bridge and route requests to their plots.

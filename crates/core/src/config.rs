@@ -104,6 +104,9 @@ macro_rules! gen_config {
 
 gen_config! {
     bind_address: String = "0.0.0.0:25565".to_string(),
+    /// Bedrock（基岩版）客户端监听端口（UDP），与 Java 的 `bind_address` 分开。
+    /// 改端口需要重启服务端。见 BACKLOG.md BUG-032。
+    bedrock: i64 = 19132,
     motd: String = "Minecraft High Performance Redstone Server".to_string(),
     chat_format: String = "<{username}> {message}".to_string(),
     max_players: i64 = 99999,

@@ -46,7 +46,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use self::data::sleep_time_for_tps;
 use self::scoreboard::Scoreboard;
@@ -176,6 +176,10 @@ pub struct PlotWorld {
     world_send_rate: WorldSendRate,
     pending_block_entities: FxHashMap<BlockPos, CBlockEntityData>,
     pending_sounds: FxHashMap<BlockPos, CSoundEffect>,
+    /// 本 tick 真正变过的方块：`flush_block_changes` 之后由 [`Plot::publish_world`]
+    /// 取走，转成 Bedrock 的 `UpdateBlock`（BUG-032 第 3 条）。
+    /// Java 那条路是 `CMultiBlockChange` 批量包，Bedrock 没有对应批量包，只能一条一条发。
+    block_changes: Vec<(BlockPos, u32)>,
 }
 
 impl PlotWorld {
@@ -220,12 +224,16 @@ impl World for PlotWorld {
         }
 
         let chunk = &mut self.chunks[chunk_index];
-        chunk.set_block(
+        let changed = chunk.set_block(
             (pos.x & 0xF) as u32,
             pos.y as u32,
             (pos.z & 0xF) as u32,
             block,
-        )
+        );
+        if changed {
+            self.block_changes.push((pos, block));
+        }
+        changed
     }
 
     /// Returns the block state id of the block at `pos`
@@ -399,7 +407,10 @@ impl Plot {
         if !exact {
             self.sample_io_groups();
         }
+        // 同 `publish_world`：`world.flush_block_changes()` 是空实现，真正发包的是
+        // `Plot::flush_block_changes` + `send_bedrock_block_changes`（BUG-032 第 34 条）。
         self.world.flush_block_changes();
+        self.send_bedrock_block_changes();
         self.last_world_send_time = Instant::now();
     }
 
@@ -515,15 +526,11 @@ impl Plot {
     pub fn send_block_corrections(&mut self, positions: &[BlockPos]) {
         self.publish_world();
         for pos in positions {
-            let block_change = CBlockUpdate {
-                block_id: self.world.get_block_raw(*pos) as i32,
-                x: pos.x,
-                y: pos.y,
-                z: pos.z,
-            }
-            .encode();
+            let state = self.world.get_block_raw(*pos);
             for player in &self.players {
-                player.client.send_packet(&block_change);
+                // 两种后端都走这一个入口：Java 发 CBlockUpdate，Bedrock 交给会话线程
+                // 转成 UpdateBlock（BUG-032 第 3 条 —— 以前 Bedrock 玩家根本收不到）。
+                player.client.send_block_update(*pos, state);
             }
         }
     }
@@ -629,9 +636,13 @@ impl Plot {
             "Entering plot ({}, {})",
             self.world.x, self.world.z
         ));
-        self.world
-            .packet_senders
-            .push(PlayerPacketSender::new(&player.client));
+        // Java 的方块广播只对 Java 连接有意义；Bedrock 玩家的后端是句柄，
+        // 它的方块更新要走 Bedrock 的推送通道（后续接入，见 BACKLOG.md BUG-032）。
+        if let Some(java_client) = player.client.as_java() {
+            self.world
+                .packet_senders
+                .push(PlayerPacketSender::new(java_client));
+        }
         self.scoreboard.add_player(&player);
         self.players.push(player);
         self.update_view_pos_for_player(self.players.len() - 1, true);
@@ -794,7 +805,9 @@ impl Plot {
             if cancelled {
                 cancel(self);
             }
-            self.world.flush_block_changes();
+            // 立即发布：交互产生的方块变化必须当场发给两种后端，不能等定期发包
+            // （否则点拉杆/放方块要等十几秒才看得见 —— BUG-032 第 34 条）。
+            self.publish_world();
             return;
         }
 
@@ -807,7 +820,7 @@ impl Plot {
                 block_pos,
                 None,
             );
-            self.world.flush_block_changes();
+            self.publish_world();
         }
     }
 
@@ -863,7 +876,8 @@ impl Plot {
         self.reset_redpiler();
 
         interaction::destroy(block, &mut self.world, block_pos);
-        self.world.flush_block_changes();
+        // 同 handle_use_item_impl：破坏方块也要立刻发出去（BUG-032 第 34 条）。
+        self.publish_world();
 
         let effect = CWorldEvent {
             event: 2001,
@@ -1460,8 +1474,32 @@ impl Plot {
             // 0.5.2-alpha; the queue still has to be drained after every flush.
             self.redpiler.take_io_events();
         }
+        // Java 玩家：把攒下的 CMultiBlockChange 发出去。
+        // **注意**：`self.world.flush_block_changes()` 是 `crates/world` 里的空实现
+        // （`fn flush_block_changes(&mut self) {}`），什么都不做。真正发包的是
+        // `Plot::flush_block_changes`（本文件 339 行）。写错过一次，后果是
+        // 方块变化永远发不出去、玩家点按钮要等十几秒才看到变化（BACKLOG.md BUG-032 第 34 条）。
         self.world.flush_block_changes();
+        self.send_bedrock_block_changes();
         self.last_world_send_time = Instant::now();
+    }
+
+    /// 把本 tick 变过的方块推给 Bedrock 玩家（BUG-032 第 3 条）。
+    ///
+    /// Java 客户端靠 `CMultiBlockChange` 批量包拿到这些变化；Bedrock 没有批量包，
+    /// 只能逐条 `UpdateBlock`，所以这里一次把整批塞给会话线程（别一个方块一条指令）。
+    fn send_bedrock_block_changes(&mut self) {
+        let changes = std::mem::take(&mut self.world.block_changes);
+        if changes.is_empty() || !self.players.iter().any(|p| p.client.is_bedrock()) {
+            return;
+        }
+        let batch: Vec<(i32, i32, i32, u32)> = changes
+            .iter()
+            .map(|(pos, state)| (pos.x, pos.y, pos.z, *state))
+            .collect();
+        for player in &self.players {
+            player.client.send_block_updates(&batch);
+        }
     }
 
     fn start_redpiler(&mut self, options: CompilerOptions, source: Option<usize>) {
@@ -1862,6 +1900,16 @@ impl Plot {
                         self.exclusive = None;
                     }
                 }
+                PrivMessage::BedrockSnapshot {
+                    reply,
+                    chunk_radius,
+                    spawn,
+                } => {
+                    // 只读快照：在本线程里读方块、编码成 Bedrock 区块，再回传给监听线程。
+                    // 不写世界、不发更新（BACKLOG.md BUG-032「最小只读通路」）。
+                    let snapshot = self.build_bedrock_snapshot(chunk_radius, spawn);
+                    let _ = reply.send(snapshot);
+                }
             }
         }
     }
@@ -1871,6 +1919,81 @@ impl Plot {
     // plot; that plot would have to be loaded, which the single-plot rule
     // forbids. Players may wander into the empty space around p0,0 and stay
     // attached to it — the "skyblock" model this server now implements.
+
+    /// 给 Bedrock 客户端打包一份**只读**世界快照（BACKLOG.md BUG-032）。
+    ///
+    /// 坐标与 Java 版一致：同一个方块，Bedrock 的 y = MCHPRS 的 y - 64。
+    /// 出生点取 Java 新玩家的默认位置 `(128, 128, 128)`。
+    /// 只读：这里只调用 `get_block_raw`，不会改世界，也不会给任何客户端发更新。
+    ///
+    /// `chunk_radius` 是**以区块为单位的半径**，由服务端从 `CONFIG.view_distance` 取来
+    /// 并随 `PrivMessage::BedrockSnapshot` 传进来 —— 快照覆盖范围必须和
+    /// `ChunkRadiusUpdated` 声明的视距一致，否则远处一片虚空（第 16/26 条）。
+    fn build_bedrock_snapshot(
+        &self,
+        chunk_radius: i32,
+        spawn: Option<(f64, f64, f64)>,
+    ) -> mchprs_network::bedrock::bridge::PlotSnapshot {
+        /// Java `PlayerData::default()` 的位置。
+        const SPAWN: (i32, i32, i32) = (128, 128, 128);
+        // 至少 1 个区块；上限只是防御（一般不会有人把 view_distance 开到 32）。
+        let chunk_radius = chunk_radius.clamp(1, 32);
+
+        // 有存档就按存档位置出发生成区块；否则用默认出生点。
+        // 关键：登录时的第一条 MovePlayer 必须直接落在**玩家真实位置**，
+        // 不能"先在默认点、随后再传送一百多格"——后者会让客户端相机/视场角异常
+        // （BUG-032 第 31 条）。`spawn` 是 MCHPRS（Java）坐标。
+        let (center_x, center_z) = match spawn {
+            Some((x, _, z)) => (
+                (x.floor() as i32).div_euclid(16),
+                (z.floor() as i32).div_euclid(16),
+            ),
+            None => (SPAWN.0 >> 4, SPAWN.2 >> 4),
+        };
+        // 计时：这一步是同步跑在 plot 线程上的，`view_distance` 越大越久，
+        // 会直接卡住 tick（BUG-032 第 19 条）。有日志才能判断要不要搬到工作线程。
+        let started = Instant::now();
+        let mut chunks = Vec::new();
+        for dx in -chunk_radius..=chunk_radius {
+            for dz in -chunk_radius..=chunk_radius {
+                let chunk_x = center_x + dx;
+                let chunk_z = center_z + dz;
+                let payload = mchprs_network::bedrock::chunk::build_chunk_from_world(
+                    |x, y, z| self.world.get_block_raw(BlockPos::new(x, y, z)),
+                    chunk_x,
+                    chunk_z,
+                    1, // minecraft:plains
+                );
+                chunks.push((chunk_x, chunk_z, payload));
+            }
+        }
+
+        let side = chunk_radius * 2 + 1;
+        info!(
+            "Bedrock 快照：{}×{} = {} 区块，耗时 {:?}",
+            side,
+            side,
+            chunks.len(),
+            started.elapsed()
+        );
+
+        mchprs_network::bedrock::bridge::PlotSnapshot {
+            spawn: match spawn {
+                // 存档位置是玩家的真实坐标，不要再 +0.5（那会让玩家出生时轻微偏移）。
+                Some((x, y, z)) => (
+                    x as f32,
+                    (y - mchprs_network::bedrock::chunk::Y_OFFSET as f64) as f32,
+                    z as f32,
+                ),
+                None => (
+                    SPAWN.0 as f32 + 0.5,
+                    (SPAWN.1 - mchprs_network::bedrock::chunk::Y_OFFSET) as f32,
+                    SPAWN.2 as f32 + 0.5,
+                ),
+            },
+            chunks,
+        }
+    }
 
     /// Remove disconnected players
     fn remove_dc_players(&mut self) {
@@ -2004,7 +2127,12 @@ impl Plot {
             let time_since_last_world_send = now - self.last_world_send_time;
             if time_since_last_world_send > world_send_interval {
                 self.last_world_send_time = now;
+                // 这里原来写的是 `self.world.flush_block_changes()` —— 那是空函数，
+                // 于是定期发包这条路根本没在工作：方块变化只堆在 `world.block_changes` 里，
+                // 要等某个别的事件顺手调 `publish_world` 才发出去（实测点按钮滞后十几秒、
+                // 红石灯不亮）。正确做法是 Java 批量包 + Bedrock 逐条都发（BUG-032 第 34 条）。
                 self.world.flush_block_changes();
+                self.send_bedrock_block_changes();
             }
         }
 
@@ -2092,6 +2220,7 @@ impl Plot {
             world_send_rate: plot_data.world_send_rate,
             pending_block_entities: FxHashMap::default(),
             pending_sounds: FxHashMap::default(),
+            block_changes: Vec::new(),
         };
         let tps = plot_data.tps;
         Plot {

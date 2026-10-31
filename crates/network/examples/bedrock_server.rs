@@ -1,4 +1,4 @@
-//! 起一个 Bedrock 端点，用于**真机验证**协议层是否工作（不需要启动整个 MCHPRS 服务端）。
+//! 起一个 Bedrock 端点，用于**协议层真机验证**（不需要启动整个 MCHPRS 服务端）。
 //!
 //! 运行：
 //! ```sh
@@ -6,11 +6,13 @@
 //! ```
 //! 然后在 Bedrock 客户端里连 `127.0.0.1:19132`（或本机局域网 IP）。
 //!
-//! 目前下发的是 spike 阶段的最小世界（一层石头 + 空气），目的只是证明
-//! 登录 → StartGame → 区块 → 交互这条链路在**仓库代码**里是通的；
-//! 真实世界数据接入见 `docs/bedrock-integration.md` §6。
+//! 这里下发的是**石头测试世界**，刻意与 MCHPRS 真实世界分开（用户 2026-10-29 要求）：
+//! 它只负责证明“登录 → StartGame → 区块 → 交互”这条链路在仓库代码里是通的。
+//! MCHPRS 真实世界走 `session::spawn_mchprs_listener`，由 `crates/core` 在服务端启动时调用。
+
+use mchprs_network::bedrock::session::{serve, WorldSource};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    mchprs_network::bedrock::session::serve("0.0.0.0:19132".to_string()).await
+    serve("0.0.0.0:19132".to_string(), WorldSource::Demo).await
 }

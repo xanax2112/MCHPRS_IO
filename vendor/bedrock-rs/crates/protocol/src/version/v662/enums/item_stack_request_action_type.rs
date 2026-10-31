@@ -63,9 +63,17 @@ pub enum ItemStackRequestActionType<V: ProtoVersion> {
         #[vec_repr(u8)]
         ingredients: Vec<V::ItemDescriptorType>,
     } = 13,
+    // PATCH-007（本项目本地补丁，见 docs/bedrock-integration.md）：
+    // 上游只有 `creative_item_network_id`，但 Cloudburst 766 的 `CraftCreativeAction`
+    // 有**两个**字段（creativeItemNetworkId + numberOfRequestedCrafts），少一个就会把
+    // 后面的 `TakeAction` 整体读错位。用 `refs/ProbeCraftCreative.java` 让 Cloudburst
+    // 自己编码、按字节宽度反推出的真实布局：
+    //   * `creativeItemNetworkId` 是**无符号** varint（128 → `8001`，不是 zigzag 的 `8002`）
+    //   * `numberOfRequestedCrafts` 只占 **1 字节**（127 → `7f`，128 → `80`，300 被截成 `2c`）
     CraftCreative {
         #[endianness(var)]
-        creative_item_network_id: i32,
+        creative_item_network_id: u32,
+        number_of_requested_crafts: u8,
     } = 14,
     CraftRecipeOptional {
         #[endianness(var)]

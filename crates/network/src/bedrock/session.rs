@@ -7,7 +7,7 @@ use bedrock::protocol::v662::packets::{
     NetworkSettingsPacket, PlayStatusPacket, ServerToClientHandshakePacket,
 };
 use bedrock::protocol::v662::enums::ResourcePackResponse;
-use bedrock::protocol::v662::types::{BaseGameVersion, Experiment, Experiments};
+use bedrock::protocol::v662::types::{BaseGameVersion, Experiments};
 use bedrock::protocol::v671::packets::ResourcePackStackPacket;
 use bedrock::protocol::v766::packets::ResourcePacksInfoPacket;
 use uuid::Uuid;
@@ -16,22 +16,23 @@ use bedrock::protocol::v662::enums::{
     GameType, GeneratorType, PlayerPermissionLevel, ServerAuthMovementMode, SpawnBiomeType,
 };
 use bedrock::protocol::v662::packets::{
-    ChunkRadiusUpdatedPacket, LevelChunkPacket, NetworkChunkPublisherUpdatePacket, SetTimePacket,
-    StartGamePacket, UpdateBlockPacket,
+    ChunkRadiusUpdatedPacket, LevelChunkPacket, NetworkChunkPublisherUpdatePacket, RespawnPacket,
+    SetTimePacket, StartGamePacket, UpdateBlockPacket,
 };
 use bedrock::protocol::v662::types::BlockPos;
 use bedrock::protocol::v662::types::ItemData;
-use bedrock::protocol::v662::enums::{CommandPermissionLevel, DataItemType, PlayerPositionMode};
+use bedrock::protocol::v662::enums::{DataItemType, PlayerRespawnState};
 use bedrock::protocol::v685::enums::ActorDataIDs;
 use bedrock::protocol::v662::packets::{
     SetActorDataPacket,
     AvailableActorIdentifiersPacket, BiomeDefinitionListPacket, CameraPresetsPacket,
-    DimensionDataPacket, GameRulesChangedPacket, MovePlayerPacket, PlayerListPacket,
-    SetPlayerGameTypePacket, UpdateAbilitiesPacket, UpdateAdventureSettingsPacket,
+    DimensionDataPacket, GameRulesChangedPacket, PlayerListPacket,
+    UpdateAbilitiesPacket, UpdateAdventureSettingsPacket,
     AvailableCommandsPacket, CraftingDataPacket, CreativeContentPacket, ItemComponentPacket,
     PlayerHotbarPacket, SetDifficultyPacket, TrimDataPacket, UnlockedRecipesPacket,
 };
 use bedrock::protocol::v662::enums::ContainerID;
+use bedrock::protocol::v662::packets::InteractAction;
 use bedrock::protocol::v662::types::{
     AdventureSettings, DimensionDefinition, DimensionDefinitionGroup, DimensionDefinitionGroupType,
 };
@@ -39,11 +40,6 @@ use bedrock::protocol::v662::types::CameraPresets;
 use bedrock::protocol::v662::types::{DataItem, PropertySyncData};
 use bedrock::protocol::v766::types::{AudioListener, CameraPreset};
 use bedrock::protocol::v729::packets::{AttributeData, UpdateAttributesPacket};
-use bedrock::protocol::v662::types::{
-    SerializedAbilitiesData, SerializedAbilitiesLayer, SerializedLayer,
-};
-use bedrock::protocol::v748::enums::AuthoritativeMovementMode;
-use bedrock::protocol::v748::packets::SetMovementAuthorityPacket;
 use bedrock::protocol::v662::types::{GameRuleChanged, Type as GameRuleType};
 use bedrock::protocol::v662::types::{
     ActorRuntimeID, ActorUniqueID, ChunkPos, EduSharedUriResource, GameRulesChangedPacketData,
@@ -53,12 +49,45 @@ use bedrock::protocol::v685::types::LevelSettings;
 use bedrock::protocol::{ProtoVersion, Unknown, V766};
 use std::time::Instant;
 
+use crate::bedrock::bridge::{BedrockCommand, BedrockEvent, BedrockHandle, PlotSnapshot};
 use crate::bedrock::chunk as world;
 use crate::bedrock::items_gen;
+use std::sync::mpsc;
 
 // Geyser 自带的 Bedrock 数据文件（MIT 项目资源），原样内嵌
 const BIOME_DEFINITIONS_NBT: &[u8] = include_bytes!("data/biome_definitions.dat");
 const ENTITY_IDENTIFIERS_NBT: &[u8] = include_bytes!("data/entity_identifiers.dat");
+
+/// Bedrock 端点的世界数据来源。
+///
+/// **两个世界是分开的**（用户 2026-10-29 明确要求，见 BACKLOG.md BUG-032）：
+/// `Demo` 只是协议层的石头试验台；`Mchprs` 读真实 plot。两者不共用任何世界数据路径。
+#[derive(Clone)]
+pub enum WorldSource {
+    /// 示例用的石头测试世界（`examples/bedrock_server`）。
+    Demo,
+    /// MCHPRS 真实世界：每次有客户端登录就向服务端线程要一份**只读**快照。
+    Mchprs {
+        events: mpsc::Sender<BedrockEvent>,
+        /// 视距（**区块**为单位），由 `crates/core` 从 `CONFIG.view_distance` 传进来。
+        /// 网络层不读 core 的配置，所以它必须随源一起带过来：
+        /// `ChunkRadiusUpdated`、publisher 半径、快照区块数**三处同源**（BUG-032 第 16 条）。
+        chunk_radius: i32,
+    },
+}
+
+/// 登录完成后交给上层的信息（玩家化用，见 BACKLOG.md BUG-032）。
+pub struct BedrockSessionInfo {
+    /// 客户端显示名；服务端据此推导与同名 Java 离线玩家一致的身份。
+    pub username: String,
+    /// 出生点，**已经是 MCHPRS（Java）坐标**：直接可以赋给 `Player::pos`。
+    ///
+    /// 换算只在这里做一次（`spawn_pos` 是 Bedrock 坐标，y 比 MCHPRS 少 64）。
+    /// 之前把 Bedrock 坐标直接当 MCHPRS 坐标用，服务端会认为玩家在地底 64 格，
+    /// 而且退出时的 `player.save()` 会把这个错误位置写进同名 Java 存档
+    /// （BACKLOG.md BUG-032 复查第 12 条）。
+    pub position: (f64, f64, f64),
+}
 
 fn parse_nbt_compound(bytes: &[u8]) -> std::collections::HashMap<String, nbtx::Value> {
     type Map = std::collections::HashMap<String, nbtx::Value>;
@@ -161,6 +190,10 @@ fn pname(p: &Protocol) -> &'static str {
         ChunkRadiusUpdatedPacket(_) => "ChunkRadiusUpdated",
         PlayerAuthInputPacket(_) => "PlayerAuthInput",
         InteractPacket(_) => "Interact",
+        // 交互链路的关键包（以前都落在 "Other" 里看不见）：
+        // `PlayerAction` 带 START_ITEM_USE_ON/STOP_ITEM_USE_ON，`Animate` 是挥手动画。
+        PlayerActionPacket(_) => "PlayerAction",
+        AnimatePacket(_) => "Animate",
         CommandRequestPacket(_) => "CommandRequest",
         MovePlayerPacket(_) => "MovePlayer",
         SubChunkRequestPacket(_) => "SubChunkRequest",
@@ -266,7 +299,9 @@ fn build_level_settings() -> LevelSettings<Protocol> {
         game_type: GameType::Creative,
         is_hardcore_enabled: false,
         game_difficulty: Difficulty::Easy,
-        default_spawn_block_position: NetworkBlockPosition { x: 0, y: 79, z: 0 },
+        // 这里**不需要**写真实出生点：Geyser 也不往 `StartGame` 里写（保持 Cloudburst 默认值），
+        // 真实出生点由登录后单独发的 `SetSpawnPositionPacket` 下发（BUG-032 第 23 条）。
+        default_spawn_block_position: NetworkBlockPosition { x: 0, y: 0, z: 0 },
         // 协议文档：创造模式下 achievements_disabled=true 会让客户端崩溃
         achievements_disabled: true,
         editor_world_type: EditorWorldType::NonEditor,
@@ -329,10 +364,10 @@ fn build_level_settings() -> LevelSettings<Protocol> {
     }
 }
 
-fn build_start_game() -> StartGamePacket<Protocol> {
+fn build_start_game(runtime_id: u64) -> StartGamePacket<Protocol> {
     StartGamePacket {
-        target_actor_id: ActorUniqueID(1),
-        target_runtime_id: ActorRuntimeID(1),
+        target_actor_id: ActorUniqueID(runtime_id as i64),
+        target_runtime_id: ActorRuntimeID(runtime_id),
         actor_game_type: GameType::Creative,
         position: (0.5, 82.0, 0.5),
         rotation: (0.0, 0.0),
@@ -342,6 +377,14 @@ fn build_start_game() -> StartGamePacket<Protocol> {
         template_content_identity: String::new(),
         is_trial: false,
         movement_settings: SyncedPlayerMovementSettings {
+            // **必须是 ServerAuthoritative**：我们的入站翻译（`translate.rs`）只处理
+            // `PlayerAuthInput` → Java 的 `SSetPlayerPositionAndRotation`。
+            // 一旦改成 `ClientAuthoritative`，客户端改发 `MovePlayerPacket`，
+            // 而 `MovePlayer` 分支只记日志、不更新服务端位置 —— 服务端眼里玩家永远不动，
+            // 交互/放方块全部错位（2026-10-31 实测：进服即异常）。
+            //
+            // Geyser 同样声明服务端权威，并且会真的做位置纠正；我们不做纠正，
+            // 所以"速度/视角漂移"的根因不在这里，别再用这个开关试。
             authority_mode: ServerAuthMovementMode::ServerAuthoritative,
             rewind_history_size: 0,
             server_authoritative_block_breaking: false,
@@ -373,10 +416,15 @@ fn build_start_game() -> StartGamePacket<Protocol> {
 }
 
 /// B1 + B2: 协议确认 -> NetworkSettings -> 加密登录
+///
+/// `runtime_id` 是这条连接自己的实体运行时 id（BUG-032 第 22 条）：
+/// 以前写死 1，多连接会撞号，服务端位置纠正也没法对准人。
 async fn do_login(
     conn: &mut Connection<Protocol>,
     start: Instant,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    source: &WorldSource,
+    runtime_id: u64,
+) -> Result<BedrockSessionInfo, Box<dyn std::error::Error + Send + Sync>> {
     // ---------- B1: 协议号 ----------
     let batch = recv_logged(conn, "B1", start).await?;
     let version = batch.into_iter().find_map(|p| match p {
@@ -438,6 +486,8 @@ async fn do_login(
 
     let options = LoginOptions::default().require_authentication(false);
     let login = options.verify(&login_packet.connection_request)?;
+    // 玩家化要用：Bedrock 客户端的显示名（与同名 Java 离线玩家是同一身份）。
+    let username = login.authentication.identity().display_name.clone();
     log(
         "B2",
         start,
@@ -559,7 +609,7 @@ async fn do_login(
     .await?;
     log("B4", start, ">>", "DimensionData(overworld 384/-64)");
 
-    let start_game = build_start_game();
+    let start_game = build_start_game(runtime_id);
     conn.send(&[Protocol::StartGamePacket(Box::new(start_game))])
         .await?;
     log("B4", start, ">>", "StartGame");
@@ -567,8 +617,30 @@ async fn do_login(
     // ?Geyser 一致：模式/能力包在 spawn 之后再发（见 C2?
 
     // ---------- C1: 区块半径握手 ----------
+    // **声明的视距必须和实际下发的区块数一致**（BACKLOG.md BUG-032 第 16/26 条）：
+    // 声明得比实际发的大，客户端会以为周围都已加载，远处是一片虚空。
+    // 半径来源只有一个：core 从 `CONFIG.view_distance` 取来、随 `WorldSource` 传进来。
+    // `Demo` 没有配置（示例程序），用它自己的固定值。
+    const DEMO_RADIUS: i32 = 8;
+    let chunk_radius: i32 = match &source {
+        WorldSource::Mchprs { chunk_radius, .. } => (*chunk_radius).max(1),
+        WorldSource::Demo => DEMO_RADIUS,
+    };
+
+    // 等待 `RequestChunkRadius` 必须有超时：否则客户端不发就永久挂住一个 task（第 20 条）。
+    const CHUNK_RADIUS_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
     loop {
-        let batch = recv_logged(conn, "C1", start).await?;
+        let batch = match tokio::time::timeout(CHUNK_RADIUS_WAIT, recv_logged(conn, "C1", start)).await
+        {
+            Ok(batch) => batch?,
+            Err(_) => {
+                return Err(format!(
+                    "等待客户端 RequestChunkRadius 超时（{}s）",
+                    CHUNK_RADIUS_WAIT.as_secs()
+                )
+                .into());
+            }
+        };
         let mut radius = None;
         for p in batch {
             match p {
@@ -582,61 +654,101 @@ async fn do_login(
         if let Some(r) = radius {
             log("C1", start, "::", &format!("客户端请求半径 {r}"));
             conn.send(&[Protocol::ChunkRadiusUpdatedPacket(Box::new(
-                ChunkRadiusUpdatedPacket { chunk_radius: 8 },
+                ChunkRadiusUpdatedPacket {
+                    chunk_radius,
+                },
             ))])
             .await?;
-            log("C1", start, ">>", "ChunkRadiusUpdated(8)");
+            log("C1", start, ">>", &format!("ChunkRadiusUpdated({chunk_radius})"));
             break;
         }
     }
 
-    // ---------- C2: 单区块 + 一块地板 ----------
-    // 1.21.50 的 block state id（来自 minecraft-data blockStates 索引）
-    const STONE_STATE: i32 = 2403;
-    const AIR_STATE: i32 = 11996;
-    const PLAINS_BIOME: i32 = 1;
-    const BLOCK_VERSION: i32 = 18163713; // 1.21.50 的方块调色板版本
-    const MIN_SECTION: i8 = -4; // 主世界 -64
-    const MAX_SECTION: i8 = 19; // 主世界 319
-    const FLOOR_SECTION: i8 = 4; // y = 64..79
-
-    let spec = world::ChunkSpec {
-        min_section: MIN_SECTION,
-        max_section: MAX_SECTION,
-        highest_non_empty: MAX_SECTION, // 全部 24 段都显式发送（含空气）
-        floor_section: FLOOR_SECTION,
-        stone_state: STONE_STATE,
-        air_state: AIR_STATE,
-        biome_id: PLAINS_BIOME,
-        block_version: BLOCK_VERSION,
-        mode: world::Mode::Runtime,
-    };
-    let data = world::build_payload(&spec);
-    let count = world::sub_chunk_count(MIN_SECTION, MAX_SECTION);
-
+    // ---------- C2: 区块数据 ----------
+    // Demo：写死的石头地板；Mchprs：向服务端线程要一份真实 plot 的只读快照。
     // 参考 Geyser 的时序：先让客户端进入世界，等它自报初始化完成，再发区块。
-    // Geyser 的算法：publisher 半径以“方块”为单位，约等于 (视距+1)*sqrt(2)*16
-    const RADIUS: i32 = 8;
-    let view_radius_blocks: u32 = (((RADIUS + 1) as f64) * std::f64::consts::SQRT_2).ceil() as u32 * 16;
+    //
+    // publisher 半径（方块）必须**被实际下发的方形完全覆盖**，否则客户端会认为
+    // "这一圈已发布"而实际没数据（BUG-032 第 27 条，真机表现为一片虚空）。
+    // 方形的覆盖半径取决于对角线：`r 区块 × 16 × √2`。用 `floor` 而不是 `ceil`，
+    // 因为 `ceil` 会许下没有数据的范围；也不能再用 `(r+1)` 那种"多给一圈"的写法。
+    let view_radius_blocks: u32 =
+        (chunk_radius as f64 * 16.0 * std::f64::consts::SQRT_2).floor() as u32;
+
+    // (chunk_x, chunk_z, 负载, sub_chunk_count) 列表 + 出生点
+    let (chunk_payloads, spawn_pos): (Vec<(i32, i32, Vec<u8>, u32)>, (f32, f32, f32)) = match source {
+        WorldSource::Demo => {
+            // 1.21.50 的 block state id（来自 minecraft-data blockStates 索引）
+            const STONE_STATE: i32 = 2403;
+            const AIR_STATE: i32 = 11996;
+            const PLAINS_BIOME: i32 = 1;
+            const BLOCK_VERSION: i32 = 18163713; // 1.21.50 的方块调色板版本
+            const MIN_SECTION: i8 = -4; // 主世界 -64
+            const MAX_SECTION: i8 = 19; // 主世界 319
+            const FLOOR_SECTION: i8 = 4; // y = 64..79
+            let spec = world::ChunkSpec {
+                min_section: MIN_SECTION,
+                max_section: MAX_SECTION,
+                highest_non_empty: MAX_SECTION, // 全部 24 段都显式发送（含空气）
+                floor_section: FLOOR_SECTION,
+                stone_state: STONE_STATE,
+                air_state: AIR_STATE,
+                biome_id: PLAINS_BIOME,
+                block_version: BLOCK_VERSION,
+                mode: world::Mode::Runtime,
+            };
+            let data = world::build_payload(&spec);
+            let count = world::sub_chunk_count(MIN_SECTION, MAX_SECTION);
+            let mut payloads = Vec::new();
+            for cx in -chunk_radius..=chunk_radius {
+                for cz in -chunk_radius..=chunk_radius {
+                    payloads.push((cx, cz, data.clone(), count));
+                }
+            }
+            (payloads, (0.5, 82.0, 0.5))
+        }
+        WorldSource::Mchprs { events, .. } => {
+            let (reply, rx) = mpsc::channel::<PlotSnapshot>();
+            if events
+                .send(BedrockEvent::SnapshotRequest {
+                    reply,
+                    chunk_radius,
+                    // 带上登录身份：plot 会在**发区块之前**决定出生点（有存档就用存档位置），
+                    // 避免登录后再补一条一百多格的传送（BUG-032 第 31 条）。
+                    username: username.clone(),
+                })
+                .is_err()
+            {
+                return Err("MCHPRS 服务端已关闭，无法获取世界快照".into());
+            }
+            // 同步 recv 放阻塞线程池，避免卡住 tokio worker。
+            let received = tokio::task::spawn_blocking(move || {
+                rx.recv_timeout(std::time::Duration::from_secs(10))
+            })
+            .await?;
+            let snapshot = received
+                .map_err(|_| "等待 MCHPRS 世界快照超时（是否没有 plot 在运行？）")?;
+            let count = world::BEDROCK_SECTION_COUNT as u32;
+            let payloads = snapshot
+                .chunks
+                .into_iter()
+                .map(|(cx, cz, data)| (cx, cz, data, count))
+                .collect();
+            (payloads, snapshot.spawn)
+        }
+    };
     conn.send(&[play_status(PlayStatus::PlayerSpawn)]).await?;
     log("C2", start, ">>", "PlayStatus(PlayerSpawn)");
 
-    // Geyser 原文注释：客户端在收到属性包之前会以离谱的速度移动，必须下发移动速度
+    // Geyser 原文注释：客户端在收到属性包之前会以离谱的速度移动，必须下发移动速度。
+    //
+    // **`target_runtime_id` 必须用本条连接自己的 id**（BUG-032 第 31 条的真凶）：
+    // `runtime_id` 是全局递增的（第 22 条改的），以前这里写死 1 —— 第一次连接恰好是 1
+    // 所以一切正常；第二次连接是 2，属性包发给了不存在的实体 1，客户端收不到
+    // `minecraft:movement`，于是"以离谱的速度移动"：实测重进后 30~39 m/s、视场角变宽。
+    // 现在统一走 `protocol::movement_attributes()`，参数必须显式传入，防止再写死。
     conn.send(&[Protocol::UpdateAttributesPacket(Box::new(
-        UpdateAttributesPacket::<Protocol> {
-            target_runtime_id: ActorRuntimeID(1),
-            attribute_list: vec![AttributeData {
-                min_value: 0.0,
-                max_value: 1024.0,
-                current_value: 0.1,
-                default_min: 0.0,
-                default_max: 1024.0,
-                default_value: 0.1,
-                attribute_name: String::from("minecraft:movement"),
-                attribute_modifiers: vec![],
-            }],
-            ticks_since_sim_started: 0,
-        },
+        crate::bedrock::protocol::movement_attributes(runtime_id),
     ))])
     .await?;
     log("C2", start, ">>", "UpdateAttributes(minecraft:movement=0.1)");
@@ -657,43 +769,82 @@ async fn do_login(
     log("C2", start, ">>", "UpdateAdventureSettings(autoJump=true)");
 
     conn.send(&[Protocol::UpdateAbilitiesPacket(Box::new(
-        build_update_abilities(),
+        build_update_abilities(runtime_id),
     ))])
     .await?;
     log("C2", start, ">>", "UpdateAbilities");
 
     // 玩家实体元数据：等价于 Geyser 的 Entity.initializeMetadata() + SessionPlayerEntity.setAirSupply()
     conn.send(&[Protocol::SetActorDataPacket(Box::new(
-        SetActorDataPacket::<Protocol> {
-            target_runtime_id: ActorRuntimeID(1),
-            actor_data: player_metadata(),
-            synced_properties: PropertySyncData {
-                int_entries_list: vec![],
-                float_entries_list: vec![],
-            },
-            tick: 0,
-        },
+        crate::bedrock::protocol::set_actor_data(runtime_id),
+    ))])
+    .await?;
+    // Geyser 登录的第一个出生包：RespawnPacket(SERVER_READY, runtimeEntityId=0)。
+    // 见下方三连的说明（BUG-032 第 31 条）。
+    conn.send(&[Protocol::RespawnPacket(Box::new(RespawnPacket::<Protocol> {
+        // Geyser 注释：Bedrock 原版服务端这里就是 0，不是玩家的 runtime id。
+        player_runtime_id: ActorRuntimeID(0),
+        position: spawn_pos,
+        state: PlayerRespawnState::ReadyToSpawn,
+    }))])
+    .await?;
+    log("C2", start, ">>", "Respawn(SERVER_READY)");
+
+    conn.send(&[Protocol::SetActorDataPacket(Box::new(
+        crate::bedrock::protocol::set_actor_data(runtime_id),
     ))])
     .await?;
     log("C2", start, ">>", "SetActorData(玩家初始元数据)");
-    // 强制传送到地面上方，避免出生在地形内部
-    conn.send(&[Protocol::MovePlayerPacket(Box::new(
-        MovePlayerPacket::<Protocol> {
-            player_runtime_id: ActorRuntimeID(1),
-            position: (0.5, 82.0, 0.5),
-            rotation: (0.0, 0.0),
-            y_head_rotation: 0.0,
-            position_mode: PlayerPositionMode::Teleport {
-                teleportation_cause: 0,
-                source_actor_type: 0,
-            },
-            on_ground: false,
-            riding_runtime_id: ActorRuntimeID(0),
-            tick: 0,
-        },
+    println!(
+        "  [DBG] SetActorData = {:?}",
+        crate::bedrock::protocol::set_actor_data(runtime_id)
+    );
+    // 出生握手：**顺序照 Geyser 抄**（`JavaPlayerPositionTranslator` 的未 spawned 分支）：
+    //   RespawnPacket(SERVER_READY) → SetEntityData → MovePlayer(RESPAWN) → MovePlayer(TELEPORT)
+    //
+    // Geyser 在登录时发的是这个三连；我们原来只发最后一条 TELEPORT。缺了
+    // RespawnPacket + MovePlayer(RESPAWN)，客户端不会完整"重新出生"一次，
+    // 相机/视场角会沿用上一局的状态 —— "重进后视场角变大、移动变快"（BUG-032 第 31 条）。
+    conn.send(&[
+        Protocol::MovePlayerPacket(Box::new(crate::bedrock::protocol::respawn(
+            runtime_id, spawn_pos, (0.0, 0.0),
+        ))),
+        Protocol::MovePlayerPacket(Box::new(crate::bedrock::protocol::teleport(
+            runtime_id, spawn_pos, (0.0, 0.0),
+        ))),
+    ])
+    .await?;
+    log(
+        "C2",
+        start,
+        ">>",
+        &format!(
+            "MovePlayer(Respawn+Teleport {:.1},{:.1},{:.1})",
+            spawn_pos.0, spawn_pos.1, spawn_pos.2
+        ),
+    );
+
+    // 世界出生点（BUG-032 第 23 条）：Geyser 的 `StartGame` 不写出生点，而是收到 Java 的
+    // `SetDefaultSpawnPosition` 后单独发这个包；我们同理，等快照把出生点算出来再补发。
+    // 坐标是 Bedrock 坐标（`spawn_pos` 已经做过 y-64），方块坐标向下取整。
+    let spawn_block = (
+        spawn_pos.0.floor() as i32,
+        spawn_pos.1.floor() as i32,
+        spawn_pos.2.floor() as i32,
+    );
+    conn.send(&[Protocol::SetSpawnPositionPacket(Box::new(
+        crate::bedrock::protocol::set_spawn_position(spawn_block),
     ))])
     .await?;
-    log("C2", start, ">>", "MovePlayer(Teleport 0.5,82,0.5)");
+    log(
+        "C2",
+        start,
+        ">>",
+        &format!(
+            "SetSpawnPosition(WORLD_SPAWN {},{},{})",
+            spawn_block.0, spawn_block.1, spawn_block.2
+        ),
+    );
 
     // ---- 与 Geyser connect() 同序的一批“状态声明”包 ----
     conn.send(&[Protocol::SetDifficultyPacket(Box::new(SetDifficultyPacket {
@@ -822,15 +973,17 @@ async fn do_login(
         &format!("CameraPresets({} 个)", presets.len()),
     );
 
-    // 创造模式物品列表。我们暂时不提供（创造模式下的背包列表会为空），
-    // 但空表是合法编码，且位置必须与 Geyser 一致（紧跟在 CameraPresets 之后）。
-    conn.send(&[Protocol::CreativeContentPacket(Box::new(
-        CreativeContentPacket::<Protocol> {
-            write_entries: vec![],
-        },
-    ))])
-    .await?;
-    log("C2", start, ">>", "CreativeContent(空)");
+    // 创造模式物品列表（R1）：MCHPRS 支持的每种方块一条，表由 gen_creative.js 生成。
+    // 位置与 Geyser 一致（紧跟在 CameraPresets 之后）。
+    let creative = crate::bedrock::creative::creative_content();
+    log(
+        "C2",
+        start,
+        ">>",
+        &format!("CreativeContent({} 条)", creative.write_entries.len()),
+    );
+    conn.send(&[Protocol::CreativeContentPacket(Box::new(creative))])
+        .await?;
 
     conn.send(&[Protocol::GameRulesChangedPacket(Box::new(
         GameRulesChangedPacket {
@@ -894,9 +1047,16 @@ async fn do_login(
         },
     );
 
+    // publisher 中心用**真实出生点**的方块坐标（以前 `+8` 是拍的，和出生点语义不一致，
+    // 见 BUG-032 第 27 条）。
+    let publisher_center = BlockPos {
+        x: spawn_pos.0 as i32,
+        y: spawn_pos.1 as i32,
+        z: spawn_pos.2 as i32,
+    };
     conn.send(&[Protocol::NetworkChunkPublisherUpdatePacket(Box::new(
         NetworkChunkPublisherUpdatePacket {
-            new_view_position: BlockPos { x: 0, y: 90, z: 0 },
+            new_view_position: publisher_center.clone(),
             new_view_radius: view_radius_blocks,
             server_built_chunks: vec![],
         },
@@ -906,85 +1066,105 @@ async fn do_login(
         "C2",
         start,
         ">>",
-        &format!("NetworkChunkPublisherUpdate(0,90,0 r={view_radius_blocks} blocks)"),
+        &format!(
+            "NetworkChunkPublisherUpdate({},{},{} r={view_radius_blocks} blocks)",
+            publisher_center.x, publisher_center.y, publisher_center.z
+        ),
     );
 
-    let mut sent = 0;
-    for cx in -RADIUS..=RADIUS {
-        for cz in -RADIUS..=RADIUS {
-            conn.send(&[Protocol::LevelChunkPacket(Box::new(LevelChunkPacket {
-                chunk_position: ChunkPos { x: cx, z: cz },
-                dimension_id: 0,
-                sub_chunk_count: count,
-                sub_chunk_limit: 0,
-                cache_enabled: false,
-                cache_blobs: vec![],
-                serialized_chunk_data: data.clone(),
-            }))])
-            .await?;
-            sent += 1;
-        }
+    let mut sent = 0usize;
+    let mut total_bytes = 0usize;
+    for (cx, cz, data, count) in &chunk_payloads {
+        conn.send(&[Protocol::LevelChunkPacket(Box::new(LevelChunkPacket {
+            chunk_position: ChunkPos { x: *cx, z: *cz },
+            dimension_id: 0,
+            sub_chunk_count: *count,
+            sub_chunk_limit: 0,
+            cache_enabled: false,
+            cache_blobs: vec![],
+            serialized_chunk_data: data.clone(),
+        }))])
+        .await?;
+        sent += 1;
+        total_bytes += data.len();
     }
     log(
         "C2",
         start,
         "OK",
         &format!(
-            "已发送 {} 个区块（每个 {} 字节，sub_chunk_count={}）",
+            "已发送 {} 个区块（合计 {} 字节，平均 {} 字节）",
             sent,
-            data.len(),
-            count
+            total_bytes,
+            total_bytes / sent.max(1)
         ),
     );
 
-    // 判别实验：出生点周围一圈放 12 个不同 state id 的方块，看有没有任何一个被渲染出来
-    const CANDIDATES: [u32; 12] = [
-        2403, 2404, 2405, 2399, 2400, 1, 100, 1000, 5000, 5588, 9362, 11996,
+    // 红石展示区只在 Demo 世界下发：MCHPRS 世界里不能凭空塞方块（本阶段只读）。
+    if matches!(source, WorldSource::Demo) {
+    const SHOWCASE: [u32; 8] = [
+        5749,  // stone_button: face=floor facing=north powered=false
+        5627,  // lever:       face=floor facing=north powered=false
+        7418,  // redstone_lamp:  lit=false
+        9223,  // redstone_block
+        539,   // note_block:  instrument=harp note=0
+        4138,  // redstone_wire: 无连接 power=0
+        2017,  // piston:      extended=false facing=north
+        12551, // observer:    facing=north powered=false
     ];
-    let ring: [(i32, i32); 12] = [
-        (2, 0), (2, 2), (0, 2), (-2, 2), (-2, 0), (-2, -2),
-        (0, -2), (2, -2), (4, 0), (0, 4), (-4, 0), (0, -4),
+    let ring: [(i32, i32); 8] = [
+        (2, 0),
+        (4, 0),
+        (6, 0),
+        (2, 2),
+        (4, 2),
+        (6, 2),
+        (2, 4),
+        (4, 4),
     ];
-    for (i, id) in CANDIDATES.iter().enumerate() {
+    for (i, java_id) in SHOWCASE.iter().enumerate() {
         let (dx, dz) = ring[i];
+        let runtime_id = crate::bedrock::bedrock_block_state(*java_id) as u32;
         conn.send(&[Protocol::UpdateBlockPacket(Box::new(UpdateBlockPacket {
             block_position: NetworkBlockPosition { x: dx, y: 80, z: dz },
-            block_runtime_id: *id,
+            block_runtime_id: runtime_id,
             flags: 0,
             layer: 0,
         }))])
         .await?;
+        log(
+            "C2",
+            start,
+            "OK",
+            &format!("展示方块 mchprs_id={java_id} -> bedrock={runtime_id} @({dx},80,{dz})"),
+        );
     }
-    log("C2", start, "OK", "已放置 12 个候选方块（y=80 一圈）");
+    log("C2", start, "OK", "红石展示区已下发（按钮/拉杆/红石灯/红石块/音符盒/红石线/活塞/侦测器）");
+    }
 
     conn.send(&[Protocol::SetTimePacket(Box::new(SetTimePacket { time: 6000 }))])
         .await?;
     log("C2", start, ">>", "SetTime(6000)");
 
-    Ok(())
+    Ok(BedrockSessionInfo {
+        username,
+        // `spawn_pos` 是 Bedrock 坐标（客户端已经传送到那里），交给 MCHPRS 侧前 +64
+        // 换回 MCHPRS 坐标，否则服务端会认为玩家在地底 64 格（复查第 12 条）。
+        position: (
+            spawn_pos.0 as f64,
+            spawn_pos.1 as f64 + world::Y_OFFSET as f64,
+            spawn_pos.2 as f64,
+        ),
+    })
 }
 
-/// 与 Geyser sendAdventureSettings 等价的能力包（Layer: Base）
-fn build_update_abilities() -> UpdateAbilitiesPacket<Protocol> {
-    const ABILITY_SET: u32 = 0x0007_FFFF; // 后端声明“支持全部能力”，与 Geyser 一致
-    // 创造模式 + 允许飞行 + 正在飞行 + 无限资源。位号由 Cloudburst v766 codec 实测
-    // （refs/ProbeCreativeAbilities.java）：BUILD0 MINE1 DOORS2 OPEN3 ATK_PLAYERS4 ATK_MOBS5
-    // TELEPORT7 INVULNERABLE8 FLYING9 MAY_FLY10 INSTABUILD11
-    const ABILITY_VALUES: u32 = 0x0FBF;
-    UpdateAbilitiesPacket::<Protocol> {
-        data: SerializedAbilitiesData {
-            target_player_raw_id: 1,
-            player_permissions: PlayerPermissionLevel::Member,
-            command_permissions: CommandPermissionLevel::Any,
-            layers: vec![SerializedLayer {
-                serialized_layer: SerializedAbilitiesLayer::Base,
-                abilities_set: ABILITY_SET,
-                ability_values: ABILITY_VALUES,
-                fly_speed: 0.05,
-                walk_speed: 0.1,
-            }],
-        },
-    }
+/// 与 Geyser sendAdventureSettings 等价的能力包（Layer: Base）。
+///
+/// **不要再在这里写第二份常量**：以前这里有一份独立的 `0x0FBF`，而逐字节回归测试
+/// 只盖住 `protocol.rs` 那份 → 上线跑的那份漂了都没人发现（BUG-032「能力值双份定义」）。
+/// 现在统一走 [`crate::bedrock::protocol::update_abilities`]，飞行位由它按参数决定。
+fn build_update_abilities(runtime_id: u64) -> UpdateAbilitiesPacket<Protocol> {
+    crate::bedrock::protocol::update_abilities_for(false, runtime_id, 0.05)
 }
 
 fn selftest(mode: &str) {
@@ -1001,7 +1181,7 @@ fn selftest(mode: &str) {
     }
 
     if mode == "abilities" {
-        let pkt = build_update_abilities();
+        let pkt = build_update_abilities(crate::bedrock::protocol::PLAYER_RUNTIME_ID);
         let mut buf = Vec::new();
         match pkt.serialize(&mut buf) {
             Ok(()) => {
@@ -1055,7 +1235,7 @@ fn selftest(mode: &str) {
     }
     if mode == "7" {
         println!("[SELFTEST] StartGame 往返");
-        let pkt = build_start_game();
+        let pkt = build_start_game(crate::bedrock::protocol::PLAYER_RUNTIME_ID);
         let mut buf: Vec<u8> = Vec::new();
         pkt.serialize(&mut buf).expect("serialize");
         println!("[SELFTEST] 序列化 len={}", buf.len());
@@ -1078,7 +1258,7 @@ fn selftest(mode: &str) {
         return;
     }
     if mode == "9" {
-        let pkt = build_start_game();
+        let pkt = build_start_game(crate::bedrock::protocol::PLAYER_RUNTIME_ID);
         let mut buf: Vec<u8> = Vec::new();
         pkt.serialize(&mut buf).expect("serialize");
         let path = std::env::args().nth(2).unwrap_or_else(|| String::from("/tmp/startgame.bin"));
@@ -1191,7 +1371,7 @@ fn selftest(mode: &str) {
         return;
     }
     println!("[SELFTEST] 1/3 构造 StartGame");
-    let pkt = build_start_game();
+    let pkt = build_start_game(crate::bedrock::protocol::PLAYER_RUNTIME_ID);
     println!("[SELFTEST] 2/3 序列化 StartGame");
     let mut buf: Vec<u8> = Vec::new();
     match pkt.serialize(&mut buf) {
@@ -1225,7 +1405,22 @@ fn selftest(mode: &str) {
     println!("[SELFTEST] 完成，没有崩溃");
 }
 
-pub async fn serve(addr: String) -> Result<(), Box<dyn std::error::Error>> {
+/// 入站日志的汇总窗口：`PlayerAuthInput`/`MovePlayer` 每到此长度才打一条汇总。
+///
+/// 逐包打日志会把一次 1 分钟的会话刷成几 MB（实测），排查时反而找不到关键行。
+const LOG_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// 分配实体运行时 id：全局递增，从 1 开始（与 Bedrock 客户端自己的实体计数习惯一致）。
+///
+/// 之前所有连接都用写死的 `ActorRuntimeID(1)`（BUG-032 第 22 条）：
+/// 多连接撞号、服务端位置纠正也指不准人。
+static NEXT_RUNTIME_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_runtime_id() -> u64 {
+    NEXT_RUNTIME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std::error::Error>> {
     let mut listener = Listener::builder()
         .raknet(addr.parse().unwrap())
         .name("MCHPRS Bedrock Spike")
@@ -1244,22 +1439,241 @@ pub async fn serve(addr: String) -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let conn = listener.accept::<Unknown>().await?;
+        let source = source.clone();
         tokio::spawn(async move {
             let start = Instant::now();
             let mut conn = conn.into_ver::<Protocol>();
-            println!("[A3] ACCEPT peer");
-            match do_login(&mut conn, start).await {
-                Ok(()) => println!("[B4] 登录链路完成，等待后续阶段"),
-                Err(e) => println!("[!!] 失败: {e}"),
+            // 每条连接一个自己的实体运行时 id（BUG-032 第 22 条）：以前全写死 1。
+            let runtime_id = next_runtime_id();
+            println!("[A3] ACCEPT peer runtime_id={runtime_id}");
+            let session_info = match do_login(&mut conn, start, &source, runtime_id).await {
+                Ok(info) => {
+                    println!("[B4] 登录链路完成，等待后续阶段");
+                    Some(info)
+                }
+                Err(e) => {
+                    println!("[!!] 失败: {e}");
+                    None
+                }
+            };
+
+            // 玩家化：把这条 Bedrock 连接登记成 MCHPRS 的真玩家（BACKLOG.md BUG-032）。
+            // 服务端会用这个句柄构造 `PlayerBackend::Bedrock` 并送进 spawn plot (0,0)。
+            let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            // 指令方向必须是 tokio 通道：它要和 `conn.recv()` 一起进 `tokio::select!`，
+            // 而 `std::sync::mpsc::Receiver::recv()` 是阻塞调用、不是 future（会编译报错）。
+            // 入站（`inbound_tx/rx`）仍然用 std mpsc：plot 那边是同步 tick，直接 `try_recv` 排空。
+            let (command_tx, mut command_rx) =
+                tokio::sync::mpsc::unbounded_channel::<BedrockCommand>();
+            // 入站方向：Bedrock 输入 → Java 入站包 → plot 复用现有逻辑。
+            let (inbound_tx, inbound_rx) = mpsc::channel::<
+                Box<dyn crate::packets::serverbound::ServerBoundPacket>,
+            >();
+            // 背包同步方向（BUG-032 R5）：Bedrock 客户端"手里拿的是什么"必须先于
+            // "我要放这个方块"到达 plot，所以单独开一条通道（plot 每 tick 先排空它）。
+            let (inventory_tx, inventory_rx) = mpsc::channel::<
+                crate::bedrock::bridge::BedrockInventoryUpdate,
+            >();
+            // 客户端自报的最新位置（Bedrock 坐标）。打开背包时要用它当容器坐标。
+            // 初值取登录阶段定下的出生点；`do_login` 给的是 MCHPRS 坐标，这里换回 Bedrock。
+            let mut last_pos: (f32, f32, f32) = session_info
+                .as_ref()
+                .map(|info| {
+                    (
+                        info.position.0 as f32,
+                        info.position.1 as f32 - world::Y_OFFSET as f32,
+                        info.position.2 as f32,
+                    )
+                })
+                .unwrap_or((0.0, 0.0, 0.0));
+            if let (Some(info), WorldSource::Mchprs { events, .. }) = (session_info, &source) {
+                let handle = BedrockHandle::new(command_tx, alive.clone());
+                let link = crate::bedrock::bridge::BedrockPlayerLink {
+                    handle,
+                    packets: inbound_rx,
+                    inventory: inventory_rx,
+                };
+                let spawn = (info.position.0, info.position.1, info.position.2);
+                if events
+                    .send(BedrockEvent::RegisterPlayer {
+                        username: info.username,
+                        position: spawn,
+                        link,
+                    })
+                    .is_err()
+                {
+                    println!("[!!] 无法登记 Bedrock 玩家：服务端通道已关闭");
+                }
             }
+
             // 保持连接，继续打印收包（B4 之前用于观察）
             // 用客户端自报坐标实测水平速度：客观判断“移动是否真的变慢”
             // 参考值：原版行走 4.317 m/s，潜行 1.31 m/s，游泳 2.2 m/s
             let mut last_move: Option<((f32, f32, f32), Instant)> = None;
+            // 客户端最近一次上报的旋转 `(pitch, yaw)`：服务端强制定位时要原样带上，
+            // 否则一传送就把视角拽回 0。
+            let mut last_rotation: (f32, f32) = (0.0, 0.0);
+            // 入站日志限流：`PlayerAuthInput` 每秒 20 条，逐条打会把日志刷成几 MB。
+            // 每 `LOG_WINDOW` 汇总一次（条数 + 最后位置 + 最后 flags）。
+            let mut input_count: u32 = 0;
+            // 最后一次 PlayerAuthInput 采样（位置 + 时刻），用来算实测速度。
+            let mut last_input_sample: Option<((f32, f32, f32), Instant)> = None;
+            let mut input_window = Instant::now();
+            let mut move_count: u32 = 0;
+            let mut move_window = Instant::now();
+            // 出站侧计分板的本地状态：用来判断"要不要重发 objective"和"要不要删掉多余行"。
+            let mut sidebar_sent = false;
+            let mut sidebar_title = String::new();
+            let mut sidebar_len = 0usize;
             loop {
-                match conn.recv().await {
+                // 同时等两件事：客户端发包、服务端下达指令（玩家化后 MCHPRS 可能踢人/推送）。
+                //
+                // 指令分支**不能**在这里直接 `conn.send()`：`conn.recv()` 的 future 还活着，
+                // `conn` 被它借着。所以指令只搬进局部变量，等 select 结束后统一处理。
+                let mut sidebar_update: Option<crate::bedrock::bridge::BedrockSidebar> = None;
+                let mut chat_lines: Vec<String> = Vec::new();
+                // 方块更新/能力值：本轮 select 里攒起来，统一在 select 之后发（同一个借用原因）。
+                let mut block_updates: Vec<(i32, i32, i32, u32)> = Vec::new();
+                let mut abilities: Option<(bool, f32)> = None;
+                let mut teleport_to: Option<(f64, f64, f64)> = None;
+                let mut should_close = false;
+                let received = tokio::select! {
+                    received = conn.recv() => received,
+                    command = command_rx.recv() => {
+                        match command {
+                            // `None` = 服务端把所有句柄都 drop 了（例如服务端正在退出）。
+                            Some(BedrockCommand::Disconnect) | None => should_close = true,
+                            Some(BedrockCommand::Sidebar(sidebar)) => sidebar_update = Some(sidebar),
+                            Some(BedrockCommand::Chat { text }) => chat_lines.push(text),
+                            Some(BedrockCommand::BlockUpdates(changes)) => {
+                                block_updates.extend(changes)
+                            }
+                            Some(BedrockCommand::Abilities { flying, fly_speed }) => {
+                                abilities = Some((flying, fly_speed))
+                            }
+                            Some(BedrockCommand::Teleport { x, y, z }) => {
+                                teleport_to = Some((x, y, z))
+                            }
+                        }
+                        // 返回一个空批次，让下面的收包逻辑什么都不做。
+                        Ok(Vec::new())
+                    }
+                };
+                if should_close {
+                    println!("[C3] 服务端要求断开（或已释放句柄），断开 Bedrock 客户端");
+                    break;
+                }
+
+                // 聊天/命令回执：一行一个 `TextPacket`（RAW，`§` 码由客户端解析）。
+                if !chat_lines.is_empty() {
+                    let packets: Vec<Protocol> = chat_lines
+                        .iter()
+                        .map(|text| {
+                            Protocol::TextPacket(Box::new(crate::bedrock::text::raw_text(text)))
+                        })
+                        .collect();
+                    println!("[R4] 下发聊天 {} 行", packets.len());
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 下发聊天失败: {e}");
+                        break;
+                    }
+                }
+
+                // 计分板推送：先补 objective（首次/标题变了）、再删掉变少的行、最后整行覆写。
+                if let Some(sidebar) = sidebar_update {
+                    let mut packets: Vec<Protocol> = Vec::new();
+                    if !sidebar_sent || sidebar.title != sidebar_title {
+                        packets.push(Protocol::SetDisplayObjectivePacket(Box::new(
+                            crate::bedrock::scoreboard::set_display_objective(&sidebar.title),
+                        )));
+                        sidebar_sent = true;
+                        sidebar_title = sidebar.title.clone();
+                    }
+                    if sidebar.lines.len() < sidebar_len {
+                        packets.push(Protocol::SetScorePacket(Box::new(
+                            crate::bedrock::scoreboard::remove_scores(
+                                sidebar.lines.len(),
+                                sidebar_len,
+                            ),
+                        )));
+                    }
+                    packets.push(Protocol::SetScorePacket(Box::new(
+                        crate::bedrock::scoreboard::change_scores(&sidebar),
+                    )));
+                    sidebar_len = sidebar.lines.len();
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 下发计分板失败: {e}");
+                        break;
+                    }
+                    println!(
+                        "[R3] 计分板已下发：{} 行，标题={:?}",
+                        sidebar.lines.len(),
+                        sidebar.title
+                    );
+                }
+                // 方块更新（BUG-032 第 3 条）：MCHPRS 坐标/状态 → Bedrock 坐标/运行时 id。
+                // 坐标换算与 id 映射都只在这里做一次。
+                if !block_updates.is_empty() {
+                    let packets: Vec<Protocol> = block_updates
+                        .iter()
+                        .map(|(x, y, z, java_state)| {
+                            Protocol::UpdateBlockPacket(Box::new(
+                                crate::bedrock::protocol::block_update(
+                                    (*x, *y - world::Y_OFFSET, *z),
+                                    crate::bedrock::bedrock_block_state(*java_state) as u32,
+                                ),
+                            ))
+                        })
+                        .collect();
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 下发方块更新失败: {e}");
+                        break;
+                    }
+                }
+
+                // 能力值跟随（飞行状态 + 飞行速度）。
+                if let Some((flying, fly_speed)) = abilities {
+                    let packets = vec![Protocol::UpdateAbilitiesPacket(Box::new(
+                        crate::bedrock::protocol::update_abilities_for(flying, runtime_id, fly_speed),
+                    ))];
+                    println!("[R2] 能力值跟随：flying={flying} fly_speed={fly_speed}");
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 下发能力值失败: {e}");
+                        break;
+                    }
+                }
+
+                // 服务端强制定位：MCHPRS 坐标 → Bedrock 坐标（`y - 64`）。
+                // 用本连接自己的 runtime id，别再写死 1。
+                if let Some((x, y, z)) = teleport_to {
+                    let bedrock_pos = (x as f32, (y - world::Y_OFFSET as f64) as f32, z as f32);
+                    let packets = vec![Protocol::MovePlayerPacket(Box::new(
+                        crate::bedrock::protocol::teleport(runtime_id, bedrock_pos, last_rotation),
+                    ))];
+                    println!(
+                        "[R5] 服务端定位：({x:.2}, {y:.2}, {z:.2}) → Bedrock ({:.2}, {:.2}, {:.2})",
+                        bedrock_pos.0, bedrock_pos.1, bedrock_pos.2
+                    );
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 下发定位失败: {e}");
+                        break;
+                    }
+                    last_pos = bedrock_pos;
+                }
+
+                // 背包相关：客户端的请求只置标志，统一在本轮收包结束后发包。
+                let mut open_inventory = false;
+                let mut close_inventory: Option<(ContainerID, bool)> = None;
+                match received {
                     Ok(batch) => {
                         for p in &batch {
+                            // 入站转义：Bedrock 输入 → Java 入站包 → plot 的现有逻辑。
+                            // 只有 MCHPRS 世界（真玩家）才需要；Demo 世界没人读这条通道。
+                            if matches!(source, WorldSource::Mchprs { .. }) {
+                                for java_packet in crate::bedrock::translate::translate(p) {
+                                    let _ = inbound_tx.send(java_packet);
+                                }
+                            }
                             match p {
                                 Protocol::PlayerAuthInputPacket(pa) => {
                                     // S3：客户端的方块交互（点按/挖掘/放置）走 PerformBlockActions 位
@@ -1271,18 +1685,65 @@ pub async fn serve(addr: String) -> Result<(), Box<dyn std::error::Error>> {
                                             );
                                         }
                                     }
-                                    println!(
-                                        "[--] << PlayerAuthInput pos=({:.2}, {:.2}, {:.2}) input=0x{:x}",
-                                        pa.player_position.0,
-                                        pa.player_position.1,
-                                        pa.player_position.2,
-                                        pa.input_data
-                                    )
+                                    last_pos = pa.player_position;
+                                    last_rotation = pa.player_rotation;
+                                    // 限流：每 `LOG_WINDOW` 只打一条汇总（原来是逐包打，日志被刷爆）。
+                                    input_count += 1;
+                                    if input_window.elapsed() >= LOG_WINDOW {
+                                        // 顺带把**实测水平速度**打出来（BUG-032 第 31 条）：
+                                        // 客户端自报的位置就是唯一客观的速度来源。原版参考值
+                                        // 步行 4.317 m/s、疾跑 5.612 m/s、创造飞行约 10.9 m/s。
+                                        let speed = match last_input_sample {
+                                            Some((prev, at)) => {
+                                                let dx = (pa.player_position.0 - prev.0) as f64;
+                                                let dz = (pa.player_position.2 - prev.2) as f64;
+                                                let dt = at.elapsed().as_secs_f64();
+                                                if dt > 0.05 {
+                                                    Some((dx * dx + dz * dz).sqrt() / dt)
+                                                } else {
+                                                    None
+                                                }
+                                            }
+                                            None => None,
+                                        };
+                                        last_input_sample = Some((
+                                            pa.player_position,
+                                            Instant::now(),
+                                        ));
+                                        match speed {
+                                            Some(v) => println!(
+                                                "[--] << PlayerAuthInput ×{} 最后 pos=({:.2}, {:.2}, {:.2}) 水平速度={:.2} m/s input=0x{:x}",
+                                                input_count,
+                                                pa.player_position.0,
+                                                pa.player_position.1,
+                                                pa.player_position.2,
+                                                v,
+                                                pa.input_data
+                                            ),
+                                            None => println!(
+                                                "[--] << PlayerAuthInput ×{} 最后 pos=({:.2}, {:.2}, {:.2}) input=0x{:x}",
+                                                input_count,
+                                                pa.player_position.0,
+                                                pa.player_position.1,
+                                                pa.player_position.2,
+                                                pa.input_data
+                                            ),
+                                        }
+                                        input_count = 0;
+                                        input_window = Instant::now();
+                                    }
                                 }
-                                Protocol::InteractPacket(ip) => println!(
-                                    "[S3] << Interact action={:?} target={:?}",
-                                    ip.action, ip.target_runtime_id
-                                ),
+                                Protocol::InteractPacket(ip) => {
+                                    println!(
+                                        "[S3] << Interact action={:?} target={:?}",
+                                        ip.action, ip.target_runtime_id
+                                    );
+                                    // 背包打不开的根因就在这里：Bedrock 客户端按 E 只发这个包，
+                                    // 界面要等服务端回 ContainerOpen。不回 = 一直"打不开"。
+                                    if matches!(ip.action, InteractAction::OpenInventory) {
+                                        open_inventory = true;
+                                    }
+                                }
                                 Protocol::MovePlayerPacket(mp) => {
                                     let now = Instant::now();
                                     let speed = match last_move {
@@ -1299,34 +1760,146 @@ pub async fn serve(addr: String) -> Result<(), Box<dyn std::error::Error>> {
                                         None => None,
                                     };
                                     last_move = Some((mp.position, now));
-                                    match speed {
-                                        Some(v) => println!(
-                                            "[--] << MovePlayer pos=({:.2}, {:.2}, {:.2}) on_ground={} 水平速度={:.2} m/s",
-                                            mp.position.0, mp.position.1, mp.position.2, mp.on_ground, v
-                                        ),
-                                        None => println!(
-                                            "[--] << MovePlayer pos=({:.2}, {:.2}, {:.2}) on_ground={}",
-                                            mp.position.0, mp.position.1, mp.position.2, mp.on_ground
-                                        ),
+                                    // 同样限流：每 `LOG_WINDOW` 一条，带累计条数与最后速度。
+                                    move_count += 1;
+                                    if move_window.elapsed() >= LOG_WINDOW {
+                                        match speed {
+                                            Some(v) => println!(
+                                                "[--] << MovePlayer ×{} 最后 pos=({:.2}, {:.2}, {:.2}) on_ground={} 水平速度={:.2} m/s",
+                                                move_count,
+                                                mp.position.0, mp.position.1, mp.position.2, mp.on_ground, v
+                                            ),
+                                            None => println!(
+                                                "[--] << MovePlayer ×{} 最后 pos=({:.2}, {:.2}, {:.2}) on_ground={}",
+                                                move_count,
+                                                mp.position.0, mp.position.1, mp.position.2, mp.on_ground
+                                            ),
+                                        }
+                                        move_count = 0;
+                                        move_window = Instant::now();
                                     }
-                                    // 服务端权威移动：把位置确认回给客户端
-                                    let echo = MovePlayerPacket::<Protocol> {
-                                        player_runtime_id: ActorRuntimeID(1),
-                                        position: mp.position,
-                                        rotation: mp.rotation,
-                                        y_head_rotation: mp.y_head_rotation,
-                                        position_mode: mp.position_mode.clone(),
-                                        on_ground: mp.on_ground,
-                                        riding_runtime_id: ActorRuntimeID(0),
-                                        tick: mp.tick,
+                                    // 以前这里会把位置原样回显给客户端（"服务端权威移动"）。
+                                    // 那既没用又和客户端预测打架：回显用的是写死的 `ActorRuntimeID(1)`，
+                                    // 每个包都把客户端自己报的位置再设回去，是"移动发飘/变慢"的可疑来源
+                                    // （BACKLOG.md BUG-032 复查第 17 条）。现在只记录，不纠正；
+                                    // 真要纠正时必须走 `MovePlayer(Teleport)` 且用真实的 runtime id。
+                                }
+                                Protocol::PlayerHotbarPacket(h) => {
+                                    // 快捷栏切槽：核心的 `selected_slot` 要跟上，
+                                    // 放方块时才知道手里拿的是第几格。
+                                    println!("[R5] << PlayerHotbar slot={}", h.selected_slot);
+                                    let _ = inventory_tx.send(
+                                        crate::bedrock::bridge::BedrockInventoryUpdate::SelectedSlot(
+                                            h.selected_slot,
+                                        ),
+                                    );
+                                }
+                                Protocol::InventoryTransactionPacket(tx) => {
+                                    use bedrock::protocol::v662::enums::ItemUseInventoryTransactionType;
+                                    use bedrock::protocol::v662::types::InventoryTransactionData;
+
+                                    // 只关心「对着方块按右键/左键」这一种事务；其余（丢弃、容器搬物）
+                                    // 先不处理。
+                                    let InventoryTransactionData::ItemUse(use_data) = &tx.data else {
+                                        println!("[R5] << InventoryTransaction(其他类型)");
+                                        continue;
                                     };
-                                    if let Err(e) = conn
-                                        .send(&[Protocol::MovePlayerPacket(Box::new(echo))])
-                                        .await
-                                    {
-                                        println!("[!!] 回显 MovePlayer 失败: {e}");
-                                        break;
+                                    let action = use_data.action_type.clone();
+                                    println!(
+                                        "[R5] << InventoryTransaction ItemUse action={:?} pos={:?} face={} slot={} held_item={}",
+                                        action,
+                                        (
+                                            use_data.block_position.x,
+                                            use_data.block_position.y,
+                                            use_data.block_position.z
+                                        ),
+                                        use_data.block_face,
+                                        use_data.hotbar_slot,
+                                        use_data.held_item.id,
+                                    );
+                                    // `Place`（枚举 0）就是「点方块」：放方块、拉杆、按钮、开门都走它。
+                                    // Bedrock 的 Destroy 由 `PlayerAuthInput` 那条路径管，这里不重复转。
+                                    if !matches!(action, ItemUseInventoryTransactionType::Place) {
+                                        continue;
                                     }
+                                    // Java 的 `BlockFace::from_id` 对越界 id 会 panic，先挡一下：
+                                    // Bedrock 与 Java 的 0..=5 顺序一致（Down/Up/North/South/West/East）。
+                                    if !(0..=5).contains(&use_data.block_face) {
+                                        println!(
+                                            "[R5] !! 方块面非法 {}，丢弃",
+                                            use_data.block_face
+                                        );
+                                        continue;
+                                    }
+
+                                    // ① 先把「手里是什么」同步给 plot：`handle_use_item_impl` 是从
+                                    //    `Player::inventory` 取物品的，空手就什么都不会放。
+                                    let hotbar_slot = use_data.hotbar_slot.clamp(0, 8) as u32;
+                                    let java_item_id =
+                                        crate::bedrock::mchprs_item_id(use_data.held_item.id);
+                                    let count = use_data
+                                        .held_item
+                                        .stack_size
+                                        .unwrap_or(1)
+                                        .min(255) as u8;
+                                    let _ = inventory_tx.send(
+                                        crate::bedrock::bridge::BedrockInventoryUpdate::SelectedSlot(
+                                            hotbar_slot,
+                                        ),
+                                    );
+                                    let _ = inventory_tx.send(
+                                        crate::bedrock::bridge::BedrockInventoryUpdate::Slot {
+                                            // Java 背包里快捷栏是 36..=44
+                                            slot: 36 + hotbar_slot,
+                                            item: java_item_id.map(|id| (id, count)),
+                                        },
+                                    );
+
+                                    // ② 再把这个动作转成 Java 的 `SUseItemOn`（plot 只认它）。
+                                    let _ = inbound_tx.send(Box::new(
+                                        crate::packets::serverbound::SUseItemOn {
+                                            hand: 0,
+                                            x: use_data.block_position.x,
+                                            // Bedrock 的 y 比 MCHPRS 少 64
+                                            y: use_data.block_position.y as i32 + 64,
+                                            z: use_data.block_position.z,
+                                            face: use_data.block_face,
+                                            cursor_x: use_data.click_position.0,
+                                            cursor_y: use_data.click_position.1,
+                                            cursor_z: use_data.click_position.2,
+                                            inside_block: false,
+                                            sequence: 0,
+                                        },
+                                    ));
+                                    println!(
+                                        "[R5] >> SUseItemOn pos=({}, {}, {}) face={} item={:?}",
+                                        use_data.block_position.x,
+                                        use_data.block_position.y as i32 + 64,
+                                        use_data.block_position.z,
+                                        use_data.block_face,
+                                        java_item_id
+                                    );
+                                }
+                                Protocol::ItemStackRequestPacket(req) => {
+                                    // 拿物品：创造面板取物走这条。客户端在本服务端（我们发
+                                    // `enable_item_stack_net_manager = false`）是乐观应用的，
+                                    // 这里只做记录；真正让服务端"知道手里有东西"的是上面
+                                    // InventoryTransaction 里带过来的 held_item。
+                                    for request in &req.requests {
+                                        println!(
+                                            "[R5] << ItemStackRequest id={} actions={}",
+                                            request.client_request_id,
+                                            request.actions.len()
+                                        );
+                                    }
+                                }
+                                Protocol::ContainerClosePacket(cc) => {
+                                    println!(
+                                        "[R1] << ContainerClose id={} server_initiated={}",
+                                        cc.container_id.0, cc.server_initiated_close
+                                    );
+                                    close_inventory =
+                                        Some((cc.container_id, cc.server_initiated_close));
                                 }
                                 Protocol::SubChunkRequestPacket(_) => {
                                     println!("[--] << SubChunkRequest")
@@ -1336,10 +1909,80 @@ pub async fn serve(addr: String) -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    Err(_) => break,
+                    // 以前这里是裸 `Err(_) => break`：客户端一断开，服务端只留一行
+                    // "left the game"，完全看不出是解码失败还是对面主动断的（BUG-032 第 29 条）。
+                    Err(e) => {
+                        println!("[!!] 收包失败，断开连接: {e}");
+                        break;
+                    }
+                }
+
+                // 打开背包：ContainerOpen + 三个 InventoryContent（顺序与 Geyser 一致）。
+                if open_inventory {
+                    let packets = crate::bedrock::inventory::open_inventory_packets(last_pos);
+                    println!(
+                        "[R1] 打开背包：ContainerOpen({:.1},{:.1},{:.1}) + 3 个 InventoryContent",
+                        last_pos.0, last_pos.1, last_pos.2
+                    );
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 下发背包失败: {e}");
+                        break;
+                    }
+                }
+
+                // 关背包：客户端要一份回执（Geyser 原样回发），不回它下次就不肯再开。
+                if let Some((container_id, server_initiated)) = close_inventory {
+                    let packets = vec![Protocol::ContainerClosePacket(Box::new(
+                        crate::bedrock::inventory::container_close(container_id, server_initiated),
+                    ))];
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 回执关背包失败: {e}");
+                        break;
+                    }
                 }
             }
+            // 会话结束：先把存活标记置 false，MCHPRS 侧下一 tick 就会把这个 Bedrock 玩家清掉。
+            alive.store(false, std::sync::atomic::Ordering::Relaxed);
             conn.close().await;
         });
+    }
+}
+
+/// 在独立线程里起一个 tokio 运行时，跑 **MCHPRS 真实世界**的 Bedrock 端点。
+///
+/// 由 `crates/core` 的服务端线程在启动时调用一次；`events` 用来向服务端线程要世界快照。
+/// `chunk_radius` 是视距（区块），由 core 从 `CONFIG.view_distance` 取来 —— 网络层不读
+/// core 的配置，所以只能从这里传进来（BUG-032 第 16 条）。
+/// 用独立线程是刻意的：MCHPRS 主循环是同步 tick，Bedrock 侧是 async，两者不要互相阻塞。
+pub fn spawn_mchprs_listener(
+    addr: String,
+    events: mpsc::Sender<BedrockEvent>,
+    chunk_radius: i32,
+) {
+    let spawn_result = std::thread::Builder::new()
+        .name("mchprs-bedrock".to_string())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    println!("[!!] Bedrock 监听线程无法创建 tokio 运行时: {err}");
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let source = WorldSource::Mchprs {
+                    events,
+                    chunk_radius,
+                };
+                if let Err(err) = serve(addr, source).await {
+                    println!("[!!] Bedrock 监听退出: {err}");
+                }
+            });
+        });
+    if let Err(err) = spawn_result {
+        println!("[!!] Bedrock 监听线程创建失败: {err}");
     }
 }

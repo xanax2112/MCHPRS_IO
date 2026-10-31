@@ -17,6 +17,25 @@ use tracing::error;
 
 impl Plot {
     pub(super) fn handle_packets_for_player(&mut self, player: usize) {
+        // Bedrock 的背包是客户端权威：会话线程会在"要读手里物品"（放方块/交互）之前把
+        // 那一格同步过来。**必须先应用、再处理包**，否则 `handle_use_item_impl` 会读到空手
+        // （BUG-032 R5）。
+        for update in self.players[player].client.take_inventory_updates() {
+            match update {
+                mchprs_network::bedrock::bridge::BedrockInventoryUpdate::SelectedSlot(slot) => {
+                    self.players[player].selected_slot = slot.min(8);
+                }
+                mchprs_network::bedrock::bridge::BedrockInventoryUpdate::Slot { slot, item } => {
+                    let stack = item.map(|(id, count)| mchprs_blocks::items::ItemStack {
+                        item_type: mchprs_blocks::items::Item::from_id(id),
+                        count,
+                        nbt: None,
+                    });
+                    self.players[player].set_inventory_slot(slot, stack);
+                }
+            }
+        }
+
         let packets = self.players[player].client.receive_packets();
         for packet in packets {
             packet.handle(self, player);
