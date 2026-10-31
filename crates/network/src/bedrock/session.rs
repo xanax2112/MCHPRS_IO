@@ -667,15 +667,21 @@ async fn do_login(
     // Demo：写死的石头地板；Mchprs：向服务端线程要一份真实 plot 的只读快照。
     // 参考 Geyser 的时序：先让客户端进入世界，等它自报初始化完成，再发区块。
     //
-    // publisher 半径（方块）必须**被实际下发的方形完全覆盖**，否则客户端会认为
-    // "这一圈已发布"而实际没数据（BUG-032 第 27 条，真机表现为一片虚空）。
-    // 方形的覆盖半径取决于对角线：`r 区块 × 16 × √2`。用 `floor` 而不是 `ceil`，
-    // 因为 `ceil` 会许下没有数据的范围；也不能再用 `(r+1)` 那种"多给一圈"的写法。
-    let view_radius_blocks: u32 =
-        (chunk_radius as f64 * 16.0 * std::f64::consts::SQRT_2).floor() as u32;
+    // 注意：这里**不再**用 `chunk_radius`（= 配置视距）算 publisher 半径，
+    // 而是用快照里真正发出去的半径 `initial_radius`（见下方），
+    // 否则客户端会以为远处已发布而实际没数据（BUG-032 第 27 条）。
 
-    // (chunk_x, chunk_z, 负载, sub_chunk_count) 列表 + 出生点
-    let (chunk_payloads, spawn_pos): (Vec<(i32, i32, Vec<u8>, u32)>, (f32, f32, f32)) = match source {
+    // (chunk_x, chunk_z, 负载, sub_chunk_count) 列表 + 出生点 + **这批区块的半径**
+    //
+    // 半径必须跟着"实际下发的数据"走：MCHPRS 世界现在只同步发登录那一小圈
+    // （`INITIAL_RADIUS_CHUNKS`），其余靠 `BedrockCommand::Chunks` 增量流送。
+    // 如果这里还按 `view_distance` 报 publisher 半径，客户端会以为远处已发布而实际没数据
+    // —— 正是 BUG-032 第 27 条的坑。
+    let (chunk_payloads, spawn_pos, initial_radius): (
+        Vec<(i32, i32, Vec<u8>, u32)>,
+        (f32, f32, f32),
+        i32,
+    ) = match source {
         WorldSource::Demo => {
             // 1.21.50 的 block state id（来自 minecraft-data blockStates 索引）
             const STONE_STATE: i32 = 2403;
@@ -704,7 +710,7 @@ async fn do_login(
                     payloads.push((cx, cz, data.clone(), count));
                 }
             }
-            (payloads, (0.5, 82.0, 0.5))
+            (payloads, (0.5, 82.0, 0.5), chunk_radius)
         }
         WorldSource::Mchprs { events, .. } => {
             let (reply, rx) = mpsc::channel::<PlotSnapshot>();
@@ -728,14 +734,26 @@ async fn do_login(
             let snapshot = received
                 .map_err(|_| "等待 MCHPRS 世界快照超时（是否没有 plot 在运行？）")?;
             let count = world::BEDROCK_SECTION_COUNT as u32;
+            let radius = snapshot.chunk_radius;
             let payloads = snapshot
                 .chunks
                 .into_iter()
                 .map(|(cx, cz, data)| (cx, cz, data, count))
                 .collect();
-            (payloads, snapshot.spawn)
+            (payloads, snapshot.spawn, radius)
         }
     };
+
+    // publisher 半径（方块）必须**覆盖整块视距**，哪怕区块是分批到的。
+    //
+    // 这一点踩过一个坑：原来按"登录那一小圈（2 区块 → 45 方块）"报，结果客户端把
+    // 落在 publisher 之外的 `LevelChunk` 直接丢掉（它只保留已发布范围内的区块），
+    // 后面 publisher 长大了也不会补发那些被丢的区块 → 玩家走到哪里都是空洞。
+    // Geyser/原版的做法就是**先发满半径的 publisher，再发区块**，这里保持一致。
+    //
+    // 半径取值仍是 `floor(r 区块 × 16 × √2)`（第 27 条）：方形被半径 r 的圆完全覆盖。
+    let view_radius_blocks: u32 =
+        (chunk_radius as f64 * 16.0 * std::f64::consts::SQRT_2).floor() as u32;
     conn.send(&[play_status(PlayStatus::PlayerSpawn)]).await?;
     log("C2", start, ">>", "PlayStatus(PlayerSpawn)");
 
@@ -1100,10 +1118,11 @@ async fn do_login(
         start,
         "OK",
         &format!(
-            "已发送 {} 个区块（合计 {} 字节，平均 {} 字节）",
+            "已发送 {} 个区块（合计 {} 字节，平均 {} 字节；登录快照半径 {} 区块，其余流送）",
             sent,
             total_bytes,
-            total_bytes / sent.max(1)
+            total_bytes / sent.max(1),
+            initial_radius
         ),
     );
 
@@ -1565,6 +1584,8 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                 let mut teleport_to: Option<(f64, f64, f64)> = None;
                 let mut player_snapshot: Option<Vec<crate::bedrock::bridge::BedrockPlayerInfo>> =
                     None;
+                // 增量区块（BUG-032 第 26 条）：本轮 select 里收到的一批，select 之后统一发。
+                let mut chunk_batch: Option<crate::bedrock::bridge::BedrockChunkBatch> = None;
                 let mut should_close = false;
                 let received = tokio::select! {
                     received = conn.recv() => received,
@@ -1586,6 +1607,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             Some(BedrockCommand::Players(players)) => {
                                 player_snapshot = Some(players)
                             }
+                            Some(BedrockCommand::Chunks(batch)) => chunk_batch = Some(batch),
                         }
                         // 返回一个空批次，让下面的收包逻辑什么都不做。
                         Ok(Vec::new())
@@ -1814,6 +1836,45 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     }
                 }
 
+                // 增量区块（BUG-032 第 26 条 + 第 19 条）。
+                //
+                // plot 线程按每 tick 预算分批生成，这里只负责编码下发：
+                // `NetworkChunkPublisherUpdate` 必须**先于**区块（客户端按 publisher 的范围
+                // 决定保留哪些区块；顺序反了会导致区块发出去又被丢弃）。
+                if let Some(batch) = chunk_batch {
+                    let mut packets: Vec<Protocol> = Vec::new();
+                    if let Some((bx, by, bz, radius)) = batch.publisher {
+                        packets.push(Protocol::NetworkChunkPublisherUpdatePacket(Box::new(
+                            NetworkChunkPublisherUpdatePacket {
+                                new_view_position: BlockPos { x: bx, y: by, z: bz },
+                                new_view_radius: radius,
+                                server_built_chunks: vec![],
+                            },
+                        )));
+                    }
+                    let chunk_count = batch.chunks.len();
+                    let bytes: usize = batch.chunks.iter().map(|(_, _, data, _)| data.len()).sum();
+                    for (cx, cz, data, count) in batch.chunks {
+                        packets.push(Protocol::LevelChunkPacket(Box::new(LevelChunkPacket {
+                            chunk_position: ChunkPos { x: cx, z: cz },
+                            dimension_id: 0,
+                            sub_chunk_count: count,
+                            sub_chunk_limit: 0,
+                            cache_enabled: false,
+                            cache_blobs: vec![],
+                            serialized_chunk_data: data,
+                        })));
+                    }
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 下发区块流送失败: {e}");
+                        break;
+                    }
+                    println!(
+                        "[C4] 区块流送 {chunk_count} 个（{bytes} 字节），publisher={:?}",
+                        batch.publisher
+                    );
+                }
+
                 // 背包相关：客户端的请求只置标志，统一在本轮收包结束后发包。
                 let mut open_inventory = false;
                 let mut close_inventory: Option<(ContainerID, bool)> = None;
@@ -1990,6 +2051,26 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     let hotbar_slot = use_data.hotbar_slot.clamp(0, 8) as u32;
                                     let java_item_id =
                                         crate::bedrock::mchprs_item_id(use_data.held_item.id);
+                                    // 手里有东西、但 MCHPRS 不认识这个物品（创造面板是全量原版物品）：
+                                    // 客户端已经乐观地在本地把方块放上去了，服务端必须把真实方块发回去，
+                                    // 否则那个方块永远留在客户端（Java 侧靠 `send_block_corrections`）。
+                                    // 空手（id = 0）不算：那是右键交互（拉杆/按钮/开门），照旧走 SUseItemOn。
+                                    if use_data.held_item.id != 0 && java_item_id.is_none() {
+                                        let _ = inventory_tx.send(
+                                            crate::bedrock::bridge::BedrockInventoryUpdate::Correction {
+                                                x: use_data.block_position.x,
+                                                y: use_data.block_position.y as i32 + 64,
+                                                z: use_data.block_position.z,
+                                            },
+                                        );
+                                        println!(
+                                            "[R5] !! 未知物品放置（bedrock item id={}）pos=({}, {}, {}) → 请求修正",
+                                            use_data.held_item.id,
+                                            use_data.block_position.x,
+                                            use_data.block_position.y as i32 + 64,
+                                            use_data.block_position.z
+                                        );
+                                    }
                                     let count = use_data
                                         .held_item
                                         .stack_size

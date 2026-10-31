@@ -5,7 +5,7 @@ use crate::server::Message;
 use crate::utils::{self, HyphenatedUUID};
 use mchprs_blocks::block_entities::BlockEntity;
 use mchprs_blocks::items::{Item, ItemStack};
-use mchprs_blocks::BlockPos;
+use mchprs_blocks::{BlockFace, BlockPos};
 use mchprs_network::packets::clientbound::*;
 use mchprs_network::packets::serverbound::*;
 use mchprs_world::World;
@@ -13,7 +13,7 @@ use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
-use tracing::error;
+use tracing::{error, info};
 
 impl Plot {
     pub(super) fn handle_packets_for_player(&mut self, player: usize) {
@@ -32,6 +32,33 @@ impl Plot {
                         nbt: None,
                     });
                     self.players[player].set_inventory_slot(slot, stack);
+                }
+                mchprs_network::bedrock::bridge::BedrockInventoryUpdate::Correction { x, y, z } => {
+                    // 客户端放了一个 MCHPRS **不认识**的物品（创造面板给的是全量原版物品）：
+                    // 它已经乐观地在本地画上去了，这里把真实方块（连同周围 6 面）发回去。
+                    // Java 侧走的是同一套 `send_block_corrections`（CBlockUpdate）；
+                    // 只有 Bedrock 以前没接上，于是放错的方块会一直留在客户端（BUG-032 第 35 条）。
+                    let pos = BlockPos::new(x, y, z);
+                    let mut positions = Vec::with_capacity(7);
+                    positions.push(pos);
+                    for face in [
+                        BlockFace::Bottom,
+                        BlockFace::Top,
+                        BlockFace::North,
+                        BlockFace::South,
+                        BlockFace::West,
+                        BlockFace::East,
+                    ] {
+                        positions.push(pos.offset(face));
+                    }
+                    info!(
+                        "Bedrock 未知物品放置 → 修正 MCHPRS({},{},{}) / Bedrock y={}",
+                        x,
+                        y,
+                        z,
+                        y - 64
+                    );
+                    self.send_block_corrections(&positions);
                 }
             }
         }

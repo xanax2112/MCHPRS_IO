@@ -212,6 +212,16 @@ impl PlayerBackend {
         }
     }
 
+    /// 推一批区块（BUG-032 第 26 条增量区块 + 第 19 条）。
+    ///
+    /// Java 后端不用：区块由 `CChunkData` 那套自己发。Bedrock 侧由 `plot` 按每 tick
+    /// 的预算生成，这里只把"发什么"投给会话线程。
+    pub fn send_chunks(&self, batch: mchprs_network::bedrock::bridge::BedrockChunkBatch) {
+        if let Self::Bedrock(link) = self {
+            link.handle.send_chunks(batch);
+        }
+    }
+
     /// 单个方块变化（BUG-032 第 3 条）。
     ///
     /// 以前这里只有 Java 的 `CBlockUpdate`，Bedrock 玩家不在广播列表里，

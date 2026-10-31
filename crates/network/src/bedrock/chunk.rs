@@ -197,6 +197,81 @@ pub const BEDROCK_MIN_SECTION: i8 = -4;
 /// Bedrock 主世界一共 24 个 16 格段（y = -64..319）。
 pub const BEDROCK_SECTION_COUNT: i32 = 24;
 
+// ---- 区块流送参数（BUG-032 第 26 条增量区块 + 第 19 条快照出 plot 线程）----
+
+/// 登录时**同步**生成的初始半径（区块）。
+///
+/// 2 → 5×5 = 25 个区块。实测每区块 ≈ 0.71ms，所以这一批约 18ms，
+/// 安全地留在 50ms 的 tick 预算里（以前一次性 289 区块要 205~260ms）。
+pub const INITIAL_RADIUS_CHUNKS: i32 = 2;
+
+/// 每 tick 最多流送的区块数。16 × 0.71ms ≈ 11ms。
+pub const STREAM_BUDGET_CHUNKS: usize = 16;
+
+/// 每 tick 流送的时间上限（毫秒）：先到哪个先停，双保险。
+pub const STREAM_BUDGET_MS: u64 = 8;
+
+/// 方形窗口内**还没发过**的区块坐标，由近到远排序。
+///
+/// 排序键：先按到中心的 Chebyshev 距离（方形一圈一圈填），再按欧氏距离 + 坐标，
+/// 保证同一圈内顺序稳定（便于日志复现与测试）。
+pub fn pending_chunks(
+    center: (i32, i32),
+    radius: i32,
+    have: &std::collections::HashSet<(i32, i32)>,
+) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    for dx in -radius..=radius {
+        for dz in -radius..=radius {
+            let chunk = (center.0 + dx, center.1 + dz);
+            if have.contains(&chunk) {
+                continue;
+            }
+            out.push(chunk);
+        }
+    }
+    out.sort_by_key(|&(x, z)| {
+        let dx = x - center.0;
+        let dz = z - center.1;
+        let ring = dx.abs().max(dz.abs());
+        (ring, dx * dx + dz * dz, x, z)
+    });
+    out
+}
+
+/// 已发区块里**完整覆盖**的最大方形半径（0 = 只有中心那一块）。
+///
+/// publisher 半径只能按"真的都发完了"的方形来报 —— 第 27 条的坑就是这么来的：
+/// 报得比发得大，客户端以为那里有区块，实际一片虚空。
+pub fn covered_radius(
+    center: (i32, i32),
+    radius: i32,
+    have: &std::collections::HashSet<(i32, i32)>,
+) -> i32 {
+    let mut covered = 0;
+    for r in 1..=radius {
+        let mut complete = true;
+        'ring: for dx in -r..=r {
+            for dz in -r..=r {
+                if dx.abs().max(dz.abs()) != r {
+                    continue;
+                }
+                if !have.contains(&(center.0 + dx, center.1 + dz)) {
+                    complete = false;
+                    break 'ring;
+                }
+            }
+        }
+        if complete {
+            covered = r;
+        } else {
+            break;
+        }
+    }
+    covered
+}
+
+
 /// 从任意方块来源生成一个 Bedrock `LevelChunk` 负载。
 ///
 /// `get_block(x, y, z)` 返回 **MCHPRS（Java 1.20.4）的方块状态 id**，
@@ -412,5 +487,57 @@ mod tests {
             1,
         );
         assert_eq!(payload[4], 0x02, "y=1 的方块应当落在索引 1");
+    }
+
+    /// 流送队列：已发过的不能重复入队；顺序由近到远（一圈一圈填）。
+    #[test]
+    fn pending_chunks_skips_sent_and_orders_by_ring() {
+        let mut have = std::collections::HashSet::new();
+        have.insert((0, 0));
+        have.insert((1, 0));
+        let pending = pending_chunks((0, 0), 1, &have);
+        // 半径 1 的方形 = 9 块，去掉已有的 2 块 → 7 块
+        assert_eq!(pending.len(), 7);
+        assert!(!pending.contains(&(0, 0)));
+        assert!(!pending.contains(&(1, 0)));
+        // 第一个必然是紧挨中心的（Chebyshev 距离 1）
+        assert_eq!(pending[0].0.abs().max(pending[0].1.abs()), 1);
+        // "由近到远"：环号单调不减
+        let rings: Vec<i32> = pending
+            .iter()
+            .map(|(x, z)| x.abs().max(z.abs()))
+            .collect();
+        assert!(rings.windows(2).all(|w| w[0] <= w[1]), "环号必须单调不减：{rings:?}");
+    }
+
+    /// publisher 半径只能按"真的发满了的方形"来报（第 27 条：报大了会一片虚空）。
+    #[test]
+    fn covered_radius_grows_only_for_complete_squares() {
+        let center = (0, 0);
+        let mut have = std::collections::HashSet::new();
+        have.insert(center);
+        assert_eq!(covered_radius(center, 4, &have), 0);
+
+        // 补满半径 1 的一圈 → 1
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                have.insert((dx, dz));
+            }
+        }
+        assert_eq!(covered_radius(center, 4, &have), 1);
+
+        // 半径 2 少一块 → 仍然是 1
+        for dx in -2..=2 {
+            for dz in -2..=2 {
+                if (dx, dz) != (2, -2) {
+                    have.insert((dx, dz));
+                }
+            }
+        }
+        assert_eq!(covered_radius(center, 4, &have), 1);
+
+        // 补上那块 → 2
+        have.insert((2, -2));
+        assert_eq!(covered_radius(center, 4, &have), 2);
     }
 }

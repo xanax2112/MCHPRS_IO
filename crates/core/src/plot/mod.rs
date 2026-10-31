@@ -37,7 +37,7 @@ use monitor::TimingsMonitor;
 use rustc_hash::{FxHashMap, FxHashSet};
 use scoreboard::RedpilerState;
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
@@ -138,6 +138,43 @@ pub struct Plot {
     /// automation bridge. Only that connection may use the
     /// `INPUT <name> <offset> <hex>` form (BACKLOG.md BUG-004).
     exclusive: Option<u64>,
+
+    /// Bedrock 区块流送状态（BUG-032 第 26 条 + 第 19 条），key = 玩家 uuid。
+    ///
+    /// 以前是"登录时一次性生成 289 个区块"：实测 205~260ms 全卡在 plot 线程上，
+    /// 而且走远就彻底没数据。现在改成每 tick 按预算推一圈。
+    bedrock_streams: HashMap<u128, BedrockChunkStream>,
+    /// 已生成的 Bedrock 区块负载缓存（key = Bedrock `(chunk_x, chunk_z)`）。
+    ///
+    /// 实测每个区块约 790 字节（空 plot），整张地皮 32×32 也就 ~800KB，
+    /// 所以不做淘汰，全量常驻。
+    bedrock_chunk_cache: HashMap<(i32, i32), Vec<u8>>,
+    /// 本 tick 变过方块、需要重建缓存的区块（Bedrock 区块坐标）。
+    bedrock_chunk_dirty: HashSet<(i32, i32)>,
+}
+
+/// 一个 Bedrock 玩家的区块流送进度（BUG-032 第 26/19 条）。
+struct BedrockChunkStream {
+    /// 上一次的**中心区块**（Bedrock 区块坐标）。变了才重算窗口。
+    center: (i32, i32),
+    /// 这个客户端当前"手里有"的区块。
+    sent: HashSet<(i32, i32)>,
+    /// 待发队列（由近到远）。
+    pending: VecDeque<(i32, i32)>,
+    /// 已经向客户端声明过的 publisher 半径（区块数）。
+    ///
+    /// **恒等于视距半径**：客户端会把 publisher 范围之外的 `LevelChunk` 直接丢掉，
+    /// 所以 publisher 必须在**第一次登录时就报满**（Geyser/原版也是先 publisher 再区块），
+    /// 绝不能用"随发随长"的策略 —— 那样先发的区块会被丢，之后也不会补发（真机踩过）。
+    published_radius: i32,
+    /// 这个窗口是什么时候开始铺的（用于打"铺满用了多久"的日志）。
+    started: Instant,
+}
+
+/// Bedrock 的 `NetworkChunkPublisherUpdate` 半径（方块）由**区块半径**换算：
+/// 方形被半径 `r` 的圆完全覆盖需要 `r × 16 × √2`，向下取整（第 27 条：不能报大）。
+fn radius_blocks(chunk_radius: i32) -> u32 {
+    (chunk_radius as f64 * 16.0 * std::f64::consts::SQRT_2).floor() as u32
 }
 
 /// One pending `INPUT`, locked to an absolute tick (BACKLOG.md §7.2).
@@ -1490,6 +1527,13 @@ impl Plot {
     /// 只能逐条 `UpdateBlock`，所以这里一次把整批塞给会话线程（别一个方块一条指令）。
     fn send_bedrock_block_changes(&mut self) {
         let changes = std::mem::take(&mut self.world.block_changes);
+        // 方块变化同时让区块缓存失效（BUG-032 第 26 条）：如果玩家离开视距再回来，
+        // 客户端会重新请求那个区块，而缓存里可能还是旧状态。
+        // **这一步不能放在"有没有 Bedrock 玩家"之后** —— 缓存是全 plot 共享的。
+        for (pos, _) in &changes {
+            self.bedrock_chunk_dirty
+                .insert((pos.x.div_euclid(16), pos.z.div_euclid(16)));
+        }
         if changes.is_empty() || !self.players.iter().any(|p| p.client.is_bedrock()) {
             return;
         }
@@ -1936,8 +1980,12 @@ impl Plot {
     ) -> mchprs_network::bedrock::bridge::PlotSnapshot {
         /// Java `PlayerData::default()` 的位置。
         const SPAWN: (i32, i32, i32) = (128, 128, 128);
-        // 至少 1 个区块；上限只是防御（一般不会有人把 view_distance 开到 32）。
-        let chunk_radius = chunk_radius.clamp(1, 32);
+        // 登录时**只同步生成一小圈**（BUG-032 第 19 条：一次性 289 区块要卡 tick
+        // 205~260ms）。其余由 `stream_bedrock_chunks()` 每 tick 按预算补。
+        let chunk_radius = chunk_radius.clamp(
+            1,
+            mchprs_network::bedrock::chunk::INITIAL_RADIUS_CHUNKS,
+        );
 
         // 有存档就按存档位置出发生成区块；否则用默认出生点。
         // 关键：登录时的第一条 MovePlayer 必须直接落在**玩家真实位置**，
@@ -1992,6 +2040,9 @@ impl Plot {
                 ),
             },
             chunks,
+            // 会话线程要用这个半径算登录时 publisher 的 `new_view_radius`：
+            // 必须**只覆盖真的发了数据的范围**（第 27 条）。
+            chunk_radius,
         }
     }
 
@@ -2037,6 +2088,8 @@ impl Plot {
         }
         // 位置刷新完再推一次"谁在哪"（BUG-032 第 22 条完整版）。
         self.send_bedrock_player_sync();
+        // 再按预算推一批区块（BUG-032 第 26 条 + 第 19 条）。
+        self.stream_bedrock_chunks();
     }
 
     /// 把"线上还有谁、各自在哪"推给每个 Bedrock 玩家（BUG-032 第 22 条完整版）。
@@ -2069,6 +2122,190 @@ impl Plot {
                 .cloned()
                 .collect();
             player.client.send_players(others);
+        }
+    }
+
+    /// Bedrock 视距（区块半径）：单一来源仍是 `CONFIG.view_distance`（BUG-032 第 16 条）。
+    fn bedrock_view_radius(&self) -> i32 {
+        CONFIG.view_distance.clamp(1, 32) as i32
+    }
+
+    /// 取一个 Bedrock 区块的负载：命中缓存直接复用，否则现生成并写回缓存。
+    ///
+    /// 缓存失效由 [`Plot::send_bedrock_block_changes`] 里的 `bedrock_chunk_dirty` 负责。
+    fn bedrock_chunk_payload(&mut self, chunk: (i32, i32)) -> Vec<u8> {
+        if let Some(cached) = self.bedrock_chunk_cache.get(&chunk) {
+            return cached.clone();
+        }
+        let payload = mchprs_network::bedrock::chunk::build_chunk_from_world(
+            |x, y, z| self.world.get_block_raw(BlockPos::new(x, y, z)),
+            chunk.0,
+            chunk.1,
+            1, // minecraft:plains
+        );
+        self.bedrock_chunk_cache.insert(chunk, payload.clone());
+        payload
+    }
+
+    /// 每 tick 给每个 Bedrock 玩家推一批区块（BUG-032 第 26 条增量区块 +
+    /// 第 19 条把快照生成移出"一次性"路径）。
+    ///
+    /// 规则：
+    /// - 每个玩家每 tick 最多 `STREAM_BUDGET_CHUNKS` 个、且不超过 `STREAM_BUDGET_MS`；
+    /// - 玩家中心区块变了 → 重算方形窗口、publisher 跟着中心走；
+    /// - 方块变化的区块（dirty）→ **只让缓存失效**，不重发整块
+    ///   （重发会让客户端重建区块，表现为"放一个方块整片区块闪一下"）；
+    /// - publisher 半径只在"真的发满了更大一圈"时增长（第 27 条的教训）。
+    fn stream_bedrock_chunks(&mut self) {
+        use mchprs_network::bedrock::chunk as netchunk;
+        // 整轮流送的耗时（第 19 条的验收指标：单 tick 不应超过 20ms）。
+        let timeline = Instant::now();
+
+        // 1) 变过方块的区块先让缓存失效（不论有没有 Bedrock 玩家 —— 否则缓存会留旧数据）。
+        let dirty: Vec<(i32, i32)> = self.bedrock_chunk_dirty.drain().collect();
+        for chunk in &dirty {
+            self.bedrock_chunk_cache.remove(chunk);
+        }
+
+        // 2) 收集 Bedrock 玩家（先拷贝出来，避免后面同时借用 self.world / streams）。
+        let players: Vec<(usize, u128, (f64, f64, f64))> = self
+            .players
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.client.is_bedrock())
+            .map(|(idx, p)| (idx, p.uuid, (p.pos.x, p.pos.y, p.pos.z)))
+            .collect();
+        if players.is_empty() {
+            self.bedrock_streams.clear();
+            return;
+        }
+
+        let radius = self.bedrock_view_radius();
+        let initial = netchunk::INITIAL_RADIUS_CHUNKS;
+        let window = ((radius * 2 + 1) * (radius * 2 + 1)) as usize;
+
+        for (idx, uuid, pos) in players {
+            let center = (
+                (pos.0.floor() as i32).div_euclid(16),
+                (pos.2.floor() as i32).div_euclid(16),
+            );
+            // 把状态取出来单独操作：`bedrock_chunk_payload()` 要 `&mut self`。
+            let mut stream = self.bedrock_streams.remove(&uuid).unwrap_or_else(|| {
+                // 登录时同步发的那一小圈已经在这个客户端手里。
+                let mut sent = HashSet::new();
+                for dx in -initial..=initial {
+                    for dz in -initial..=initial {
+                        sent.insert((center.0 + dx, center.1 + dz));
+                    }
+                }
+                BedrockChunkStream {
+                    center,
+                    sent,
+                    pending: VecDeque::new(),
+                    // publisher 在登录时就报满了（见字段注释），这里跟上；
+                    // 只有中心变化才需要重发 publisher。
+                    published_radius: radius,
+                    started: Instant::now(),
+                }
+            });
+
+            let mut publisher: Option<(i32, i32, i32, u32)> = None;
+
+            // 中心变了：窗口平移（publisher 中心跟着走），**队列整份重排**。
+            //
+            // `sent` 里留着的算"客户端已有"；其余全部重新排队。这里必须重建而不是沿用旧队列：
+            // 玩家边走边等流送时，旧队列里可能全是上一个窗口的坐标，新窗口的环一直排不上，
+            // 真机表现就是"走到某处那片区块永远不来"。
+            if stream.center != center {
+                stream.center = center;
+                stream.started = Instant::now();
+                stream.sent.retain(|(cx, cz)| {
+                    (cx - center.0).abs() <= radius && (cz - center.1).abs() <= radius
+                });
+                stream.pending = netchunk::pending_chunks(center, radius, &stream.sent).into();
+                publisher = Some((
+                    pos.0.floor() as i32,
+                    (pos.1 - mchprs_network::bedrock::chunk::Y_OFFSET as f64) as i32,
+                    pos.2.floor() as i32,
+                    radius_blocks(stream.published_radius),
+                ));
+            }
+
+            // 3) 变过方块的区块**只失效缓存，不重发整块**。
+            //
+            // 重发整块 `LevelChunk` 会让客户端重建整个区块 —— 放一个方块整片区块闪一下
+            // （2026-10-31 真机实测）。方块本身已经由 `send_bedrock_block_changes()` 的
+            // `UpdateBlock` 即时改掉了，所以这里只需要保证"下次重建时数据是新的"。
+            let mut batch: Vec<(i32, i32, Vec<u8>, u32)> = Vec::new();
+
+            // 4) 队列空了但窗口还没铺满 → 重新排一份（由近到远）。
+            if stream.pending.is_empty() && stream.sent.len() < window {
+                stream.pending = netchunk::pending_chunks(center, radius, &stream.sent).into();
+            }
+
+            // 5) 按预算生成并装批。
+            let started = Instant::now();
+            let budget = Duration::from_millis(netchunk::STREAM_BUDGET_MS);
+            while batch.len() < netchunk::STREAM_BUDGET_CHUNKS && started.elapsed() < budget {
+                let Some(chunk) = stream.pending.pop_front() else {
+                    break;
+                };
+                if stream.sent.contains(&chunk) {
+                    continue;
+                }
+                let payload = self.bedrock_chunk_payload(chunk);
+                batch.push((chunk.0, chunk.1, payload, netchunk::BEDROCK_SECTION_COUNT as u32));
+                stream.sent.insert(chunk);
+            }
+
+            // 6) 覆盖情况**只用于日志**：publisher 半径恒为视距（见字段注释），
+            //    不能再"随发随长" —— 那样先发的区块会被客户端丢掉且不会补发。
+            let covered = netchunk::covered_radius(center, radius, &stream.sent);
+
+            let sending = !batch.is_empty();
+            if sending || publisher.is_some() {
+                if sending {
+                    // 铺满这条日志是"第 19 条真的解决了吗"的验收证据：
+                    // 一次性生成是 205~260ms，现在是每 tick 一小批、总耗时分成 N 个 tick。
+                    if stream.pending.is_empty() {
+                        info!(
+                            "Bedrock 区块流送完成：{} 个区块，覆盖半径 {} 区块，耗时 {:?}（每 tick 预算 {} 个 / {}ms）",
+                            stream.sent.len(),
+                            covered,
+                            stream.started.elapsed(),
+                            netchunk::STREAM_BUDGET_CHUNKS,
+                            netchunk::STREAM_BUDGET_MS
+                        );
+                    }
+                    debug!(
+                        "Bedrock 流送：{} 个区块（剩余 {}，已发 {}/{}）",
+                        batch.len(),
+                        stream.pending.len(),
+                        stream.sent.len(),
+                        window
+                    );
+                }
+                self.bedrock_streams.insert(uuid, stream);
+                self.players[idx]
+                    .client
+                    .send_chunks(mchprs_network::bedrock::bridge::BedrockChunkBatch {
+                        chunks: batch,
+                        publisher,
+                    });
+            } else {
+                self.bedrock_streams.insert(uuid, stream);
+            }
+        }
+
+        // 走掉的人不再需要流送状态。
+        let alive: HashSet<u128> = self.players.iter().map(|p| p.uuid).collect();
+        self.bedrock_streams.retain(|uuid, _| alive.contains(uuid));
+
+        // 一次流送的总耗时（含区块生成 + 队列维护）。超过 20ms 就是 tick 卡顿的信号，
+        // 打出来才有数据判断要不要继续拆（第 19 条的验收指标）。
+        let elapsed = timeline.elapsed();
+        if elapsed > Duration::from_millis(20) {
+            warn!("Bedrock 流送这一轮耗时 {elapsed:?}（超过 20ms，检查预算）");
         }
     }
 
@@ -2296,6 +2533,9 @@ impl Plot {
             reservations: Vec::new(),
             seq_mode: false,
             exclusive: None,
+            bedrock_streams: HashMap::new(),
+            bedrock_chunk_cache: HashMap::new(),
+            bedrock_chunk_dirty: HashSet::new(),
             world,
         }
     }

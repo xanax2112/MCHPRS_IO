@@ -51,6 +51,21 @@ pub enum BedrockCommand {
     /// 用全量而不是增量：玩家进出、传送、坠落纠正都要改状态，
     /// 全量只多占几个字节，却省掉一套容易出错的增量协议。
     Players(Vec<BedrockPlayerInfo>),
+    /// 增量区块流送（BUG-032 第 26 条 + 第 19 条）。
+    ///
+    /// plot 线程按每 tick 的预算分批生成、分批下发，不再登录时一次性生成 289 个区块
+    /// （那样要卡 tick 200~260ms）。`publisher` 只在"玩家中心区块变了"或
+    /// "已发方形变大"时带一个，避免客户端把没数据的区域当成已发布（第 27 条）。
+    Chunks(BedrockChunkBatch),
+}
+
+/// 一批要下发给某个 Bedrock 客户端的区块。
+#[derive(Debug)]
+pub struct BedrockChunkBatch {
+    /// `(chunk_x, chunk_z, LevelChunk 负载, sub_chunk_count)`，`chunk_x/z` 是 Bedrock 区块坐标。
+    pub chunks: Vec<(i32, i32, Vec<u8>, u32)>,
+    /// `Some((方块 x, 方块 y, 方块 z, 半径方块))` = 先发 `NetworkChunkPublisherUpdate`。
+    pub publisher: Option<(i32, i32, i32, u32)>,
 }
 
 /// 一个要在 Bedrock 客户端里显示的玩家（**MCHPRS/Java 坐标**，会话线程负责 `y - 64`）。
@@ -148,6 +163,14 @@ impl BedrockHandle {
     pub fn send_players(&self, players: Vec<BedrockPlayerInfo>) {
         let _ = self.commands.send(BedrockCommand::Players(players));
     }
+
+    /// 投递一批区块（BUG-032 第 26 条增量区块 + 第 19 条）。
+    pub fn send_chunks(&self, batch: BedrockChunkBatch) {
+        if batch.chunks.is_empty() && batch.publisher.is_none() {
+            return;
+        }
+        let _ = self.commands.send(BedrockCommand::Chunks(batch));
+    }
 }
 
 /// 一个 Bedrock 玩家的双向链接。
@@ -180,6 +203,14 @@ pub enum BedrockInventoryUpdate {
     /// 写入一个背包槽位。`slot` 是 **Java 背包槽位号**（快捷栏是 36..=44）；
     /// `item` 是 `(MCHPRS 物品 id, 数量)`，`None` 表示空手。
     Slot { slot: u32, item: Option<(u32, u8)> },
+    /// 客户端在某个位置放了东西，但**服务端不认识那个物品**，要求把该位置的
+    /// 真实方块发回去（BUG-032 第 35 条）。
+    ///
+    /// 背景：Bedrock 的创造面板给的是**全量原版物品**（R1），大部分 MCHPRS 没有。
+    /// 客户端是乐观预测——它先在本地把方块放上去，服务端不回话就永远留着。
+    /// Java 侧由 `Plot::send_block_corrections`（`CBlockUpdate`）纠正；Bedrock 必须
+    /// 显式补一条 `UpdateBlock`。坐标是 **MCHPRS（Java）坐标**。
+    Correction { x: i32, y: i32, z: i32 },
 }
 
 /// plot 线程打包给 Bedrock 客户端的一份只读世界快照。
@@ -188,7 +219,12 @@ pub struct PlotSnapshot {
     pub spawn: (f32, f32, f32),
     /// `(chunk_x, chunk_z, LevelChunk 负载)`。
     /// 负载由 [`crate::bedrock::chunk::build_chunk_from_world`] 生成，`chunk_x/z` 是 Bedrock 区块坐标。
+    /// 这是**登录时的那一批**（半径 [`crate::bedrock::chunk::INITIAL_RADIUS_CHUNKS`]），
+    /// 其余区块由 `BedrockCommand::Chunks` 每 tick 增量流送。
     pub chunks: Vec<(i32, i32, Vec<u8>)>,
+    /// 这批区块覆盖的半径（区块数）。会话线程据此算登录时 `NetworkChunkPublisherUpdate`
+    /// 的半径，必须**只覆盖真的发了数据的范围**（BUG-032 第 27 条）。
+    pub chunk_radius: i32,
 }
 
 /// Bedrock 监听线程发给服务端线程的事件。

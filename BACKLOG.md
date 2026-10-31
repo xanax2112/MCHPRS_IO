@@ -703,7 +703,7 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
 | 23 | 轻微 | `start_game` 的 `default_spawn_block_position` 是 `(0,79,0)`，与真实出生点 `(128.5, 64, 128.5)` 不符（指南针/出生点语义） | ✅ 已写码 + 已编译（2026-10-31 第六轮）：Geyser 的 `StartGame` **从不**设置这个字段（保持 Cloudburst 默认值），世界出生点是靠 Java `SetDefaultSpawnPosition` → `SetSpawnPositionPacket(WORLD_SPAWN)` 下发的。照此办理：①`build_level_settings` 里改回 `(0,0,0)` 并注明真实出生点走另一个包；②快照算出 `spawn_pos` 后发 `protocol::set_spawn_position(spawn_block)`（新包，逐字节测试对拍 `refs/ProbeSetSpawn.java`：`028002408002008002408002` / 负坐标 `020dc4ffffff0f42000dc4ffffff0f42`）。**已知与 Geyser 的差异**：`JavaSetDefaultSpawnPositionTranslator` 把 Java 方块坐标原样塞进 `blockPosition`（没做 y-64），我们按 Bedrock 坐标空间发（此时客户端确实在 `y-64`），真机上用指南针核对一次即可定论 → ✅ 真机验收通过（2026-10-31，用户确认"真机验收全部完成"；y 轴口径以 Bedrock 坐标空间为准，未发现指南针异常） |
 | 24 | 既有（非本轮引入） | `Player::save` 用 `write(true).create(true)` **不 truncate**，短数据写长文件留尾巴 → 反序列化失败会重置玩家数据 | ✅ 已修（2026-10-31）：`OpenOptions` 加 `.truncate(true)`（上游问题，改了本仓库这份） |
 | 25 | **真机·严重** | **进世界后悬空、不会自己落到地面**（实测：前 157 条 `PlayerAuthInput` ≈7.9 秒 y 恒为 64.0，之后才下降）。根因：`build_update_abilities` 的 `ABILITY_VALUES = 0x0FBF` 里 **bit9 = `FLYING`**（`0xBF`=1011 1111 → bit0–5 全 1、bit6=0、bit7=1；`0x0F00` 给 bit8–11），等于开局就宣称"正在飞行" → 不施加重力。Geyser 只在 `entity.isFlying()` 时才置这一位 | 📝 已定待写码：初值改 `0x0FBF & !(1<<9) = 0x0DBF`（保留 `MAY_FLY` + `INSTABUILD`）。该常量**有两份**：`session.rs:1099`（上线实际用的）与 `protocol.rs`（有逐字节测试 `update_abilities_matches_geyser_codec`，参考串里的 `bf0f0000` 即 LE u32 `0x0FBF`）→ 必须先用 `refs/ProbeCreativeAbilities.java` + Cloudburst v766 codec 生成 flying=false 的参考字节再改测试期望，不许手改十六进制（铁律 4） | ✅ 已修（2026-10-31）：新探针 `refs/ProbeCreativeNoFly.java` 用 `Geyser-Probe.jar` 跑出参考字节 —— flying=true `…00bf0f0000…`（与旧期望**逐字节一致**，说明编码器本来就对，只是值错）、flying=false `…00bf0d0000…`。`protocol.rs` 改为 `ABILITY_VALUES = 0x0DBF`（不含 `FLYING`）+ `ability_values(flying)` / `update_abilities_for(flying)`，测试对两种状态各断言一条；`session.rs` 的第二份实现已删除，改为调用 `protocol::update_abilities()` |
-| 26 | **真机·严重** | **走远后远处区块不渲染**：快照是一次性的 81 个区块（半径 4 → chunk 4..12 → 方块 x/z ∈ 64..207；因出生点 x=128 落在 chunk 8 内，左右边界不对称：左 64 格、右 79 格）。实测最远走到 **74.2 格**，正好在数据边缘；再往外服务端零数据。**注意半径 4 是写死的，比 `CONFIG.view_distance`(8) 还小，本身就不该这么发** | 📋 待做（阶段二）：按玩家位置**增量推送**（`NetworkChunkPublisherUpdate` + 新区块），快照常驻缓存；并把 `sub_chunk_limit` 打开，让客户端按需 `SubChunkRequest`（最省带宽）。半径一律取 `CONFIG.view_distance`；纯扩大半径不可取（`view_distance=16` → 33×33=1089 区块 ≈ 1.1 亿次读方块，见第 19 条） |
+| 26 | **真机·严重** | **走远后远处区块不渲染**：快照是一次性的 81 个区块（半径 4 → chunk 4..12 → 方块 x/z ∈ 64..207；因出生点 x=128 落在 chunk 8 内，左右边界不对称：左 64 格、右 79 格）。实测最远走到 **74.2 格**，正好在数据边缘；再往外服务端零数据。**注意半径 4 是写死的，比 `CONFIG.view_distance`(8) 还小，本身就不该这么发** | 📋 待做（阶段二）：按玩家位置**增量推送**（`NetworkChunkPublisherUpdate` + 新区块），快照常驻缓存；并把 `sub_chunk_limit` 打开，让客户端按需 `SubChunkRequest`（最省带宽）。半径一律取 `CONFIG.view_distance`；纯扩大半径不可取（`view_distance=16` → 33×33=1089 区块 ≈ 1.1 亿次读方块，见第 19 条） | ✅ **已修 + 真机验收通过（2026-10-31，§9.14）**：登录只同步生成 5×5（≈18ms），其余每 tick 按预算 16 个 / 8ms 增量流送；`sent` 集合 + `pending` 队列做增量，中心变化重排队列；区块缓存 + dirty 失效。**`SubChunkRequest` 未做**（我们总发满 24 段，客户端没有缺段可请求），留作带宽优化 |
 | 27 | **真机·中** | **publisher 半径与实际下发不一致**（第 26 条的放大器）：日志原文 `NetworkChunkPublisherUpdate(128,72,128 r=128 blocks)` —— 中心 y=72（`spawn.y+8`）、半径 128 方块，而数据只到离中心 64~79 格 → 79..128 这一圈客户端认为"已发布"，实际是空的 | 📝 已定待写码：publisher 半径由**实际下发半径**推导 `floor(r*16*√2)`（`view_distance=8` → 181 方块，正好被 17×17 的方形完全覆盖；不能用 `ceil`/`(r+1)`，那会许下没有数据的范围）；中心 y 用真实出生点 y 而不是 `+8` | ✅ 已修（2026-10-31）：`view_radius_blocks = floor(chunk_radius × 16 × √2)`（`view_distance=8` → 181 方块，正好被 17×17 的方形覆盖）；publisher 中心改用真实出生点方块坐标 |
 | 28 | **真机·严重** | **背包打不开**：客户端按 E 会发 `Interact(action=OpenInventory)`（日志里连发 26 次，正好是用户反复按 E），但服务端只打日志、一个包都不回。Bedrock 的背包界面**不是本地弹的**：客户端只发那个 `Interact`，界面要等服务端 `ContainerOpen`，不回就永远打不开 | 🔍 已定位（Geyser 源码：`BedrockInteractTranslator.OPEN_INVENTORY` → `InventoryUtils.openInventory` → `PlayerInventoryTranslator.openInventory`，发 `ContainerOpen(id=0,type=INVENTORY,uniqueEntityId=-1,pos=脚下)` + `InventoryContent(INVENTORY,36 空)` / `(ARMOR,4 空)` / `(OFFHAND,1 空)`；关背包时客户端发 `ContainerClose`，服务端必须原样回执，否则下次不再打开） | 🧪 已写码待编译：新模块 `crates/network/src/bedrock/inventory.rs`（四个构造 + 5 个逐字节测试，参考串来自新探针 `refs/ProbeInventory.java`）+ `session.rs` 里 `InteractAction::OpenInventory` → 发包、`ContainerClosePacket` → 回执、`last_pos` 记录客户端位置 | ✅ 真机已验证（2026-10-31 第五轮，用户确认背包能开能关） |
 | 29 | **真机·严重（我方 PATCH 缺失）** | **一输入命令就掉线**：客户端打 `/tp 150 20 150` 后连接立刻断，日志只有 `left the game`（因为收包错误被裸 `Err(_) => break` 吞掉）。补上日志后拿到真错：`failed to de/serialize packet CommandRequestPacket (id: 77): IOError occurred: failed to fill whole buffer` | ✅ 已修（2026-10-31，PATCH-006）：根因**不是 Geyser/Cloudburst，是我方 vendored 库的解码器**——`CommandOriginData` 上游是"run-on"写法：`deserialize` 里 `stream.read_to_end(&mut type_stream)` 会把**整个包剩余字节全吃光**，紧随其后的 `internal` / `version` 必然 EOF。权威字节由 `refs/ProbeCommandRequest.java`（Cloudburst v766）产出：`0e「/tp 150 20 150」 00 uuid(16) 05「req-1」 00 68`（40 字节），编号/uuid/requestId 顺序紧挨，没有 run-on。改动：`vendor/.../v662/types/command_origin_data.rs` 改成按顺序读写；回归测试 `command_request_decodes_cloudburst_bytes`（解码后再编码，要求与参考串**一字不差**） |
@@ -711,6 +711,10 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
 | 31 | **真机·待查** | **视场角（FOV）异常 + 移动变得非常快**（用户 2026-10-31 第九轮："第二次进入服务器…视场角变大，速度变得非常快"） | ✅ **已修 + 真机验收通过（2026-10-31）**：根因是 `UpdateAttributesPacket.target_runtime_id` 写死成 `ActorRuntimeID(1)` —— `runtime_id` 全局递增，第二次连接是 2，属性包发给了不存在的实体 1，客户端拿不到 `minecraft:movement`，就以离谱速度移动（实测 30~39 m/s，正常步行 4.317 / 疾跑 5.612），FOV 随之变宽。已抽出 `protocol::movement_attributes(runtime_id)` + 回归测试 `movement_attributes_bytes_and_target_entity`。完整反省见 §9.8。以下为当时取证记录（留档）：`logs/mchprs-main-14.log` 里两次登录的 `PlayerAuthInput` 都带 `input=0x4000001000000`（bit50 VerticalCollision + **bit24 PersistSneak**），两次一致 → 不是本轮引入的差异项。服务端能改客户端移动速度的只有 `UpdateAbilities`（`flying` / `fly_speed = 0.05 * 存档 fly_speed`）与 `MovementSettings`，**不猜**：需要再取一次"第一/第二次进服"的 `UpdateAbilities` 实参、以及用户对现象的精确描述（变大/变小、进世界就有还是移动后、重进是否恢复） |
 | 32 | **真机·严重** | **每次进服都从天上掉下来，存档位置不生效**（用户原话："第二次进入服务器玩家的位置没有被保存，还是从天上掉下来"） | ✅ **已修 + 真机验收通过（2026-10-31）**：`server.rs:822` 改为读 `Player::saved_position(uuid)`（`player.rs:466`，沙盒服口径 = 无存档才用默认出生点），快照中心与出生点都据此计算，见 R2 行。以下为当时定位记录（留档）：`logs/mchprs-main-14.log` 铁证：两次进服都是 `MovePlayer(Teleport 128.5,64.0,128.5)`，随后 `PlayerAuthInput` 的 y 从 55 → 17 → -25 → -54.38 一路坠落。原因是 `BedrockEvent::RegisterPlayer` 带的是**快照里的默认出生点**（`plot::build_bedrock_snapshot` 里写死 `SPAWN = (128,128,128)`），**没有读玩家存档里的 position**。修法：注册时优先用 `PlayerData` 里的 `position`（沙盒服口径"沙盒"= 无存档才用默认），Java 侧的 spawn 逻辑也要一并对齐 |
 | 33 | **真机·严重** | **放下的方块朝向/形态不对**（用户原话："放置的物品位置不正确，我放了拉杆，但是现在变成了底部朝上"） | ✅ **已修 + 真机验收通过（2026-10-31）**：`block_map.rs` 已由 v2 生成器（`crates/network/generators/gen_block_map_v2.js`）重建 —— 输入 Geyser `mappings/blocks.nbt` + 原版 `block_palette.1_21_50.nbt` + `mc_data/blocks.json`，按 **Java 方块状态的完整属性**匹配到对应 Bedrock 状态，26,644 条中精确匹配 26,638（拉杆 24 态 → 16 种不同运行时 id，红石灯 6110/1197、红石线 5107/5108 全部正确）。以下为当时定位记录（留档）：`block_map.rs` 曾是 v1 策略 —— **只按方块名取一个"属性全默认"的 Bedrock 状态**（`gen_block_map.js` 注释里写得很明白："红石相关状态（按钮按下、拉杆方向…）留给 v2"）。服务端存的是正确的 Java 状态，但下发给 Bedrock 的运行时 id 是那个默认状态 → 拉杆就"底部朝上"。修法：按 Java 方块状态的属性（facing/half/powered/…)反向映射到对应 Bedrock 状态，工作量大，需要逐方块做 |
+| 34 | **真机·严重** | **走远看不到区块 + 登录卡 tick**（第 26/19 条）：登录一次性同步生成 289 个区块（实测 205~260ms 全卡在 plot 线程），且走远之后服务端零数据 | ✅ **已修 + 真机验收通过（2026-10-31，§9.14）**：登录只同步生成 5×5（≈18~29ms），其余每 tick 预算 16 个 / 8ms 增量流送；`sent`+`pending` 做增量、区块缓存 + dirty 失效；publisher 恒为视距半径 |
+| 35 | **真机·严重** | **流送出来的区块是永久空洞**（用户："在我退出的位置区块没发过来"） | ✅ **已修（2026-10-31，§9.15）**：①publisher 半径原来"随发随长"，客户端把 publisher 范围外的 `LevelChunk` 直接丢掉且之后不补发 → 改成登录就报满视距（Geyser/原版顺序）；②中心变化只 `retain sent` 不重排 `pending`，旧队列挤占新窗口的环 → 改成整份重排 |
+| 36 | **真机·中** | **放 MCHPRS 不认识的方块时服务端不纠正**（客户端本地留下幻影方块；Java 侧会纠正） | ✅ **已修（2026-10-31，§9.16）**：新增 `BedrockInventoryUpdate::Correction`；`held_item.id != 0` 且 `mchprs_item_id()` 为 `None` 时请 plot 走 `send_block_corrections()`（含 6 邻面）。空手不触发（否则破坏拉杆/按钮/开门） |
+| 37 | **真机·中** | **放方块时整片区块闪一下** | ✅ **已修（2026-10-31，§9.17）**：上一版让"变过方块的区块整块重发"（客户端重建区块 → 闪）。方块本身已有 `UpdateBlock` 即时通道，所以 dirty 只作废缓存、**不重发整块** |
 
 **第五轮真机取证（2026-10-31，`logs/mchprs-main-9/10/11.log`）**
 
@@ -1501,10 +1505,10 @@ FOV 也随之变宽。Geyser 源码里本来就有这句注释："客户端在�
 > 不可达，属数据表死行，无用户可见收益 → 2026-10-31 按用户指示删除该项，不修。
 
 1. **`ItemStackResponse` 回执**（PATCH-008）：客户端目前乐观应用，功能正常，但协议上不完整。
-2. **第 26 条增量区块流送**：目前只在登录时发 289 个区块，走远会看到虚空（最大项，建议单独一轮）。
+2. ~~**第 26 条增量区块流送**~~ → ✅ 2026-10-31 完成并真机验收通过（§9.14、§9.15）。
 3. ~~**第 22 条完整**~~ → ✅ 2026-10-31 已写码并**真机验收通过**（§9.11、§9.12），过程中修掉两个附带 bug。
 4. **`AvailableCommands` 真命令树**：把 Brigadier 树转成 Bedrock 格式，客户端才有补全与红字校验。
-5. **第 19 条**：快照生成移到工作线程/加缓存，避免登录瞬间卡 tick。
+5. ~~**第 19 条**~~ → ✅ 2026-10-31 随第 26 条一起解决（§9.14）：登录 5×5 约 18~29ms，其余按每 tick 预算摊开。
 6. **抓包基础设施固化**：Geyser 的 `PacketSpy` 补丁 + `refs/Probe*.java` + 本地 Maven 仓库
    （`refs/geyser-deps`）已经能离线复现，后续查协议问题可以直接用。
 
@@ -1655,6 +1659,137 @@ if (add && exists && !(objectiveUpdate || objectiveAdd) && !score.onlyScoreValue
 
 **教训**：Bedrock 计分板"改一行字"不是幂等操作，必须删了重加；
 凡涉及 Mojang 已知 bug，把 bug 号写进注释和台账，否则下一个人（未来的我）会再踩一次。
+
+---
+
+### 9.14 第 26 条 + 第 19 条：增量区块流送（2026-10-31 第二十一轮）
+
+**目标**：走到哪儿都有区块（不再 74 格以外虚空），且登录不再卡 plot 线程 200~260ms。
+
+**参数**（`crates/network/src/bedrock/chunk.rs`，单一来源）
+
+| 常量 | 值 | 理由 |
+| --- | --- | --- |
+| `INITIAL_RADIUS_CHUNKS` | 2 | 登录只同步生成 5×5，实测 ≈18~29ms（原来 289 区块 205~260ms） |
+| `STREAM_BUDGET_CHUNKS` | 16 | ≈11ms/tick |
+| `STREAM_BUDGET_MS` | 8 | 与 50ms tick 预算留余量，双保险 |
+| 视距 | `CONFIG.view_distance`(8) | 第 16 条的单一来源不变 |
+
+**做法**
+
+```
+登录：只同步 5×5 + publisher（半径 = 视距）
+  ↓ 玩家注册进 plot
+每 tick：ChunkStream{ center, sent, pending, published_radius }
+  ├─ 中心变了 → publisher 换中心 + pending 整份重排（由近到远）
+  ├─ 队列空且窗口没满 → 重新排
+  ├─ 按预算取 ≤16 个 / ≤8ms → 缓存或现生成 → BedrockCommand::Chunks
+  └─ 发完 → 缓存 + sent
+方块变化 → bedrock_chunk_dirty（只作废缓存，见 §9.17）
+```
+
+**改动清单**
+
+| 文件 | 改动 |
+| --- | --- |
+| `bedrock/chunk.rs` | 4 个常量 + `pending_chunks()`（环序排队）+ `covered_radius()`（覆盖半径，现仅日志用）+ 2 条单测 |
+| `bedrock/bridge.rs` | `BedrockCommand::Chunks(BedrockChunkBatch)`、`BedrockHandle::send_chunks`、`PlotSnapshot.chunk_radius` |
+| `bedrock/session.rs` | 处理 `Chunks`：**先 publisher 再 LevelChunk**；登录 publisher 半径按视距（不是登录那圈） |
+| `core/plot/mod.rs` | `BedrockChunkStream` / `bedrock_chunk_cache` / `bedrock_chunk_dirty` / `stream_bedrock_chunks()`（每 tick 在 `update_players()` 末尾）；快照只生成 5×5 并回传真实半径 |
+| `core/player.rs` | `PlayerBackend::send_chunks` |
+
+**与 Java 侧的对照**（`Plot::update_view_pos_for_player`，`mod.rs:718`）：Java 用
+`was_loaded`/`should_be_loaded` 两个布尔逐块 diff、只发新进入窗口的区块；我们也用
+`sent` + `pending` 表达同一件事，区别是**加了每 tick 预算**（Java 首次进服是一次性全发）。
+Java 的卸载包是注释掉的（客户端自己按中心 + 视距卸载），Bedrock 同理靠 publisher 中心移动。
+
+**验证**：`cargo test -p mchprs_network bedrock` → **44/44**（新增 `pending_chunks_skips_sent_and_orders_by_ring`、
+`covered_radius_grows_only_for_complete_squares`）；编译通过；日志
+`Bedrock 快照：5×5 = 25 区块，耗时 28.8ms`、`NetworkChunkPublisherUpdate(..., r=181 blocks)`、
+`[C4] 区块流送 16 个`；真机用户确认走到边缘/来回都有区块。
+
+**已知取舍**：publisher 恒为视距 → 首次进服远处约 1 秒是空的（数据在路上），这是
+Geyser/原版的行为；`SubChunkRequest` 没做（我们总发满 24 段，客户端没有缺段）。
+
+---
+
+### 9.15 流送的两个真机 bug（同日修掉）
+
+#### 9.15.1 publisher 半径"随发随长" → 客户端丢块、永久空洞
+
+第一版为了守第 27 条（"报大了是虚空"），把 publisher 半径做成**随已发满的方形增长**：
+
+```
+[C2] NetworkChunkPublisherUpdate(117,-54,131 r=45 blocks)   ← 登录只报 2 区块
+[C4] 区块流送 16 个，publisher=Some((511,-54,180, 181))     ← 后来才长到 181
+```
+
+**Bedrock 的 publisher 是"权限"不是"提示"**：范围之外的 `LevelChunk` 客户端**直接丢弃**。
+所以前几圈的区块发出去就被扔了，等 publisher 长大又因为"已经在 `sent` 里"不再补发
+→ 永久空洞（真机："在我退出的位置区块没发过来"）。
+
+**修法**：按 Geyser/原版的顺序 —— **先报满视距半径，再发区块**；publisher 半径恒为
+`floor(view_distance × 16 × √2)`，只有**中心**会变。`covered_radius()` 降级为日志用。
+
+#### 9.15.2 中心变化只 `retain` 不重排 `pending`
+
+玩家边走边等流送时，`pending` 里还是上一个窗口的坐标，新窗口的那几环排不上队
+（只在队列为空时才重建）→ 走到某处那片区块永远不来。
+
+**修法**：中心一变就 `pending = pending_chunks(center, radius, &sent)` **整份重排**。
+
+**教训**：①"我已经发过"和"客户端手里有"是两件事，别脱钩；②凡是"按窗口增量"的结构，
+窗口一变就把队列整体重算，别在旧队列上打补丁。
+
+---
+
+### 9.16 放 MCHPRS 不认识的方块不会被纠正（第 36 条）
+
+**现象**：Bedrock 客户端放一个 MCHPRS 没有的方块（创造面板是全量原版物品），
+方块留在客户端不走；Java 侧同样的操作会被纠正回去。
+
+**根因**：不是"纠正机制没接"——`Plot::send_block_corrections()` 本来就是双后端的。
+问题在**路径没走到**：
+
+```
+Bedrock 创造面板 → 放了个非 MCHPRS 方块
+  → mchprs_item_id(bedrock_id) = None
+  → 同步给 plot 的"手里物品"= 空手
+  → handle_use_item_impl 读到 item_in_hand = None → 走 on_use（空手右键）
+  → 一句纠正都不发，客户端留着乐观预测的幻影方块
+```
+
+Java 客户端根本拿不到这些物品，所以只有 Bedrock 会撞到。
+
+**修法**（只动基岩侧）：
+
+| 文件 | 改动 |
+| --- | --- |
+| `bedrock/bridge.rs` | `BedrockInventoryUpdate::Correction { x, y, z }`（MCHPRS 坐标） |
+| `bedrock/session.rs` | `Place` 分支：`held_item.id != 0 && mchprs_item_id().is_none()` → 投 `Correction` + 日志 |
+| `core/plot/packet_handlers.rs` | 收到 `Correction` → `send_block_corrections(&[pos, 6 邻面])` → Bedrock 走 `UpdateBlock` |
+
+**空手（`held_item.id == 0`）不触发**：那是拉杆/按钮/开门的正常交互，误纠正会破坏红石操作。
+
+**验证**：编译通过；真机用户确认放未知方块会被立即抹掉。
+
+---
+
+### 9.17 放方块时整片区块闪一下（第 37 条）
+
+**根因**：§9.14 的第一版为了"走远再回来能看到新方块"，把变过方块的区块**整块重发**
+（`LevelChunk`）。客户端收到 `LevelChunk` 会重建整个区块（含光照）→ 视觉上闪一下。
+而这一格其实早就由 `send_bedrock_block_changes()` 的 `UpdateBlock` 即时改好了，
+整块重发纯属多余。
+
+**修法**：dirty 区块**只作废缓存，不重发整块**；缓存的新内容等到"客户端真的需要这块"
+（走远再回来、窗口平移）时才用上。同时删掉 `RESEND_BUDGET_CHUNKS` 常量与死代码。
+
+**验证**：编译通过、44/44 单测通过；真机用户确认放方块只有那一格变化，不再闪。
+
+**教训**：Bedrock 的 `LevelChunk` 是"整块替换"，不是"补丁"；凡是能用一个 `UpdateBlock`
+说清楚的变化，绝不要重发区块。
+
 
 
 
