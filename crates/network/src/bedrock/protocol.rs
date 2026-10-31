@@ -623,6 +623,44 @@ mod tests {
         }
     }
 
+    /// BUG-032 B1（PATCH-008）：`ItemStackResponsePacket` 的参考字节来自
+    /// `refs/ProbeItemStackResponse.java`（Cloudburst v766）。
+    ///
+    /// 两件事一次钉住：
+    /// ① **多条目**能解（上游 `deserialize` 用 `read_to_end` 会把整包吃成第一个响应的容器，
+    ///    `RESP2` 这条就会只剩 1 个 response、还解错 requestId）；
+    /// ② `result(1B) | requestId(varint) | containers(...)` 的顺序与字段宽度，
+    ///    通过"解出来再编回去必须一字不差"验证。
+    #[test]
+    fn item_stack_response_decodes_cloudburst_bytes() {
+        // 单条：OK(requestId=7)，容器 INVENTORY，1 个槽 (3,4,5,netId=42,"abc",dur=7,"abcF")
+        const RESP1: &str = "01000e011d0001030405540361626304616263460e";
+        // 两条：上面那条 + ERROR(requestId=9)，ERROR 后面**没有**容器列表
+        const RESP2: &str = "02000e011d0001030405540361626304616263460e0112";
+
+        for (raw, expected_len) in [(RESP1, 1usize), (RESP2, 2usize)] {
+            let bytes: Vec<u8> = (0..raw.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&raw[i..i + 2], 16).expect("hex"))
+                .collect();
+            let pkt = bedrock::protocol::v662::packets::ItemStackResponsePacket::<Protocol>::deserialize(
+                &mut bytes.as_slice(),
+            )
+            .expect("Cloudburst 的字节必须能解出来");
+            assert_eq!(
+                pkt.responses.len(),
+                expected_len,
+                "响应条数解错了（run-on 解码的典型症状）"
+            );
+            assert_eq!(pkt.responses[0].client_request_id, 7);
+            if expected_len == 2 {
+                assert_eq!(pkt.responses[1].client_request_id, 9, "第二条被吃掉了");
+            }
+            // 双向：编回去必须和 Cloudburst 一字不差（容器列表也在里面）。
+            assert_eq!(hex(&pkt), raw);
+        }
+    }
+
     /// 方块更新：期望字节来自 `refs/ProbeItemRequest.java`
     /// （`UpdateBlock(pos=(10,64,20), stone=2403, NEIGHBORS|NETWORK, layer=0)`）。
     /// 逐段对照：`14`=x(10 zigzag)、`40`=y(64 无符号)、`28`=z(20 zigzag)、

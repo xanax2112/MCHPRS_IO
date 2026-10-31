@@ -105,7 +105,8 @@ PATCH-001 `level/src/greedy.rs`（AVX-2 cfg 守卫）、PATCH-002/003
 PATCH-004 `player_permission_level.rs`（`enum_repr(i8)`）、PATCH-005 `data_item_type.rs`
 （`Int64` 改 `u64`，LONG 元数据是无符号 varint）、PATCH-006 `command_origin_data.rs`
 （去掉 `read_to_end` 的 run-on 解码）、PATCH-007 `item_stack_request_action_type.rs`
-（`CraftCreative` 字段宽度）、PATCH-008（**还没做**：`ItemStackResponseInfo`，见 §9）、
+（`CraftCreative` 字段宽度）、PATCH-008 `item_stack_response_info.rs`
+（去掉 run-on 解码，多条目才能解；容器本来就装在 `ItemStackNetResult::Success(..)` 里）、
 PATCH-009 `available_commands.rs`（`EnumDataEntry` 字段改 pub）。
 
 ---
@@ -188,17 +189,16 @@ Set-Location run; & ..\target\debug\mchprs.exe *> D:\computer\mchprs\bedrock\log
 
 ## 7. 取证通道（仓库外，别入库）
 
-1. **Cloudburst 探针**：`D:\computer\mchprs\bedrock\refs\Probe*.java`，
-   classpath = `refs\geyser-deps` 下所有 jar（217 个）**外加**
-   `refs\Geyser-<hash>\core\build\classes\java\main`（用 Geyser 自己的类时要加）。
-   JDK 在 `refs\jdk21\jdk-21.0.12.1+1\bin`。编译：`javac -encoding UTF-8 -cp <cp> -d out2 ProbeX.java`。
-   → 这类手工拼 classpath 的痛点在 C7，见台账 §9.26。
+**完整流程与命令见 `docs/BEDROCK-CAPTURE.md`**（C7 固化后唯一入口）。速记：
+
+1. **Cloudburst 探针**：`refs\tools\probe.ps1`（一条命令编译+运行，别再手拼 classpath）：
+   `& refs\tools\probe.ps1 ProbeSign`、`... -List`、`... -WithGeyserClasses`（要 Geyser 自己的类时）。
+   源码在 `refs\probes\`，产物在 `refs\out\`。
 2. **Geyser packet-spy 抓包**：改 `refs/Geyser-<hash>` 的 checkout（**只在 Geyser 侧**），
    细节写在 `BACKLOG.md` §9.1 附近；用来对照"真实 Geyser 会发什么"。
-3. 目前已知的探针产出（结论都已写进台账，代码里引用了它们）：
-   `ProbeEntityFlagOrder`（FLAGS 序号）、`ProbeInventory`/`ProbeCraftCreative`/`ProbeItemRequest`、
-   `ProbeScoreboard`、`ProbeSoftEnum`、`ProbeGeyserChunk`（段/生物群系字节）、
-   `ProbeSign`（牌子包字节）、`ProbeChunkNbt`（网络 NBT 无长度前缀）。
+3. 探针产出（结论都已写进台账 + `#[test]`）：`ProbeEntityFlagOrder`、
+   `ProbeInventory`/`ProbeCraftCreative`/`ProbeItemRequest`、`ProbeScoreboard`、`ProbeSoftEnum`、
+   `ProbeGeyserChunk`、`ProbeSign`、`ProbeChunkNbt`、`ProbeItemStackResponse`。
 4. 排错小工具 `refs/tools/check_state.js`（不在仓库内）：给一个 Java 方块状态 id 或
    Bedrock 运行时 id，反查方块名+属性。用法：
 
@@ -227,6 +227,6 @@ Set-Location run; & ..\target\debug\mchprs.exe *> D:\computer\mchprs\bedrock\log
 | --- | --- | --- |
 | BUG-032 第 43 条（区块携带的牌子字） | **未结**：实时推发生效、重进丢字 | 台账 §9.25；日志已证明区块负载里带了牌子 NBT 但客户端不应用。三条候选：①登录后补发 `BlockActorData` 兜底 ②试 PocketMine 式长度前缀 ③Geyser 对照抓包 |
 | `SIGN_DEBUG_GLOW = true` | 临时诊断开关 | `block_entity.rs`；牌子现在是发光白字。已确认黑字+`IgnoreLighting=0` 在真机看不见，但"颜色 vs 光照"还没分离验证 |
-| 诊断日志（`[R7] 快照区块`/`告示牌包 hex`/`[A2] 解析后`） | 可保留可关 | 定位完建议降噪 |
-| B1（PATCH-008 `ItemStackResponse`） | 暂缓（用户 2026-11-01 裁决） | 台账 §9.26.1 |
-| C7（抓包基础设施固化） | 暂缓 | 台账 §9.26.2 |
+| 诊断日志（`[R7] 快照区块`/`告示牌包 hex`/`[A2] 解析后`） | 已挂到 `debug::VERBOSE` | 开 `VERBOSE` 才打（§5.1） |
+| B1（PATCH-008 `ItemStackResponse`） | ✅ 已修（2026-11-01，待编译） | 台账 §9.27.1；`refs\ProbeItemStackResponse.java` + 测试 `item_stack_response_decodes_cloudburst_bytes` |
+| C7（抓包基础设施固化） | ✅ 已做（2026-11-01） | 台账 §9.27.2；`refs\tools\probe.ps1` + `docs/BEDROCK-CAPTURE.md` |

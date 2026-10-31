@@ -1833,10 +1833,10 @@ Java 客户端根本拿不到这些物品，所以只有 Bedrock 会撞到。
 | A2 | 告示牌文字（`BlockActorData` + block entity NBT） | 基岩端告示牌全空白 —— 📝 已写码（§9.21） | ~150 行 |
 | A3 | 挥手 / 潜行 / 疾跑姿势（`Animate` + 动态元数据） | 别人看你永远站着不动 —— 📝 已写码（§9.21） | ~100 行 |
 | A5 | `/gamemode` 对 Bedrock 生效（`SetPlayerGameType`） | 现在切模式基岩端收不到 —— 📝 已写码（§9.21） | ~50 行 |
-| B1 | 修 `ItemStackResponse` 类型（PATCH-008） | 唯一"已知错误"的 vendored 代码（缺 containers + run-on 解码） | ~150 行 |
+| B1 | 修 `ItemStackResponse` 类型（PATCH-008） | 唯一"已知错误"的 vendored 代码（run-on 解码，多条目必挂）—— ✅ **2026-11-01 完成（§9.27.1）** | ~150 行 |
 | B3 | `AvailableCommands` 静态命令树 | 基岩端无补全/无语法校验；数据源 `DECLARE_COMMANDS`（89 节点）已存在 | ~250 行 |
 | B4 | 动态补全（soft enum：`/coord`、`//load`） | 依赖 B3；没有它 B3 的补全只覆盖命令名 | ~100 行 |
-| C7 | 抓包基础设施固化 | B1 需要 Probe；顺带把 7 个临时 ps1 收敛成 1 个 + docs 写清两条取证通道 | 半天，无协议风险 |
+| C7 | 抓包基础设施固化 | B1 需要 Probe；顺带把临时脚本收敛成 1 个入口 + docs 写清两条取证通道 —— ✅ **2026-11-01 完成（§9.27.2）** | 半天，无协议风险 |
 | A-t1 | 别名合并进目标命令（`tp`/`rp`/`gmc` 不再作为"无参数独立命令"出现） | 用户 2026-10-31 补裁决"做"；生成器按命令别名表合并 —— 📝 已写码（§9.21） | ~40 行 |
 | A-t2 | 软枚举刷新挂点（`//save`、`/coord` 改写文件后重推候选） | 用户 2026-10-31 补裁决"做"；现在只在进 plot 时推一次 —— 📝 已写码（§9.21） | ~30 行 |
 
@@ -2421,12 +2421,16 @@ pub struct ItemStackResponseInfo<V: ProtoVersion> {
 }
 ```
 
-两处缺陷（实读代码确认）：
+两处缺陷（实读代码确认；**2026-11-01 开做时更正第 1 条的措辞**）：
 
-1. **缺 containers**：Cloudburst 是 `result + request_id + containers: Vec<ItemStackResponseContainerInfo>`
-   （`item_stack_response_container_info.rs` 里我们已经有了 `container_net_id + slots` 的定义，没人用）。
-2. **run-on 解码**：`deserialize` 里 `stream.read_to_end(&mut result_stream)` 把包余下的字节全吃光
-   —— 与 BUG-032 第 29 条 PATCH-006 同一类坑。改法照 PATCH-006：按顺序逐字段读写，不 `read_to_end`。
+1. **容器不是"缺字段"，而是塞在枚举变体里**：上游把容器装在
+   `ItemStackNetResult::Success(Vec<ItemStackResponseContainerInfo>)` 里
+   （所以 `item_stack_response_info.rs` 只有 `result + client_request_id` 两个字段，
+   容器定义 `item_stack_response_container_info.rs` 也确实存在、只是经由枚举间接使用）。
+   这一点和 wire 格式一致：**只有结果码 0 后面才跟容器列表**。
+2. **run-on 解码（真 bug）**：`deserialize` 里 `stream.read_to_end(&mut result_stream)`
+   把包余下的字节全吃光 —— 单个响应能凑合，**`responses.len() > 1` 时第二个永远读不到**，
+   而且会把整包吃掉。与第 29 条 PATCH-006 同一类坑。
 
 影响面：**玩家无可见变化**（`enable_item_stack_net_manager = false`，客户端乐观应用）；
 它是 B2（真正回执，已否决）与"创造面板换物品即时同步"（§9.21.4-5 残留）的前提。
@@ -2446,6 +2450,58 @@ pub struct ItemStackResponseInfo<V: ProtoVersion> {
 - 用户 2026-11-01 02:0x：**"都先不做"** → 两条都保持"暂缓"。
 - 当前**更紧急的未结项**是 §9.25（区块携带的牌子 NBT 客户端不应用），
   以及 §9.25.5 的临时诊断开关 `SIGN_DEBUG_GLOW = true`（牌子目前是发光白字）。
+- **2026-11-01 02:2x 用户改口："现在写 b1 和 c7"** → 两条当轮完成，见 §9.27。
+
+---
+
+### 9.27 B1 + C7 完成（2026-11-01 02:2x，用户指令"现在写 b1 和 c7"）
+
+#### 9.27.1 B1（PATCH-008）：`ItemStackResponse` 解码修好
+
+**先取权威字节**：新探针 `refs\probes\ProbeItemStackResponse.java`（Cloudburst v766）
+编出两条参考串，顺便确认了枚举与现实一致：
+
+| 参考串 | 内容 | 字节 |
+| --- | --- | --- |
+| `RESP1` | 1 条 `OK`(requestId=7)、容器 INVENTORY、1 槽 (3,4,5,netId=42,"abc",dur=7,"abcF") | `01000e011d0001030405540361626304616263460e` |
+| `RESP2` | 上面那条 + `ERROR`(requestId=9)，ERROR 后面**没有**容器列表 | `02000e011d0001030405540361626304616263460e0112` |
+
+逐段解出来的事实（写进代码注释）：
+
+- 顺序是 `responses 条数(varint) | 每条: result(1B) | requestId(zigzag varint) | [仅成功时]容器列表`；
+- 槽位 3 个 i8 = `slot / hotbarSlot / count`；`netId`、`durability` 都是 zigzag varint；
+- 字符串顺序是 `customName` 然后 `filteredCustomName`，最后 `durabilityCorrection`
+  （跟 vendored `v766::ItemStackResponseSlotInfo` 的字段顺序一致，不用改）；
+- 容器名是 `FullContainerName`（`ContainerSlotType.INVENTORY` 的 varint = `1d`，`dynamicId` 缺省 = `00`）。
+
+**改动**（`vendor/.../v662/types/item_stack_response_info.rs`）：
+
+- `deserialize` 不再 `read_to_end`：读结果码 → 读 requestId → **只有结果码 0 才**从主流里读
+  这一个响应自己的 `Vec<V::ItemStackResponseContainerInfo>`，再拼回
+  `[结果码字节 + 容器编码]` 交给枚举自己的解码器（泛型上下文里没法直接写
+  `V::ItemStackNetResult::Success(..)`，因为它是关联类型）。
+- 新增常量 `RESULT_SUCCESS: i8 = 0`（Cloudburst `Success = 0`）。
+- `serialize` / `size_hint` 逻辑不变（原本就对：结果码先写，requestId 之后写容器）。
+
+**回归测试**：`crates/network/src/bedrock/protocol.rs::item_stack_response_decodes_cloudburst_bytes`
+—— 两条参考串都要"解出来的条数对 + 解出来再编回去一字不差"。`RESP2` 就是原来必挂的那条
+（旧代码只会解出 1 条、且 requestId 吃错）。
+
+#### 9.27.2 C7（抓包基础设施固化）完成
+
+1. **唯一入口**：`refs\tools\probe.ps1`（纯 ASCII，避免 PowerShell 5.1 按 ANSI 解析中文报错）。
+   - `-List` 列探针；`-WithGeyserClasses` 给 `ProbeGeyserChunk` 这类要 Geyser 自己类的探针；
+     `-NoRun` 只编译。classpath 自动拼 `refs\geyser-deps`+`refs\jars`，产物落 `refs\out\`。
+   - 顺手踩到一个坑并记在注释里：`$ErrorActionPreference='Stop'` 会让 javac 的
+     "注解处理器"提示（stderr）把成功的编译中断。
+2. **两条取证通道写进仓库文档**：新增 `docs/BEDROCK-CAPTURE.md`
+   （顺序：读 Geyser 源码 → 探针权威字节 → packet-spy 抓包 → 结论写台账 + 固化成 `#[test]`），
+   `docs/BEDROCK-AGENT-NOTES.md` §7 改成指向它。
+3. **临时脚本收敛**：13 个一次性 `_patch_*.py` 挪进 `refs\patches\archive\`，
+   `refs\patches\README.md` 写清"哪些还有用、archive 是什么、新脚本该写哪"。
+4. 工作区同步：`D:\computer\mchprs\bedrock\README.md` §2 改成用 `probe.ps1`。
+
+**状态**：两条都**未编译**（等"编译"指令）。B2（真正回 `ItemStackResponse`）仍然不做。
 
 
 
