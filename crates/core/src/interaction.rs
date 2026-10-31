@@ -5,7 +5,6 @@ use mchprs_blocks::block_entities::BlockEntity;
 use mchprs_blocks::items::{Item, ItemStack};
 use mchprs_blocks::{blocks::*, BlockDirection, BlockFacing};
 use mchprs_blocks::{BlockFace, BlockPos};
-use mchprs_network::packets::clientbound::{COpenSignEditor, ClientBoundPacket};
 use mchprs_redstone as redstone;
 use mchprs_utils::nbt_unwrap_val;
 use mchprs_world::World;
@@ -48,6 +47,15 @@ pub fn on_use(
                 return ActionResult::Success;
             }
             ActionResult::Pass
+        }
+        // 点已有的告示牌 → 弹编辑框（BUG-032 第 43 条）。
+        //
+        // 只管 **Bedrock**：Java 这边 MCHPRS 从来就只在"放牌子"时发 `COpenSignEditor`，
+        // 点已有牌子编辑不了是 Java 侧原有的行为，不在这轮范围里（`is_bedrock()` 挡在前面，
+        // Java 玩家走的还是原来的 `has_block_entity` 分支，行为一字不变）。
+        b if (b.is_sign() || b.is_wall_sign()) && player.client.is_bedrock() => {
+            player.client.send_open_sign(pos.x, pos.y, pos.z, true);
+            ActionResult::Success
         }
         b if b.has_block_entity() => {
             // Open container
@@ -486,15 +494,11 @@ pub fn use_item_on_block(
                 .as_ref()
                 .is_some_and(|blob| blob.content.contains_key("BlockEntityTag"))
         {
-            let open_sign_editor = COpenSignEditor {
-                pos_x: block_pos.x,
-                pos_y: block_pos.y,
-                pos_z: block_pos.z,
-                // TODO: editing back text
-                is_front_text: true,
-            }
-            .encode();
-            ctx.player.client.send_packet(&open_sign_editor);
+            // Java 的 `COpenSignEditor` / Bedrock 的 `OpenSign` 由后端各自发（BUG-032 第 43 条）。
+            // 以前这里直接 `send_packet(COpenSignEditor)`，Bedrock 后端把它丢进空实现，
+            // 基岩端放下牌子后弹不出编辑框，也就永远写不了字。
+            // TODO: editing back text
+            ctx.player.client.send_open_sign(block_pos.x, block_pos.y, block_pos.z, true);
         }
 
         place_in_world(block, world, block_pos, &item.nbt);

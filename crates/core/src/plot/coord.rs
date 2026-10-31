@@ -562,6 +562,9 @@ impl Plot {
         self.coord.push_undo(path.clone(), old);
         // The next compile has to re-read the touched files (BACKLOG.md BUG-022).
         self.coord_dirty = true;
+        // A-t2：`/coord` 可能新建/改写 `io.txt`、`memory/*.txt`，
+        // Bedrock 的补全候选（`coord_files`）必须跟着刷新，否则新文件永远补不出来。
+        self.refresh_bedrock_soft_enums(player);
     }
 
     fn coord_undo(&mut self, player: usize) {
@@ -580,6 +583,8 @@ impl Plot {
             self.coord.redo.pop_front();
         }
         self.players[player].send_worldedit_message("Undid the last /coord change.");
+        // 撤销可能把一个文件还原/删掉，候选值要重推（A-t2）。
+        self.refresh_bedrock_soft_enums(player);
     }
 
     fn coord_redo(&mut self, player: usize) {
@@ -598,6 +603,7 @@ impl Plot {
             self.coord.undo.pop_front();
         }
         self.players[player].send_worldedit_message("Redid the last /coord change.");
+        self.refresh_bedrock_soft_enums(player);
     }
 }
 

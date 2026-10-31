@@ -3,15 +3,17 @@
 //! 所有取值都以 Geyser 的实际行为为基准，并用 Geyser 自带的 Cloudburst v766 codec
 //! 序列化出的字节做逐字节校验（见文末测试）。**改动这里任何数值前，先跑测试。**
 
-use bedrock::protocol::v662::enums::{DataItemType, PlayerPermissionLevel, CommandPermissionLevel, SpawnPositionType};
+use bedrock::protocol::v662::enums::{
+    CommandPermissionLevel, DataItemType, GameType, PlayerPermissionLevel, SpawnPositionType,
+};
 use bedrock::protocol::v685::enums::ActorDataIDs;
 use bedrock::protocol::v662::types::{
     DataItem, PropertySyncData, SerializedAbilitiesData, SerializedAbilitiesLayer, SerializedLayer,
 };
 use bedrock::protocol::v729::packets::{AttributeData, UpdateAttributesPacket};
 use bedrock::protocol::v662::packets::{
-    MovePlayerPacket, SetActorDataPacket, UpdateAbilitiesPacket, UpdateBlockPacket,
-    SetSpawnPositionPacket,
+    MovePlayerPacket, OpenSignPacket, SetActorDataPacket, SetPlayerGameTypePacket,
+    UpdateAbilitiesPacket, UpdateBlockPacket, SetSpawnPositionPacket,
 };
 use bedrock::protocol::v662::types::ActorRuntimeID;
 use bedrock::protocol::v662::types::NetworkBlockPosition;
@@ -31,13 +33,70 @@ pub const PLAYER_RUNTIME_ID: u64 = 1;
 // 位号不是数枚举序号得出的，而是让 Geyser 自带的 v766 codec 把每个 `EntityFlag`
 // 单独序列化、再反解置位位置得到的（工具脚本见 `docs/bedrock-integration.md`）。
 // `FLAGS` 用元数据 id 0，`FLAGS_2` 用 id 92，两者都是 Int64（无符号 varint）。
+
+/// 客户端**低位区**的 `FLAGS` 位号相对 Cloudburst v766 `EntityFlag` 序号的偏移。
+///
+/// **真机实测（2026-11-01，两轮才定死：BUG-032 第 38 条 + 第 42 条）**：
+///
+/// | 位 | codec 说 | 客户端实际 | 结论 |
+/// | --- | --- | --- | --- |
+/// | `1<<1` | `SNEAKING` | **着火** | 客户端把 bit1 当 `ON_FIRE` |
+/// | `1<<2` | `RIDING` | **正常蹲下** | 客户端的 `SNEAKING` 是 bit2 |
+/// | `1<<4` | `INVISIBLE` | **正常疾跑** | 客户端的 `SPRINTING` 是 bit4 |
+/// | `1<<15` | `CAN_SHOW_NAME` | 名字正常显示 | **没平移** |
+/// | `1<<50` | `HAS_GRAVITY` | 降落正常 | **没平移** |
+///
+/// 所以**不是整体平移**：客户端只是在 `ON_FIRE` 之后多了一个标志（低位区错开一位），
+/// 高位的名字/静音/爬梯/呼吸/碰撞/重力与 codec 完全一致。
+///
+/// **教训（第 42 条）**：一开始按"整体 +1"改，把 `HAS_GRAVITY` 挪到 bit51，
+/// 真机立刻表现成"降落速度非常慢"（客户端认为该实体没有重力）。改位号必须一位一位验。
+const CLIENT_LOW_FLAG_SHIFT: u32 = 1;
+
+/// 低位标志（潜行 / 疾跑）的客户端位号：codec 序号 + 偏移。
+const fn low_flag_bit(codec_index: u32) -> u32 {
+    codec_index + CLIENT_LOW_FLAG_SHIFT
+}
+
+// 高位标志（名字/静音/爬梯/呼吸/碰撞/重力）**按 codec 原序号**，不平移。
 const FLAG_CAN_SHOW_NAME: u64 = 1 << 15;
 const FLAG_SILENT: u64 = 1 << 18;
 const FLAG_CAN_CLIMB: u64 = 1 << 20;
 const FLAG_BREATHING: u64 = 1 << 36;
 const FLAG_HAS_COLLISION: u64 = 1 << 49;
 const FLAG_HAS_GRAVITY: u64 = 1 << 50;
+/// `FLAGS_2`（元数据 id 92）是**另一张表**，没有证据表明也错位，保持 codec 原值。
 const FLAG2_HIDDEN_WHEN_INVISIBLE: u64 = 1 << 26;
+
+/// `FLAGS` 里"所有玩家都该有的那几位"（名字、静音、爬梯、呼吸、碰撞、重力）。
+///
+/// 单独提出来是因为 A3 要按玩家拼潜行/疾跑位：`FLAGS` 是**整份覆盖**的，
+/// 不是增量，每次改一位都得把基础位一起发。
+pub const PLAYER_BASE_FLAGS: u64 = FLAG_CAN_SHOW_NAME
+    | FLAG_SILENT
+    | FLAG_CAN_CLIMB
+    | FLAG_BREATHING
+    | FLAG_HAS_COLLISION
+    | FLAG_HAS_GRAVITY;
+
+/// 当前生效的 `(潜行位, 疾跑位)`（日志用）。
+pub const fn flag_bits() -> (u32, u32) {
+    (low_flag_bit(1), low_flag_bit(3))
+}
+
+/// 一个玩家的 `FLAGS` 值：基础位 + 潜行/疾跑（A3）。
+pub fn player_flags(sneaking: bool, sprinting: bool) -> u64 {
+    let (sneak_bit, sprint_bit) = flag_bits();
+    PLAYER_BASE_FLAGS
+        | if sneaking { 1u64 << sneak_bit } else { 0 }
+        | if sprinting { 1u64 << sprint_bit } else { 0 }
+}
+
+/// 玩家站立时的碰撞箱（Geyser `EntityDefinitions.PLAYER`：高 1.8、宽 0.6）。
+pub const PLAYER_HEIGHT: f32 = 1.8;
+pub const PLAYER_WIDTH: f32 = 0.6;
+/// 潜行时的碰撞箱高度（Geyser `GeyserSession#setSneakingPose` → `1.5f`）。
+pub const PLAYER_SNEAKING_HEIGHT: f32 = 1.5;
 
 // ---- 能力位 ----
 // 同上，由 `refs/ProbeCreativeAbilities.java` 用 codec 逐项反解。
@@ -92,12 +151,12 @@ pub fn ability_values(flying: bool) -> u32 {
 /// 并且移动速度明显变慢（Geyser 源码注释原话：
 /// “Seemingly required to be sent as of Bedrock 1.21. Otherwise, bubbles will appear as empty”）。
 pub fn player_metadata() -> Vec<DataItem<Protocol>> {
-    let flags = FLAG_CAN_SHOW_NAME
-        | FLAG_SILENT
-        | FLAG_CAN_CLIMB
-        | FLAG_BREATHING
-        | FLAG_HAS_COLLISION
-        | FLAG_HAS_GRAVITY;
+    player_metadata_with_flags(false, false)
+}
+
+/// 同 [`player_metadata`]，但 `FLAGS` 里带上潜行/疾跑位（A3：生成别人时就要对）。
+pub fn player_metadata_with_flags(sneaking: bool, sprinting: bool) -> Vec<DataItem<Protocol>> {
+    let flags = player_flags(sneaking, sprinting);
     let flags2 = FLAG2_HIDDEN_WHEN_INVISIBLE;
     vec![
         DataItem {
@@ -118,11 +177,16 @@ pub fn player_metadata() -> Vec<DataItem<Protocol>> {
         },
         DataItem {
             data_item_id: ActorDataIDs::Reserved054, // HEIGHT
-            data_item_type: DataItemType::Float(1.8),
+            // 潜行时 1.5（Geyser `setDimensions(Pose.SNEAKING)`），站立 1.8。
+            data_item_type: DataItemType::Float(if sneaking {
+                PLAYER_SNEAKING_HEIGHT
+            } else {
+                PLAYER_HEIGHT
+            }),
         },
         DataItem {
             data_item_id: ActorDataIDs::Reserved053, // WIDTH
-            data_item_type: DataItemType::Float(0.6),
+            data_item_type: DataItemType::Float(PLAYER_WIDTH),
         },
         DataItem {
             data_item_id: ActorDataIDs::Reserved0, // FLAGS
@@ -145,6 +209,52 @@ pub fn set_actor_data(runtime_id: u64) -> SetActorDataPacket<Protocol> {
             float_entries_list: vec![],
         },
         tick: 0,
+    }
+}
+
+/// 只更新**别的一个玩家**的姿态（潜行 / 疾跑，BUG-032 第 38 条）。
+///
+/// 这里发的是**和生成时同一整套元数据**（不是只发 `FLAGS`），原因有两条：
+///
+/// 1. Geyser 改姿态是 `setFlag(...)` **加** `setDimensions(pose)`：潜行要把碰撞箱
+///    从 1.8×0.6 改成 **1.5×0.6**（`Entity#setPose` → `setDimensions`）；
+/// 2. 真机反馈"Java 玩家一蹲下，基岩端看到他在着火"——只发 `FLAGS` 时，客户端手里
+///    只有那一条，其余字段的旧值/默认值组合可能触发意想不到的渲染分支。整套重发
+///    把"元数据是不是残缺"这个变量彻底排除掉（一次切换才几十字节，频率是"玩家按一下
+///    蹲下"，不值得为省字节冒风险）。
+pub fn flags_actor_data(
+    runtime_id: u64,
+    sneaking: bool,
+    sprinting: bool,
+) -> SetActorDataPacket<Protocol> {
+    let mut actor_data = player_metadata_with_flags(sneaking, sprinting);
+    actor_data.push(DataItem {
+        data_item_id: ActorDataIDs::NametagAlwaysShow,
+        data_item_type: DataItemType::Byte(1),
+    });
+    SetActorDataPacket {
+        target_runtime_id: ActorRuntimeID(runtime_id),
+        actor_data,
+        synced_properties: PropertySyncData {
+            int_entries_list: vec![],
+            float_entries_list: vec![],
+        },
+        tick: 0,
+    }
+}
+
+/// 游戏模式变化（A5）：Bedrock 的 `SetPlayerGameType`。
+///
+/// 取值照 Geyser `JavaGameEventTranslator`（CHANGE_GAMEMODE 分支）：
+/// 只发这一个包；Geyser 之后还会 `sendAdventureSettings()`，我们本来就在登录时
+/// 把能力值按创造模式发足了，这里不重复发（改模式不会改能力位）。
+pub fn set_game_mode(mode: crate::bedrock::bridge::BedrockGameMode) -> SetPlayerGameTypePacket<Protocol> {
+    use crate::bedrock::bridge::BedrockGameMode;
+    SetPlayerGameTypePacket {
+        player_game_type: match mode {
+            BedrockGameMode::Creative => GameType::Creative,
+            BedrockGameMode::Spectator => GameType::Spectator,
+        },
     }
 }
 
@@ -236,8 +346,27 @@ pub fn block_update(
     }
 }
 
-/// 服务端强制定位（`MovePlayer` + `Teleport`），对应 Java 的 `CSynchronizePlayerPosition`。
+/// 打开告示牌编辑界面（BUG-032 第 43 条）：Java `COpenSignEditor` 的 Bedrock 等价物。
 ///
+/// 出处：Geyser `JavaOpenSignEditorTranslator` → `OpenSignPacket{position, frontSide}`。
+/// **少了这个包，基岩客户端永远不会弹编辑框**（它不会自己开）—— 真机现象就是
+/// "放下牌子后根本不能写字"。以前这条路上 core 只发 Java 包，Bedrock 后端直接丢掉。
+///
+/// `(x, y, z)` 是 **MCHPRS（Java）坐标**，和 `block_entity::sign_actor_data` 一样由这里
+/// 减掉 `Y_OFFSET`；`front` 对应 Java 的 `is_front_text`（MCHPRS 目前只编辑正面）。
+pub fn open_sign(x: i32, y: i32, z: i32, front: bool) -> OpenSignPacket<Protocol> {
+    OpenSignPacket {
+        pos: NetworkBlockPosition {
+            x,
+            // `NetworkBlockPosition.y` 是 u32，负高度按 32 位二补数写（与 `block_update` 一致）
+            y: (y - crate::bedrock::chunk::Y_OFFSET) as u32,
+            z,
+        },
+        is_front: front,
+    }
+}
+
+/// 服务端强制定位（`MovePlayer` + `Teleport`），对应 Java 的 `CSynchronizePlayerPosition`。
 /// 以前 core 侧的 `Player::teleport()` 只发 Java 包，Bedrock 后端直接丢掉 —— 于是
 /// `/tp`、传送门、服务端位置纠正对 Bedrock 玩家全部无效（BUG-032 第 8 条）。
 /// `position` 是 **Bedrock 坐标**（调用方已 `y - 64`）。
@@ -330,9 +459,11 @@ mod tests {
     /// 参考字节来自 Geyser 自带的 Cloudburst `Bedrock_v766.CODEC`：
     /// `refs/ProbeMeta.java` 与 `refs/ProbeCreativeAbilities.java`。
     ///
-    /// 这两条断言是这次接入最贵的知识：一条守住 `BREATHING` 标志位与
-    /// “LONG 型元数据是无符号 varint”这个上游坑（我们为此打了 PATCH-005），
-    /// 一条守住创造模式能力位。
+    /// **基础位与 codec 逐字节一致**（`FLAGS` 那段是 `8080d28080828003`）——因为
+    /// 真机验证过 `CAN_SHOW_NAME(15)` 与 `HAS_GRAVITY(50)` 的位置本来就是对的
+    /// （名字正常、降落正常）。只有**低位区**的潜行/疾跑错开一位，
+    /// 而它们在 `sneaking=false, sprinting=false` 时不会出现在这个包里，
+    /// 所以这条测试仍应与 Cloudburst 完全一致（见 BUG-032 第 38/42 条）。
     #[test]
     fn set_actor_data_matches_geyser_codec() {
         assert_eq!(
@@ -340,10 +471,63 @@ mod tests {
             "010826030000803f0300002a012c0107012c0136036666e63f35039a99193f\
              00078080d280808280035c0780808020000000"
         );
+        // 基础位不能被悄悄平移（第 42 条的教训：挪 HAS_GRAVITY 会让降落变慢）
+        let flags = player_metadata()
+            .into_iter()
+            .find(|d| format!("{:?}", d.data_item_id) == "Reserved0")
+            .map(|d| match d.data_item_type {
+                DataItemType::Int64(value) => value,
+                other => panic!("FLAGS 必须是 Int64，实际 {other:?}"),
+            })
+            .expect("必须有 FLAGS");
+        assert_eq!(flags & (1 << 15), 1 << 15, "CAN_SHOW_NAME 应在 bit15");
+        assert_eq!(flags & (1 << 36), 1 << 36, "BREATHING 应在 bit36");
+        assert_eq!(flags & (1 << 50), 1 << 50, "HAS_GRAVITY 应在 bit50");
     }
 
-    /// 能力包：两种飞行状态都要逐字节对齐。
-    ///
+    /// BUG-032 第 38 条：姿态更新必须带上 `SNEAKING` 位**和** 1.5 的碰撞箱高度
+    /// （Geyser `setFlag` + `setDimensions(Pose.SNEAKING)` 两步），并且整套元数据
+    /// 与生成时一致（不残缺）。
+    #[test]
+    fn pose_update_carries_sneaking_flags_and_height() {
+        let packet = flags_actor_data(7, true, false);
+        assert_eq!(packet.target_runtime_id.0, 7);
+        // 生成时那 8 条 + NametagAlwaysShow
+        assert_eq!(packet.actor_data.len(), player_metadata().len() + 1);
+
+        let field = |name: &str| {
+            packet
+                .actor_data
+                .iter()
+                .find(|d| format!("{:?}", d.data_item_id) == name)
+                .unwrap_or_else(|| panic!("缺少 {name}"))
+        };
+        let DataItemType::Int64(flags) = field("Reserved0").data_item_type else {
+            panic!("FLAGS 必须是 Int64");
+        };
+        // 客户端位号 = codec 序号 + 1（见 `CLIENT_FLAG_SHIFT`）：
+        // 潜行是 `1<<2`，而 `1<<1`（客户端眼里的 ON_FIRE）绝不能置位。
+        assert_eq!(flags & (1 << 2), 1 << 2, "缺 SNEAKING 位（客户端 bit2）");
+        assert_eq!(flags & (1 << 1), 0, "客户端 bit1 = ON_FIRE，绝不能置位");
+        let DataItemType::Float(height) = field("Reserved054").data_item_type else {
+            panic!("HEIGHT 必须是 Float");
+        };
+        assert!((height - 1.5).abs() < 1e-6, "潜行高度应为 1.5，实际 {height}");
+        // 站起来要回到 1.8，并且 FLAGS 里不带 SNEAKING
+        let standing = flags_actor_data(7, false, false);
+        let DataItemType::Float(height) = standing
+            .actor_data
+            .iter()
+            .find(|d| format!("{:?}", d.data_item_id) == "Reserved054")
+            .unwrap()
+            .data_item_type
+        else {
+            panic!("HEIGHT 必须是 Float");
+        };
+        assert!((height - PLAYER_HEIGHT).abs() < 1e-6);
+    }
+
+    /// 能力包：两种飞行状态都要逐字节对齐。    ///
     /// 期望值来自 `refs/ProbeCreativeNoFly.java`（Cloudburst `Bedrock_v766.CODEC`，
     /// 2026-10-31 重新生成）：两份只差 `bf0f` → `bf0d`，即 LE u32 `0x0FBF` → `0x0DBF`，
     /// 正好是 `FLYING`(bit9) 那一位。

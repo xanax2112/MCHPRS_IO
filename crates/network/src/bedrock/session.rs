@@ -1457,6 +1457,10 @@ struct RemotePlayerState {
     position: (f32, f32, f32),
     rotation: (f32, f32),
     on_ground: bool,
+    /// 上次下发的主手物品与姿态（A1 / A3）：只有变了才发 `MobEquipment` / `SetActorData`。
+    held_item: Option<(u32, u8)>,
+    sneaking: bool,
+    sprinting: bool,
 }
 
 pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std::error::Error>> {
@@ -1587,6 +1591,18 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                 let mut chunk_batch: Option<crate::bedrock::bridge::BedrockChunkBatch> = None;
                 // 软枚举（B4 动态补全）：值变了就整份替换。
                 let mut soft_enum: Option<(String, Vec<String>)> = None;
+                // 挥手事件（A3）：一次可能收到多条（多人同时挥）。
+                let mut swings: Vec<u128> = Vec::new();
+                // 游戏模式变化（A5）。
+                let mut game_mode: Option<crate::bedrock::bridge::BedrockGameMode> = None;
+                // 告示牌文字（A2）。
+                let mut sign_updates: Vec<crate::bedrock::bridge::BedrockSign> = Vec::new();
+                // 让客户端弹告示牌编辑框（BUG-032 第 43 条）：`(x, y, z, front)`，MCHPRS 坐标。
+                let mut open_signs: Vec<(i32, i32, i32, bool)> = Vec::new();
+                // 背包回传（BUG-032 第 39 条）：进 plot 时发一次。
+                let mut inventory_snapshot: Option<
+                    crate::bedrock::bridge::BedrockInventorySnapshot,
+                > = None;
                 let mut should_close = false;
                 let received = tokio::select! {
                     received = conn.recv() => received,
@@ -1611,6 +1627,15 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             Some(BedrockCommand::Chunks(batch)) => chunk_batch = Some(batch),
                             Some(BedrockCommand::SoftEnum { name, values }) => {
                                 soft_enum = Some((name, values))
+                            }
+                            Some(BedrockCommand::Swing { uuid }) => swings.push(uuid),
+                            Some(BedrockCommand::GameMode(mode)) => game_mode = Some(mode),
+                            Some(BedrockCommand::Sign(sign)) => sign_updates.push(sign),
+                            Some(BedrockCommand::OpenSign { x, y, z, front }) => {
+                                open_signs.push((x, y, z, front))
+                            }
+                            Some(BedrockCommand::Inventory(snapshot)) => {
+                                inventory_snapshot = Some(snapshot)
                             }
                         }
                         // 返回一个空批次，让下面的收包逻辑什么都不做。
@@ -1798,10 +1823,50 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                         position,
                                         rotation: entity::bedrock_rotation(info.rotation),
                                         on_ground: info.on_ground,
+                                        held_item: info.held_item,
+                                        sneaking: info.sneaking,
+                                        sprinting: info.sprinting,
                                     },
                                 );
                             }
                             Some(state) => {
+                                // A1 主手物品：变了就发 `MobEquipment`（和位置无关，
+                                // 换物品时人可能站着不动）。
+                                if state.held_item != info.held_item {
+                                    packets.push(Protocol::MobEquipmentPacket(Box::new(
+                                        entity::mob_equipment(state.runtime_id, info.held_item),
+                                    )));
+                                    println!(
+                                        "[R8] {} 主手物品 {:?} → {:?}",
+                                        info.username, state.held_item, info.held_item
+                                    );
+                                    state.held_item = info.held_item;
+                                }
+                                // A3 姿态：潜行/疾跑位变了才发（`SetActorData` 只带 FLAGS 一条）。
+                                if state.sneaking != info.sneaking
+                                    || state.sprinting != info.sprinting
+                                {
+                                    packets.push(Protocol::SetActorDataPacket(Box::new(
+                                        crate::bedrock::protocol::flags_actor_data(
+                                            state.runtime_id,
+                                            info.sneaking,
+                                            info.sprinting,
+                                        ),
+                                    )));
+                                    println!(
+                                        "[R8] {} 姿态 sneaking={} sprinting={} flags=0x{:x} bits={:?}",
+                                        info.username,
+                                        info.sneaking,
+                                        info.sprinting,
+                                        crate::bedrock::protocol::player_flags(
+                                            info.sneaking,
+                                            info.sprinting
+                                        ),
+                                        crate::bedrock::protocol::flag_bits()
+                                    );
+                                    state.sneaking = info.sneaking;
+                                    state.sprinting = info.sprinting;
+                                }
                                 let position = entity::bedrock_feet(info.position);
                                 let rotation = entity::bedrock_rotation(info.rotation);
                                 let moved = (position.0 - state.position.0).abs() > 0.01
@@ -1890,6 +1955,156 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         break;
                     }
                     println!("[B4] 软枚举 {name} = {count} 项");
+                }
+
+                // 挥手动效（A3）：一次事件包。目标不在本地实体表里就忽略
+                // （可能是刚进/刚出 plot 的人，客户端根本没有这个实体）。
+                if !swings.is_empty() {
+                    let mut packets: Vec<Protocol> = Vec::new();
+                    for uuid in &swings {
+                        match remote_players.get(uuid) {
+                            Some(state) => packets.push(Protocol::AnimatePacket(Box::new(
+                                crate::bedrock::entity::animate_swing(state.runtime_id),
+                            ))),
+                            None => println!("[R8] 挥手目标不在实体表 uuid={uuid:x}，忽略"),
+                        }
+                    }
+                    if !packets.is_empty() {
+                        println!("[R8] 下发挥手 {} 次", packets.len());
+                        if let Err(e) = conn.send(&packets).await {
+                            println!("[!!] 下发挥手失败: {e}");
+                            break;
+                        }
+                    }
+                }
+
+                // 游戏模式（A5）：`/gamemode`、`/gmc`、`/gmsp` 会走到这里。
+                if let Some(mode) = game_mode {
+                    let packets = vec![Protocol::SetPlayerGameTypePacket(Box::new(
+                        crate::bedrock::protocol::set_game_mode(mode),
+                    ))];
+                    println!("[R9] 游戏模式 → {mode:?}");
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 下发游戏模式失败: {e}");
+                        break;
+                    }
+                }
+
+                // 打开告示牌编辑框（BUG-032 第 43 条）。
+                //
+                // 放在牌子的 `BlockActorData` **之前**：先让界面弹出来，字随后到，
+                // 玩家一进来就能看到已有文字（Geyser 也是先 `OpenSign` 再由 Java 的
+                // `BlockEntityData` 灌内容）。
+                //
+                // 少了这条，客户端根本不会弹编辑框 —— 真机"放下牌子后写不了字"就是这个。
+                if !open_signs.is_empty() {
+                    let packets: Vec<Protocol> = open_signs
+                        .iter()
+                        .map(|&(x, y, z, front)| {
+                            Protocol::OpenSignPacket(Box::new(
+                                crate::bedrock::protocol::open_sign(x, y, z, front),
+                            ))
+                        })
+                        .collect();
+                    println!(
+                        "[A2] 下发 OpenSign {} 块：{:?}",
+                        open_signs.len(),
+                        open_signs
+                    );
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 下发 OpenSign 失败: {e}");
+                        break;
+                    }
+                }
+
+                // 告示牌文字（A2）：实时更新走 `BlockActorData`；进 plot 时的那一份
+                // 随区块负载一起发（`chunk::build_chunk_from_world_with_signs`）。
+                if !sign_updates.is_empty() {
+                    let count = sign_updates.len();
+                    let packets: Vec<Protocol> = sign_updates
+                        .iter()
+                        .map(|sign| {
+                            Protocol::BlockActorDataPacket(Box::new(
+                                crate::bedrock::block_entity::sign_actor_data(sign),
+                            ))
+                        })
+                        .collect();
+                    println!("[R7] 下发告示牌 {count} 块");
+                    // 诊断：把第一块的实际字节打出来（真机"字不显示"时用来和
+                    // `refs/ProbeSign.java` 的参考字节逐段对照）。
+                    if let Some(Protocol::BlockActorDataPacket(first)) = packets.first() {
+                        let mut buf = Vec::new();
+                        {
+                            use bedrock::protocol::ProtoCodec;
+                            let _ = first.serialize(&mut buf);
+                        }
+                        let hex: String =
+                            buf.iter().map(|b| format!("{b:02x}")).collect();
+                        println!(
+                            "[R7] 告示牌包 hex（{} 字节）= {}",
+                            buf.len(),
+                            &hex[..hex.len().min(240)]
+                        );
+                    }
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 下发告示牌失败: {e}");
+                        break;
+                    }
+                }
+
+                // 背包回传（BUG-032 第 39 条）：把存档里的背包灌回客户端。
+                //
+                // 三份 `InventoryContent` 的顺序照 Geyser `PlayerInventoryTranslator#updateInventory`：
+                // 主背包 36 → 护甲 4 → 副手 1；再发 `PlayerHotbar` 选中槽、`MobEquipment` 主手，
+                // 保证"手里的东西"和快捷栏高亮都对。
+                if let Some(snapshot) = inventory_snapshot {
+                    use bedrock::protocol::v662::enums::ContainerID;
+                    let selected_slot = snapshot.selected_slot.min(8);
+                    let mut packets: Vec<Protocol> = vec![
+                        Protocol::InventoryContentPacket(Box::new(
+                            crate::bedrock::inventory::content_with(
+                                ContainerID::INVENTORY,
+                                &snapshot.main,
+                            ),
+                        )),
+                        Protocol::InventoryContentPacket(Box::new(
+                            crate::bedrock::inventory::content_with(
+                                ContainerID::ARMOR,
+                                &snapshot.armor,
+                            ),
+                        )),
+                        Protocol::InventoryContentPacket(Box::new(
+                            crate::bedrock::inventory::content_with(
+                                ContainerID::OFFHAND,
+                                &[snapshot.offhand],
+                            ),
+                        )),
+                        Protocol::PlayerHotbarPacket(Box::new(PlayerHotbarPacket::<Protocol> {
+                            selected_slot: selected_slot as u32,
+                            container_id: ContainerID::INVENTORY,
+                            // 客户端切到这一格（不是"服务端被动记录"）
+                            should_select_slot: true,
+                        })),
+                        Protocol::MobEquipmentPacket(Box::new(
+                            crate::bedrock::entity::mob_equipment_self(
+                                runtime_id,
+                                snapshot.main.get(selected_slot as usize).copied().flatten(),
+                                selected_slot,
+                            ),
+                        )),
+                    ];
+                    println!(
+                        "[R10] 背包回传：主背包 {} 格（非空 {}）、护甲 {}、副手 {}、选中槽 {}",
+                        snapshot.main.len(),
+                        snapshot.main.iter().filter(|s| s.is_some()).count(),
+                        snapshot.armor.iter().filter(|s| s.is_some()).count(),
+                        snapshot.offhand.is_some(),
+                        selected_slot
+                    );
+                    if let Err(e) = conn.send(&packets).await {
+                        println!("[!!] 下发背包失败: {e}");
+                        break;
+                    }
                 }
 
                 // 背包相关：客户端的请求只置标志，统一在本轮收包结束后发包。
@@ -2025,11 +2240,93 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                         ),
                                     );
                                 }
+                                Protocol::MobEquipmentPacket(me) => {
+                                    // BUG-032 第 40 条：基岩客户端切快捷栏 / 换手持物品时发这个包，
+                                    // **它带着那个槽里到底是什么**。以前我们只更新槽号、不更新物品，
+                                    // 于是服务端判木斧用的是旧的 `inventory[槽]`：
+                                    // 拿木斧时可能去破坏方块、空手时反而去选点。
+                                    use bedrock::protocol::v662::enums::ContainerID;
+                                    if me.container_id != ContainerID::INVENTORY {
+                                        continue;
+                                    }
+                                    let hotbar = me.slot.clamp(0, 8) as u32;
+                                    let bedrock_item = me.item.id;
+                                    let java_item = if bedrock_item == 0 {
+                                        None
+                                    } else {
+                                        crate::bedrock::mchprs_item_id(bedrock_item)
+                                    };
+                                    let count = me
+                                        .item
+                                        .stack_size
+                                        .unwrap_or(1)
+                                        .clamp(1, 255) as u8;
+                                    println!(
+                                        "[R5] << MobEquipment slot={hotbar} bedrock_item={bedrock_item} → java={java_item:?}×{count}"
+                                    );
+                                    let _ = inventory_tx.send(
+                                        crate::bedrock::bridge::BedrockInventoryUpdate::SelectedSlot(
+                                            hotbar,
+                                        ),
+                                    );
+                                    let _ = inventory_tx.send(
+                                        crate::bedrock::bridge::BedrockInventoryUpdate::Slot {
+                                            // Java 背包里快捷栏是 36..=44
+                                            slot: 36 + hotbar,
+                                            item: java_item.map(|id| (id, count)),
+                                        },
+                                    );
+                                }
                                 Protocol::InventoryTransactionPacket(tx) => {
                                     use bedrock::protocol::v662::enums::ItemUseInventoryTransactionType;
                                     use bedrock::protocol::v662::types::InventoryTransactionData;
 
-                                    // 只关心「对着方块按右键/左键」这一种事务；其余（丢弃、容器搬物）
+                                    // BUG-032 第 44 条：丢物品（按 Q）。
+                                    //
+                                    // 形状照 Geyser `BedrockInventoryTransactionTranslator`：
+                                    // `NORMAL` 事务 + 两条 action，`actions[0]` 来源是
+                                    // `WORLD_INTERACTION`。我们**没有掉落物实体**（MCHPRS 世界
+                                    // 里压根不放实体），所以唯一要做的是把服务端镜像的背包
+                                    // 改成丢完的样子 —— 否则切栏 / 重进时 `InventoryContent`
+                                    // 会把丢掉的东西"复活"。
+                                    if matches!(&tx.data, InventoryTransactionData::Normal) {
+                                        match crate::bedrock::inventory::drop_update(&tx.actions) {
+                                            Some((slot, item)) => {
+                                                println!(
+                                                    "[R5] << 丢物品 slot={slot} 剩余={item:?}"
+                                                );
+                                                let _ = inventory_tx.send(
+                                                    crate::bedrock::bridge::BedrockInventoryUpdate::Slot {
+                                                        // Java 背包里快捷栏是 36..=44
+                                                        slot: 36 + slot,
+                                                        item,
+                                                    },
+                                                );
+                                            }
+                                            None => {
+                                                // 没认出来也把形状打出来：真机上一看就知道
+                                                // 客户端这一版到底发了什么（来源/槽位/前后数量）。
+                                                println!(
+                                                    "[R5] << InventoryTransaction(Normal) actions={} 未识别",
+                                                    tx.actions.len()
+                                                );
+                                                for (i, action) in tx.actions.iter().enumerate() {
+                                                    println!(
+                                                        "[R5]    action[{i}] 来源={:?} 槽={} from=({}, {:?}) to=({}, {:?})",
+                                                        action.source.source_type,
+                                                        action.slot,
+                                                        action.from_item_descriptor.id,
+                                                        action.from_item_descriptor.stack_size,
+                                                        action.to_item_descriptor.id,
+                                                        action.to_item_descriptor.stack_size,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
+
+                                    // 只关心「对着方块按右键/左键」这一种事务；其余（容器搬物）
                                     // 先不处理。
                                     let InventoryTransactionData::ItemUse(use_data) = &tx.data else {
                                         println!("[R5] << InventoryTransaction(其他类型)");
@@ -2155,6 +2452,31 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                 Protocol::SubChunkRequestPacket(_) => {
                                     println!("[--] << SubChunkRequest")
                                 }
+                                Protocol::BlockActorDataPacket(p) => {
+                                    // BUG-032 第 43 条：客户端写/改告示牌。这里只打日志 ——
+                                    // 真正的转义在 `translate()` 里（已经在这之前跑过），
+                                    // 日志留证用：真机第一眼要确认客户端到底发了没有、带了哪些键。
+                                    let mut keys: Vec<&str> = p
+                                        .actor_data_tags
+                                        .keys()
+                                        .map(|k| k.as_str())
+                                        .collect();
+                                    keys.sort_unstable();
+                                    println!(
+                                        "[A2] << BlockActorData pos=({}, {}, {}) 键={:?}",
+                                        p.block_position.x,
+                                        p.block_position.y,
+                                        p.block_position.z,
+                                        keys
+                                    );
+                                    // 诊断：把解析出来的四行也打出来 —— 和 `[R7]` 下发那份对照，
+                                    // 就能判断是"没解析出来"还是"解析对了但客户端不吃"。
+                                    if let Some((front, back)) =
+                                        crate::bedrock::block_entity::sign_rows(&p.actor_data_tags)
+                                    {
+                                        println!("[A2]   解析后 正面={front:?} 反面={back:?}");
+                                    }
+                                }
                                 Protocol::Unknown(u) => println!("[--] << Unknown id=0x{:x}", u.id),
                                 other => println!("[--] << {}", pname(other)),
                             }
@@ -2168,11 +2490,21 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     }
                 }
 
-                // 打开背包：ContainerOpen + 三个 InventoryContent（顺序与 Geyser 一致）。
+                // 打开背包（BUG-032 第 45 条）：**只发 `ContainerOpen`**。
+                //
+                // 以前这里跟着发三份 `InventoryContent`，而且是**全空**的
+                // （`inventory::open_inventory_packets`）—— 客户端把服务端发的当成权威内容，
+                // 于是一打开背包，东西全被清空（真机现象）。
+                //
+                // 我们的背包是**客户端权威**（`StartGame.enable_item_stack_net_manager = false`），
+                // 服务端只知道"选中槽里是什么"，根本不知道其余槽位 → 任何 `InventoryContent`
+                // 都可能把玩家真实的物品覆盖掉。所以开界面只报坐标，内容一律不碰。
                 if open_inventory {
-                    let packets = crate::bedrock::inventory::open_inventory_packets(last_pos);
+                    let packets = vec![Protocol::ContainerOpenPacket(Box::new(
+                        crate::bedrock::inventory::container_open(last_pos),
+                    ))];
                     println!(
-                        "[R1] 打开背包：ContainerOpen({:.1},{:.1},{:.1}) + 3 个 InventoryContent",
+                        "[R1] 打开背包：ContainerOpen({:.1},{:.1},{:.1})（不再下发 InventoryContent，避免清空背包）",
                         last_pos.0, last_pos.1, last_pos.2
                     );
                     if let Err(e) = conn.send(&packets).await {

@@ -62,8 +62,65 @@ pub enum BedrockCommand {
     /// Bedrock 客户端不会发 `SCommandSuggestionsRequest`，所以候选值变化只能靠
     /// `UpdateSoftEnumPacket(REPLACE)` 推给客户端。`name` 必须和命令树里
     /// `Param::SoftEnum(name)` 用的一致（`schem_files` / `coord_files` /
-    /// `coord_targets` / `coord_types`）。
+    /// `coord_types`）。
     SoftEnum { name: String, values: Vec<String> },
+    /// 某个玩家**挥了一下手臂**（BUG-032 A3 挥手动画）。
+    ///
+    /// 挥手是一次性事件、不是状态，所以不能塞进每 tick 的玩家快照；
+    /// 会话线程按 uuid 找到那个人的 runtime id，发 `Animate(Swing)`。
+    Swing { uuid: u128 },
+    /// 游戏模式变化（BUG-032 A5）：Bedrock 的 `SetPlayerGameType`。
+    GameMode(BedrockGameMode),
+    /// 告示牌文字（BUG-032 A2）：Bedrock 的 `BlockActorData`。
+    ///
+    /// 坐标是 **MCHPRS（Java）坐标**，会话线程减 64 换算；
+    /// `front` / `back` 是**已经降级成 legacy 文本**（`§` 码）的四行，
+    /// JSON 文本组件到 legacy 的降级在 core 做（网络层不依赖文本组件）。
+    Sign(BedrockSign),
+    /// 让客户端弹出告示牌编辑框（BUG-032 第 43 条）：Bedrock 的 `OpenSign`。
+    ///
+    /// 出处：Geyser `JavaOpenSignEditorTranslator`（Java `ClientboundOpenSignEditorPacket`
+    /// → Bedrock `OpenSignPacket{position, frontSide}`）。
+    /// **没有这个包客户端永远不会弹编辑框** —— 它不会自己开，真机现象就是"根本不能写牌子"。
+    ///
+    /// `(x, y, z)` 是 **MCHPRS（Java）坐标**，会话线程自己 `- 64`。
+    OpenSign { x: i32, y: i32, z: i32, front: bool },
+    /// 把存档里的背包发给客户端（BUG-036）：进 plot 时一次，退出重进后物品就回来了。
+    Inventory(BedrockInventorySnapshot),
+}
+
+/// 一份要发回给 Bedrock 客户端的背包（**MCHPRS/Java 物品 id**，由会话线程换成 Bedrock 物品 id）。
+#[derive(Clone, Debug, Default)]
+pub struct BedrockInventorySnapshot {
+    /// 主背包 36 格，**Bedrock 顺序**：`0..=8` 是快捷栏、`9..=35` 是 27 格背包。
+    pub main: Vec<Option<(u32, u8)>>,
+    /// 护甲 4 格，Bedrock 顺序：头盔、胸甲、护腿、靴子。
+    pub armor: Vec<Option<(u32, u8)>>,
+    /// 副手。
+    pub offhand: Option<(u32, u8)>,
+    /// 当前快捷栏选中槽（0..=8）。
+    pub selected_slot: u8,
+}
+
+/// Bedrock 的游戏模式（MCHPRS 只有这两种）。数值见 `GameType` 枚举：
+/// Creative = 1、Spectator = 6（`Survival=0`、`Adventure=2`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BedrockGameMode {
+    Creative,
+    Spectator,
+}
+
+/// 一块告示牌的四行文字（**已经降级成 legacy 文本**）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BedrockSign {
+    /// MCHPRS（Java）坐标。
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    /// 正面四行（行内不换行；Bedrock 用 `\n` 拼接）。
+    pub front: [String; 4],
+    /// 反面四行。
+    pub back: [String; 4],
 }
 
 /// 一批要下发给某个 Bedrock 客户端的区块。
@@ -85,6 +142,36 @@ pub struct BedrockPlayerInfo {
     /// **Java 顺序** `(yaw, pitch)`；换算成 Bedrock 的 `(pitch, yaw)` 在 `entity` 模块里做。
     pub rotation: (f32, f32),
     pub on_ground: bool,
+    /// 主手物品：`(MCHPRS 物品 id, 数量)`，`None` = 空手。
+    ///
+    /// 网络层用它查 `item_map` 换成 Bedrock 的物品网络 id（A1 `MobEquipment`）。
+    /// 查不到 = MCHPRS 认识但 Bedrock 表里没有的怪物品 → 当空手发（绝不瞎编 id）。
+    pub held_item: Option<(u32, u8)>,
+    /// 潜行 / 疾跑（A3：决定 `FLAGS` 元数据里的 SNEAKING / SPRINTING 位）。
+    pub sneaking: bool,
+    pub sprinting: bool,
+}
+
+impl BedrockPlayerInfo {
+    /// 只带"看得见"的最小字段（测试与旧调用点用）。
+    pub fn new(
+        uuid: u128,
+        username: impl Into<String>,
+        position: (f64, f64, f64),
+        rotation: (f32, f32),
+        on_ground: bool,
+    ) -> Self {
+        Self {
+            uuid,
+            username: username.into(),
+            position,
+            rotation,
+            on_ground,
+            held_item: None,
+            sneaking: false,
+            sprinting: false,
+        }
+    }
 }
 
 
@@ -185,6 +272,33 @@ impl BedrockHandle {
             name: name.to_string(),
             values,
         });
+    }
+
+    /// 通知"某个玩家挥了手"（BUG-032 A3）。
+    pub fn send_swing(&self, uuid: u128) {
+        let _ = self.commands.send(BedrockCommand::Swing { uuid });
+    }
+
+    /// 投递游戏模式变化（BUG-032 A5）。
+    pub fn send_game_mode(&self, mode: BedrockGameMode) {
+        let _ = self.commands.send(BedrockCommand::GameMode(mode));
+    }
+
+    /// 投递一块告示牌的文字（BUG-032 A2）。
+    pub fn send_sign(&self, sign: BedrockSign) {
+        let _ = self.commands.send(BedrockCommand::Sign(sign));
+    }
+
+    /// 让客户端弹出告示牌编辑框（BUG-032 第 43 条）。`(x, y, z)` 是 MCHPRS 坐标。
+    pub fn send_open_sign(&self, x: i32, y: i32, z: i32, front: bool) {
+        let _ = self
+            .commands
+            .send(BedrockCommand::OpenSign { x, y, z, front });
+    }
+
+    /// 投递一份背包（BUG-036）。
+    pub fn send_inventory(&self, snapshot: BedrockInventorySnapshot) {
+        let _ = self.commands.send(BedrockCommand::Inventory(snapshot));
     }
 }
 

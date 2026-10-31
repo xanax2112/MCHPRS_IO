@@ -285,6 +285,73 @@ impl PlayerBackend {
         }
     }
 
+    /// 告诉**这个客户端**："`uuid` 那个玩家挥了一下手"（BUG-032 A3）。
+    ///
+    /// Bedrock 的挥手是事件包（`Animate`），不是状态，所以只能这样单独推；
+    /// Java 后端走自己的 `CEntityAnimation`，这里不做。
+    pub fn send_swing(&self, uuid: u128) {
+        if let Self::Bedrock(link) = self {
+            link.handle.send_swing(uuid);
+        }
+    }
+
+    /// 推游戏模式变化（BUG-032 A5）：Bedrock 的 `SetPlayerGameType`。
+    ///
+    /// Java 后端不用管：`Player::set_gamemode` 自己会发 `CGameEvent(ChangeGamemode)`。
+    pub fn send_game_mode(&self, mode: Gamemode) {
+        if let Self::Bedrock(link) = self {
+            link.handle.send_game_mode(match mode {
+                Gamemode::Creative => {
+                    mchprs_network::bedrock::bridge::BedrockGameMode::Creative
+                }
+                Gamemode::Spectator => {
+                    mchprs_network::bedrock::bridge::BedrockGameMode::Spectator
+                }
+            });
+        }
+    }
+
+    /// 推一块告示牌的文字（BUG-032 A2）。`sign` 用 MCHPRS 坐标。
+    pub fn send_sign(&self, sign: mchprs_network::bedrock::bridge::BedrockSign) {
+        if let Self::Bedrock(link) = self {
+            link.handle.send_sign(sign);
+        }
+    }
+
+    /// 让客户端弹出告示牌编辑框（BUG-032 第 43 条）。`(x, y, z)` 用 MCHPRS 坐标。
+    ///
+    /// Java 走 `COpenSignEditor`（和以前一字不差），Bedrock 走 `OpenSign`。
+    /// **以前只发了 Java 包**，Bedrock 后端把它丢进 `send_packet` 的空实现里 ——
+    /// 于是基岩端放下牌子后根本弹不出编辑框（真机："根本不能写告示牌"）。
+    pub fn send_open_sign(&self, x: i32, y: i32, z: i32, front: bool) {
+        match self {
+            Self::Java(conn) => {
+                use mchprs_network::packets::clientbound::ClientBoundPacket;
+                let packet = COpenSignEditor {
+                    pos_x: x,
+                    pos_y: y,
+                    pos_z: z,
+                    is_front_text: front,
+                }
+                .encode();
+                conn.send_packet(&packet);
+            }
+            Self::Bedrock(link) => link.handle.send_open_sign(x, y, z, front),
+        }
+    }
+
+    /// 把存档里的背包发回给 Bedrock 客户端（BUG-032 第 39 条）。
+    ///
+    /// Java 后端不用管：Java 客户端登录时自己收 `CSetContainerContent`。
+    pub fn send_inventory(
+        &self,
+        snapshot: mchprs_network::bedrock::bridge::BedrockInventorySnapshot,
+    ) {
+        if let Self::Bedrock(link) = self {
+            link.handle.send_inventory(snapshot);
+        }
+    }
+
     /// 与 `PlayerConn::receive_packets` 同名。
     ///
     /// Bedrock 后端返回的是**会话线程转义好的 Java 入站包**
@@ -730,6 +797,10 @@ impl Player {
         }
         .encode();
         self.client.send_packet(&change_game_state);
+        // Bedrock 客户端不认 `CGameEvent`（`send_packet` 对它是丢弃），
+        // 以前切模式基岩端毫无反应（BUG-032 A5）。这里按 Geyser 的做法补
+        // `SetPlayerGameType`。
+        self.client.send_game_mode(self.gamemode);
     }
 
     pub fn has_permission(&self, node: &str) -> bool {

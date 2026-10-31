@@ -9,12 +9,12 @@ pub static COMMANDS: &[CommandDef] = &[
     CommandDef {
         name: "teleport",
         description: "teleport",
-        overloads: &[&[Param::Position("position")], &[Param::String("player")]],
+        overloads: &[&[Param::Position("position")], &[Param::Target("player")]],
     },
     CommandDef {
         name: "tp",
         description: "tp",
-        overloads: &[&[]],
+        overloads: &[&[Param::Position("position")], &[Param::Target("player")]],
     },
     CommandDef {
         name: "stop",
@@ -34,7 +34,7 @@ pub static COMMANDS: &[CommandDef] = &[
     CommandDef {
         name: "radv",
         description: "radv",
-        overloads: &[&[]],
+        overloads: &[&[Param::Int("rticks")]],
     },
     CommandDef {
         name: "speed",
@@ -49,7 +49,7 @@ pub static COMMANDS: &[CommandDef] = &[
     CommandDef {
         name: "p",
         description: "p",
-        overloads: &[&[]],
+        overloads: &[&[Param::Enum("info", &["info"])], &[Param::Enum("i", &["i"])], &[Param::Enum("claim", &["claim"])], &[Param::Enum("c", &["c"])], &[Param::Enum("auto", &["auto"])], &[Param::Enum("a", &["a"])], &[Param::Enum("middle", &["middle"])], &[Param::Enum("visit", &["visit"]), Param::Target("player")], &[Param::Enum("v", &["v"])], &[Param::Enum("teleport", &["teleport"]), Param::Position("xz")], &[Param::Enum("tp", &["tp"])], &[Param::Enum("select", &["select"])], &[Param::Enum("sel", &["sel"])], &[Param::Enum("lock", &["lock"])], &[Param::Enum("unlock", &["unlock"])]],
     },
     CommandDef {
         name: "container",
@@ -74,7 +74,7 @@ pub static COMMANDS: &[CommandDef] = &[
     CommandDef {
         name: "rp",
         description: "rp",
-        overloads: &[&[]],
+        overloads: &[&[Param::Enum("compile", &["compile"]), Param::Enum("--optimize", &["--optimize"])], &[Param::Enum("compile", &["compile"]), Param::Enum("--export", &["--export"])], &[Param::Enum("compile", &["compile"]), Param::Enum("--io-only", &["--io-only"])], &[Param::Enum("compile", &["compile"]), Param::Enum("--update", &["--update"])], &[Param::Enum("compile", &["compile"]), Param::Enum("--export-dot", &["--export-dot"])], &[Param::Enum("compile", &["compile"]), Param::Enum("--wire-dot-out", &["--wire-dot-out"])], &[Param::Enum("compile", &["compile"]), Param::Enum("--illegal-states-out", &["--illegal-states-out"])], &[Param::Enum("compile", &["compile"]), Param::Enum("--wire-cross-out", &["--wire-cross-out"])], &[Param::Enum("compile", &["compile"]), Param::Enum("--print-after-all", &["--print-after-all"])], &[Param::Enum("compile", &["compile"]), Param::Enum("--print-before-backend", &["--print-before-backend"])], &[Param::Enum("compile", &["compile"]), Param::Enum("--passes=", &["--passes="])], &[Param::Enum("inspect", &["inspect"])], &[Param::Enum("reset", &["reset"])]],
     },
     CommandDef {
         name: "worldsendrate",
@@ -84,7 +84,7 @@ pub static COMMANDS: &[CommandDef] = &[
     CommandDef {
         name: "wsr",
         description: "wsr",
-        overloads: &[&[]],
+        overloads: &[&[Param::Float("hertz")]],
     },
     CommandDef {
         name: "version",

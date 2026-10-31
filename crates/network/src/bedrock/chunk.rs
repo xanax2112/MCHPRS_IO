@@ -282,10 +282,32 @@ pub fn covered_radius(
 /// `chunk_x` / `chunk_z` 是 **Bedrock 的区块坐标**。Bedrock 与 MCHPRS 的方块 x/z 直接对应，
 /// y 相差 [`Y_OFFSET`]：Bedrock `y` 的方块 = MCHPRS 的 `y + 64`。
 pub fn build_chunk_from_world<F>(
+    get_block: F,
+    chunk_x: i32,
+    chunk_z: i32,
+    biome_id: i32,
+) -> Vec<u8>
+where
+    F: FnMut(i32, i32, i32) -> u32,
+{
+    build_chunk_from_world_with_signs(get_block, chunk_x, chunk_z, biome_id, &[])
+}
+
+/// 同 [`build_chunk_from_world`]，但把这一块区块里的**告示牌**一起写进负载（BUG-032 A2）。
+///
+/// 位置在"边界方块计数(0)"**之后**，是**直接串写的网络 NBT 流**（无数量前缀、无长度前缀），
+/// 出处：Geyser `JavaLevelChunkWithLightTranslator`：
+/// ```text
+/// byteBuf.writeByte(0); // Border blocks
+/// NbtUtils.createNetworkWriter(...); for (tag : bedrockBlockEntities) nbtStream.writeTag(tag);
+/// ```
+/// 漏掉这段 = 玩家进 plot 时所有告示牌都是空白（只有当场改字才会收到 `BlockActorData`）。
+pub fn build_chunk_from_world_with_signs<F>(
     mut get_block: F,
     chunk_x: i32,
     chunk_z: i32,
     biome_id: i32,
+    signs: &[crate::bedrock::bridge::BedrockSign],
 ) -> Vec<u8>
 where
     F: FnMut(i32, i32, i32) -> u32,
@@ -328,7 +350,12 @@ where
         zigzag(&mut out, biome_id);
     }
 
-    out.push(0); // 边界方块计数（本阶段不下发方块实体）
+    out.push(0); // 边界方块计数
+
+    // 方块实体：告示牌（BUG-032 A2）。**没有数量前缀**，直接串写 NBT 文档。
+    for sign in signs {
+        out.extend(crate::bedrock::block_entity::sign_chunk_bytes(sign));
+    }
 
     if debug_chunk && !seen.is_empty() {
         let list: Vec<String> = seen
@@ -489,8 +516,28 @@ mod tests {
         assert_eq!(payload[4], 0x02, "y=1 的方块应当落在索引 1");
     }
 
-    /// 流送队列：已发过的不能重复入队；顺序由近到远（一圈一圈填）。
+    /// 告示牌（A2）：负载尾部多出来的就是那一串方块实体 NBT，其余字节必须**完全不变**
+    /// （不能因为加了牌子就挪动段/生物群系/边界字节的位置）。
     #[test]
+    fn signs_are_appended_after_border_byte() {
+        use crate::bedrock::bridge::BedrockSign;
+        let plain = build_chunk_from_world(|_, _, _| 0, 0, 0, 1);
+        let sign = BedrockSign {
+            x: 5,
+            y: 70,
+            z: 6,
+            front: [String::from("hi"), String::new(), String::new(), String::new()],
+            back: Default::default(),
+        };
+        let with = build_chunk_from_world_with_signs(|_, _, _| 0, 0, 0, 1, &[sign]);
+        assert!(with.len() > plain.len(), "带牌子的区块必须更长");
+        assert_eq!(&with[..plain.len()], &plain[..], "前缀必须一字不差");
+        assert_eq!(*plain.last().unwrap(), 0, "边界字节是 0");
+        // 边界字节之后紧接着就是区块里那块牌的根标签
+        assert_eq!(with[plain.len()], 10, "方块实体流必须以 TAG_Compound 开头");
+    }
+
+    /// 流送队列：已发过的不能重复入队；顺序由近到远（一圈一圈填）。    #[test]
     fn pending_chunks_skips_sent_and_orders_by_ring() {
         let mut have = std::collections::HashSet::new();
         have.insert((0, 0));

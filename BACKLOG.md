@@ -30,6 +30,16 @@
 - 状态标记：`✅ 已完成` / `📝 已定待写码` / `🚧 进行中` / `📋 待做` / `⛔ 作废` / `⏳ 等用户`。
 - **接替 / 新窗口**：先读 `~/dsh/HANDOFF-TO-SUCCESSOR.md`（项目交接：概况、进度、踩过的坑、协作规则、基岩版分工），共享目录有同一份副本。
 - **以后新增报错 / 新功能**：先判断能不能并进现有条目——同一机制、同一处行为、只是补充细节或换个现象，就并进对应条目（追加说明、必要时改状态），**不新开编号**；只有当它跟现有条目都不属于同一回事时，才新增条目，编号接着往后排（当前最后一条是 `BUG-034`）。合并还是新增拿不准时先问，不要自己定。（2026-10-29 自查：`width = 0` 端口已并入 BUG-008、`/coord` 步长问题已并入 BUG-022，均按此规则。）
+- **基岩版的问题一律只记在 `BUG-032` 下**（用户 2026-11-01 明确）：不论新功能、改进还是真机 bug，
+  都在 BUG-032 条目里用「第 N 条」往后排（当前最后一条是**第 42 条**），**不新开 `BUG-0xx` 编号**。
+  2026-11-01 本轮曾误开 `BUG-035/036/037`，当场按本条改回「BUG-032 第 38/39/40 条」。
+- **协议常量以"真机 + Geyser 源码"两级为准**（2026-11-01 追加）：Geyser/Cloudburst 的 codec
+  是我们最可信的参考，但**它也可能与客户端不一致**。已实测到一处：实体 `FLAGS` 的**低位区**
+  客户端比 codec 后移一位（客户端 `ON_FIRE=1`、`SNEAKING=2`、`SPRINTING=4`），
+  而**高位区（名字 15、重力 50 等）与 codec 一致** —— 见 `protocol.rs` 的
+  `CLIENT_LOW_FLAG_SHIFT` 与 BUG-032 第 38/42 条。**改位号必须一位一位真机验，
+  不许从"潜行挪了 1 位"外推整张表**（第 42 条就是这么把重力挪坏、导致降落变慢的）。
+  以后再遇到"值看着对、客户端表现却错位"，优先怀疑**局部错位**而不是整体平移。
 
 ---
 
@@ -1817,16 +1827,16 @@ Java 客户端根本拿不到这些物品，所以只有 Bedrock 会撞到。
 
 | 编号 | 项 | 理由 | 预估 |
 | --- | --- | --- | --- |
-| A1 | 其他玩家手持物品（`MobEquipment`） | 别人看你永远空手，最显眼的缺失 | ~60 行 |
-| A2 | 告示牌文字（`BlockActorData` + block entity NBT） | 基岩端告示牌全空白 | ~150 行 |
-| A3 | 挥手 / 潜行 / 疾跑姿势（`Animate` + 动态元数据） | 别人看你永远站着不动 | ~100 行 |
-| A5 | `/gamemode` 对 Bedrock 生效（`SetPlayerGameType`） | 现在切模式基岩端收不到 | ~50 行 |
+| A1 | 其他玩家手持物品（`MobEquipment`） | 别人看你永远空手，最显眼的缺失 —— 📝 已写码（§9.21） | ~60 行 |
+| A2 | 告示牌文字（`BlockActorData` + block entity NBT） | 基岩端告示牌全空白 —— 📝 已写码（§9.21） | ~150 行 |
+| A3 | 挥手 / 潜行 / 疾跑姿势（`Animate` + 动态元数据） | 别人看你永远站着不动 —— 📝 已写码（§9.21） | ~100 行 |
+| A5 | `/gamemode` 对 Bedrock 生效（`SetPlayerGameType`） | 现在切模式基岩端收不到 —— 📝 已写码（§9.21） | ~50 行 |
 | B1 | 修 `ItemStackResponse` 类型（PATCH-008） | 唯一"已知错误"的 vendored 代码（缺 containers + run-on 解码） | ~150 行 |
 | B3 | `AvailableCommands` 静态命令树 | 基岩端无补全/无语法校验；数据源 `DECLARE_COMMANDS`（89 节点）已存在 | ~250 行 |
 | B4 | 动态补全（soft enum：`/coord`、`//load`） | 依赖 B3；没有它 B3 的补全只覆盖命令名 | ~100 行 |
 | C7 | 抓包基础设施固化 | B1 需要 Probe；顺带把 7 个临时 ps1 收敛成 1 个 + docs 写清两条取证通道 | 半天，无协议风险 |
-| A-t1 | 别名合并进目标命令（`tp`/`rp`/`gmc` 不再作为"无参数独立命令"出现） | 用户 2026-10-31 补裁决"做"；生成器按命令别名表合并 | ~40 行 |
-| A-t2 | 软枚举刷新挂点（`//save`、`/coord` 改写文件后重推候选） | 用户 2026-10-31 补裁决"做"；现在只在进 plot 时推一次 | ~30 行 |
+| A-t1 | 别名合并进目标命令（`tp`/`rp`/`gmc` 不再作为"无参数独立命令"出现） | 用户 2026-10-31 补裁决"做"；生成器按命令别名表合并 —— 📝 已写码（§9.21） | ~40 行 |
+| A-t2 | 软枚举刷新挂点（`//save`、`/coord` 改写文件后重推候选） | 用户 2026-10-31 补裁决"做"；现在只在进 plot 时推一次 —— 📝 已写码（§9.21） | ~30 行 |
 
 #### 9.18.3 裁决结果：不做（14 项）
 
@@ -1847,16 +1857,17 @@ Java 客户端根本拿不到这些物品，所以只有 Bedrock 会撞到。
 | C5 | `UNVERIFIED-0.5.3/0.5.4` 清单 | 同 C2，需要真机逐项验收 |
 | C6 | Java 侧 BUG-023 技术债（命令树自动生成、派发合并） | 不在基岩版范围；玩家无感 |
 
-#### 9.18.4 执行顺序（仅记录，未启动）
+#### 9.18.4 执行顺序（已启动）
 
-> **用户 2026-10-31 裁决：本轮暂不开工**（先把 B3 命令补全提交固化）。
-> 下列顺序保留为待办清单，开工时按此推进。
+> 2026-10-31 第一次裁决："本轮暂不开工"（先固化 B3 命令补全）。
+> 2026-10-31 第二次裁决：**"现在开工，除了 B1 和 C7 都做"** —— 下面 1、2、5 三项
+> 已全部写码（§9.21），等编译；3、4 仍然不做/已完成。
 
-1. **实体表现**：A1 + A3 + A5（同一条实体同步通路，一起做最省）
-2. **方块实体**：A2（需要 NBT 编码，独立）
-3. **工具 + 协议**：C7 + B1（C7 先建 Probe 脚本，B1 正好用它出参考字节）
-4. **补全**：B3 + B4（B4 依赖 B3）—— ✅ 2026-10-31 已完成并真机验收（§9.19、§9.20）
-5. **补全小尾巴**：A-t1 别名合并、A-t2 软枚举刷新挂点
+1. **实体表现**：A1 + A3 + A5 —— ✅ 已写码 + 编译/单测通过（§9.21，待真机）
+2. **方块实体**：A2 —— ✅ 已写码 + 编译/单测通过（§9.21，待真机）
+3. **工具 + 协议**：C7 + B1 —— ⛔ 用户 2026-10-31 明确本轮不做
+4. **补全**：B3 + B4 —— ✅ 2026-10-31 已完成并真机验收（§9.19、§9.20）
+5. **补全小尾巴**：A-t1 别名合并、A-t2 软枚举刷新挂点 —— ✅ 已写码 + 编译/单测通过（§9.21，待真机）
 
 每轮流程不变：写码 → 编译 → 起服务 → 真机 → 回写台账 → 提交。
 
@@ -1941,6 +1952,454 @@ Java 那套 `CCommandSuggestionsResponse` 在 Bedrock 上根本不存在。
    把 io 组名和类型码混在一起，真机反馈"候选混在一起、看着不对"，2026-10-31 已撤掉）。
    根因：Bedrock 软枚举是"每个参数一份固定列表"，没法按前一个参数（`io.txt` vs `memory/*.txt`）
    缩小范围；给并集反而给出**错误候选**，不如不给。
+
+> 上面第 1 条限制（"只在进 plot 时推一次"）已由 §9.21 的 A-t2 修掉。
+
+---
+
+### 9.21 A1 + A2 + A3 + A5 + A-t1 + A-t2：编译与单测通过，待真机
+
+> 状态：✅ **2026-10-31 编译通过 + 单测通过**；⏳ 尚未真机验证。
+> 用户 2026-10-31 裁决："现在开工，除了 B1 和 C7 都做" —— 即本轮做这 6 项，
+> B1（`ItemStackResponse` 类型）与 C7（抓包基础设施）不动。
+>
+> **编译结果**：`cargo build` 通过（只有仓库既有的 dead_code/deprecated 警告）；
+> `cargo test --workspace` 全绿，其中 `cargo test -p mchprs_network bedrock` = **58 passed**（含本轮新增 10 条）。
+> 编译时抓到两个真错：① `0xFF00_0000` 当 `i32` 字面量触发 `overflowing_literals`（deny）；
+> ② `PlotWorld` 有第二个初始化点（`plot/data.rs` 的模板 plot），加字段时漏了。
+
+#### 9.21.1 每项做了什么（口径全部来自 Geyser 源码，不猜）
+
+| 项 | Bedrock 包 | Geyser 依据 | 关键点 |
+| --- | --- | --- | --- |
+| A5 | `SetPlayerGameType` | `JavaGameEventTranslator`（CHANGE_GAMEMODE） | Creative=1 / Spectator=6；MCHPRS 只有这两种 |
+| A1 | `MobEquipment` | `LivingEntity#updateMainHand` | `inventorySlot=0`、`hotbarSlot=-1`、`container=INVENTORY(0)`；空手/查不到的物品一律 `id=0` |
+| A3 | `Animate(Swing)` + `SetActorData(FLAGS)` | `JavaAnimateTranslator`、`Entity#setFlags` | 挥手是**事件**（单独命令），潜行/疾跑是**状态**（随每 tick 玩家快照 diff） |
+| A3 入站 | Java 的 `SPlayerCommand` | `BedrockPlayerAuthInputTranslator` | 只认 `START/STOP_SNEAKING`、`START/STOP_SPRINTING` 四个**边沿位**，否则基岩玩家自己潜行别人看不见 |
+| A2 | `BlockActorData` + 区块里的方块实体流 | `SignBlockEntityTranslator`、`JavaLevelChunkWithLightTranslator` | 实时改字走前者；**进 plot** 时靠后者（否则牌子全空白） |
+| A-t1 | —（命令树） | Brigadier `REDIRECT` 语义 | 别名命令继承目标的参数：`tp`/`p`/`rp`/`radv`/`wsr` |
+| A-t2 | `UpdateSoftEnum(REPLACE)` | — | `//save`、`/coord`（含 undo/redo）改完文件后重推候选 |
+
+#### 9.21.2 协议事实（本轮新增，全部有出处）
+
+| 事实 | 值 | 出处 |
+| --- | --- | --- |
+| 告示牌 NBT 键 | `id="Sign"`、`x/y/z`、`FrontText`、`BackText`、`IsWaxed` | `BlockEntityTranslator#getConstantBedrockTag` + `SignBlockEntityTranslator#translateTag` |
+| 单侧文字 | `Text`（四行 `\n` 拼接、去尾部换行）、`SignTextColor = 0xFF000000`（黑色）、`IgnoreLighting=0` | `translateSide` / `getBedrockSignColor`（`"black"` 走 default 0 再补不透明度） |
+| 区块里的方块实体 | 位置在"边界方块字节(0)"**之后**，且**没有数量前缀、没有长度前缀** | `JavaLevelChunkWithLightTranslator`：`byteBuf.writeByte(0); NBTStream; nbtStream.writeTag(tag)` |
+| `NetworkBlockPosition.y` | **u32**（不是 i32） | vendored `v662/types/network_block_position.rs` |
+| Bedrock `FLAGS` 位 | `SNEAKING = 1<<1`、`SPRINTING = 1<<3` | vendored `v662/enums/actor_flags.rs`（`ActorFlags::Sneaking=1/Sprinting=3`） |
+| `PlayerAuthInputFlags` 边沿位 | START_SPRINTING `1<<25`、STOP_SPRINTING `1<<26`、START_SNEAKING `1<<27`、STOP_SNEAKING `1<<28` | vendored `v766/packets/player_auth_input.rs` |
+| Bedrock `GameType` | Survival 0 / Creative 1 / Adventure 2 / Spectator 6 | vendored `v662/enums/game_type.rs` |
+
+#### 9.21.3 改动清单（Java 侧零改动）
+
+| 文件 | 内容 |
+| --- | --- |
+| `crates/network/src/bedrock/bridge.rs` | `BedrockPlayerInfo` 加 `held_item` / `sneaking` / `sprinting`（+ `new()`）；`BedrockCommand` 加 `Swing` / `GameMode` / `Sign`；新增 `BedrockGameMode`、`BedrockSign`；handle 加 `send_swing/send_game_mode/send_sign` |
+| `crates/network/src/bedrock/entity.rs` | `held_item()`（Java 物品 id → Bedrock 网络 id，查不到就空手）、`mob_equipment()`、`animate_swing()`；`add_player` 用 `player_metadata_with_flags` + `carried_item` |
+| `crates/network/src/bedrock/protocol.rs` | `PLAYER_BASE_FLAGS`、`player_flags()`、`player_metadata_with_flags()`、`flags_actor_data()`、`set_game_mode()` |
+| `crates/network/src/bedrock/block_entity.rs`（新） | 告示牌 NBT 构造 + `sign_actor_data()`（实时）+ `sign_chunk_bytes()`（区块尾部）+ 4 条测试 |
+| `crates/network/src/bedrock/chunk.rs` | 新增 `build_chunk_from_world_with_signs()`（老函数变薄封装）+ 1 条测试（前缀一字不差、尾部从 TAG_Compound 开始） |
+| `crates/network/src/bedrock/session.rs` | 三条新命令的处理；玩家快照 diff 里加"主手物品变了发 `MobEquipment`、姿态变了发 `SetActorData`" |
+| `crates/network/src/bedrock/translate.rs` | 入站潜行/疾跑四位 → `SPlayerCommand`（action 0/1/3/4） |
+| `crates/network/src/bedrock/mod.rs` | `bedrock_item_id()`（反向查物品表） |
+| `crates/network/generators/gen_commands.py` | 解析 `redirect_node`；别名命令用目标节点的参数表（A-t1）；顺手修掉"字段行尾带注释就解析失败"的 bug（`/teleport <player>` 的玩家参数因此从普通字符串变回 `Param::Target`） |
+| `crates/network/src/bedrock/commands_gen.rs` | 重新生成（24 条命令；`tp`/`rp`/`radv`/`wsr`/`p` 现在带参数） |
+| `crates/core/src/player.rs` | `PlayerBackend::send_swing/send_game_mode/send_sign`；`Player::set_gamemode` 补 Bedrock 分支 |
+| `crates/core/src/plot/mod.rs` | 玩家快照带主手物品/姿态；`PlotWorld.pending_bedrock_signs`；`Plot::push_bedrock_sign` / `bedrock_signs_in_chunk` / `refresh_bedrock_soft_enums` / `sign_rows_to_legacy`；`enter_plot` 补游戏模式 |
+| `crates/core/src/plot/packet_handlers.rs` | `handle_swing_arm` 同时给 Bedrock 客户端发挥手事件 |
+| `crates/core/src/plot/commands.rs` | `//save`、`//schem` 之后刷新软枚举 |
+| `crates/core/src/plot/coord.rs` | `commit` / `coord_undo` / `coord_redo` 之后刷新软枚举 |
+
+#### 9.21.4 已知限制（记录在案，不在本轮修）
+
+1. **告示牌超宽行没裁**：Geyser 会按 `SignUtils.SIGN_WIDTH_MAX` 逐字符裁剪，我们只做 `\n` 拼接。
+   MCHPRS 的牌子来自 schematic，行一般不超宽；真超宽时 Bedrock 会自己换行（显示不完美但不丢字）。
+2. **告示牌只降级纯文本**：`{"text":"..."}` / `extra` 递归拼接；`color`、`bold` 等格式位没转成 `§` 码。
+   MCHPRS 自己写牌子时只产生 `{"text":...}`，所以目前够用。
+3. **主手物品只有 135 条映射**：`item_map` 之外的物品（MCHPRS 有、Bedrock 表里没有）显示为空手。
+4. **旁观者进服**：登录时 `StartGame` 仍声明 Creative，进 plot 后补一条 `SetPlayerGameType`，
+   中间那一小段（<1 秒）客户端按创造模式走。
+5. **基岩玩家自己的主手物品有滞后**：`Player::inventory` 目前只在
+   "放方块 / 右键交互"（R5）和快捷栏切槽时同步，所以在创造面板里换了物品、
+   还没放置过的这段窗口内，别人看你还是空手。Java 玩家不受影响（服务端一直是权威）。
+   要彻底解决得处理 `ItemStackRequest`（属 B2 的范围，本轮不做）。
+   —— **2026-11-01 已由 BUG-032 第 40 条修掉主要部分**：入站 `MobEquipment` 现在会同时
+   同步"槽号 + 槽里的物品"，切栏/换手持物品都能立刻跟上；创造面板里换物品后仍要
+   切一次栏或放一次方块才会同步（`ItemStackRequest` 仍未处理）。
+
+#### 9.21.5 编译后要验的清单（真机）
+
+1. `/gamemode spectator` → Bedrock 客户端变旁观（能穿墙、看不到手）；再 `/gmc` 变回创造。
+2. 两个客户端：A 切换快捷栏/换物品 → B 那边 A 手里跟着变；空手时是空手。
+3. A 潜行/疾跑 → B 看到蹲下/跑动姿态；A 挥手/挖方块 → B 看到抬手。
+   （A 是基岩客户端时要验 **双向**：Java 玩家也要看到基岩玩家的潜行/挥手。）
+4. 放一块牌子并写四行字 → 另一个 Bedrock 客户端立刻看到同样的字（实时）；
+   **退出重进**（或让没进过 plot 的 Bedrock 玩家进）仍然能看到（区块里的方块实体流）。
+5. 命令补全：`tp ` 有 `<x y z>` / `<player>` 候选；`rp ` 有 `compile/inspect/reset`；
+   `//save new.schem` 之后 `//load ` 的候选里出现 `new.schem`（不用重进 plot）；`/coord` 同理。
+6. 回归：`/redpiler compile` 侧边栏、区块流送、放方块不闪、未知方块纠正都不受影响。
+
+---
+
+### 9.22 真机第二轮反馈：3 个问题（2026-11-01 凌晨，BUG-032 第 38~40 条）
+
+> 用户原话（2026-11-01 00:04）：
+> "java蹲下后，基岩看到是燃烧状态，还有基岩版物品栏退出后重进就没有了，
+> 在拿着木斧时有时候左键会破坏方块，而不是选取第一个点，空手时破坏方块有时候也会选取点"
+>
+> 验收情况：A5 / A1 / A3 / A2 / A-t1 / A-t2 的**主功能都对了**（用户："挺好，不错"），
+> 下面是这轮暴露的 3 个问题。按 §0 的约定，**全部记在 BUG-032 条目里**（不新开 BUG 编号），
+> 编号接着第 37 条往后排。
+>
+> 用户 2026-11-01 裁决："全修，燃烧是真的有火焰粒子"。
+
+#### 9.22.1 BUG-032 第 38 条：Java 玩家潜行 → 基岩端看到"燃烧" —— ✅ 已解决（2026-11-01 真机验证）
+
+**结论（已真机验证）：客户端的 `FLAGS` **低位区**位号比 Cloudburst v766 codec 的
+`EntityFlag` 序号后移一位；高位区与 codec 一致。**
+
+| 我们发的位 | codec / 公开文档说 | 客户端实际表现 | 结论 |
+| --- | --- | --- | --- |
+| `1<<1` | `SNEAKING` | **着火**（客户端把 bit1 当成 `ON_FIRE`） | — |
+| `1<<2` | `RIDING` | **正常蹲下** | 客户端 `SNEAKING` = bit2 |
+| `1<<4` | `INVISIBLE` | **正常疾跑** | 客户端 `SPRINTING` = bit4 |
+| `1<<15` | `CAN_SHOW_NAME` | 名字正常 | **没平移** |
+| `1<<50` | `HAS_GRAVITY` | 降落正常 | **没平移** |
+
+> ⚠️ **修正（2026-11-01 晚些时候）**：第一版结论写的是"客户端整体后移一位"，
+> 并按整体 +1 改掉了所有位号 —— 结果真机上"降落速度非常慢"（`HAS_GRAVITY` 被挪到
+> bit51，客户端认为该实体没有重力）。实际只有 `ON_FIRE` 之后那一小段错开一位，
+> 高位完全一致。完整教训见 §9.22.5（第 42 条）。当前实现只对潜行/疾跑做 +1。
+
+**定位过程（记下来，避免以后重走）**
+
+1. 先排除"位号算错"：新探针 `refs/ProbeEntityFlagOrder.java`（Cloudburst v766
+   `EntityFlag.values()` 全量打印）= `ON_FIRE 0 / SNEAKING 1 / SPRINTING 3`；
+   公开文档（Pumpkin、PocketMine）也一致 → **codec 这边没错，是我们跟客户端对不上**。
+2. 排除"只发 FLAGS 导致元数据残缺"：改成**整套元数据重发** + 潜行高度 1.5
+   （Geyser `setDimensions`）→ 仍然着火。
+3. 加诊断开关（环境变量 `MCHPRS_BEDROCK_SNEAK_BIT` / `_SPRINT_BIT`，**定位后已删**），
+   把潜行位临时改成 2、疾跑位改成 4 → 用户真机回执："完美，没问题了"。
+4. 固化：`protocol.rs` 加 `CLIENT_FLAG_SHIFT = 1` + `const fn flag_bit(codec_index)`，
+   **所有**位号（`CAN_SHOW_NAME/SILENT/CAN_CLIMB/BREATHING/HAS_COLLISION/HAS_GRAVITY`
+   以及潜行/疾跑）统一按 +1 换算；`FLAGS_2`（元数据 id 92）是另一张表，无证据表明后移，
+   保持 codec 原值。
+5. 字节测试同步更新：`set_actor_data` 的期望串现在**有意**与 Cloudburst 不同
+   （只有 `FLAGS` 那段 varint 变：`…8080d28080828003…` → `…8080a48180848006…`），
+   测试里同时钉住解码值、`ON_FIRE` 必须为 0、以及
+   `CAN_SHOW_NAME(16)/BREATHING(37)/HAS_GRAVITY(51)` 的新位置。
+
+#### 9.22.2 BUG-032 第 39 条：Bedrock 玩家退出重进后物品栏空了 —— ✅ 已解决（2026-11-01 真机验证）
+
+- **根因（已定位）**：服务端**从来没有把存档里的背包发回给 Bedrock 客户端**。
+  - `Player::inventory` 会随 `BedrockInventoryUpdate::Slot` 更新（`packet_handlers.rs:23`），
+    退出时 `Player::save()` 也确实写进了玩家存档；
+  - 但登录/进 plot 时我们不发 `InventoryContent`，Bedrock 客户端只能显示它自己的空背包；
+    Java 客户端那边是服务端登录时发 `CSetContainerContent` 的，Bedrock 这条路**从来没接**。
+- **修法**：进 plot 时给 Bedrock 玩家补
+  `InventoryContent(INVENTORY 36 + ARMOR 4 + OFFHAND 1) + PlayerHotbar(选中槽) + MobEquipment(主手)`；
+  数据从 `Player::inventory`（Java 46 槽）映射：Bedrock `0..=8` ← Java `36..=44`（快捷栏）、
+  Bedrock `9..=35` ← Java `9..=35`（背包）、护甲 4 格 ← Java `5..=8`、副手 ← Java `45`。
+
+#### 9.22.3 BUG-032 第 40 条：拿木斧左键有时破坏方块 / 空手左键有时却选点 —— ✅ 已解决（2026-11-01 真机验证）
+
+- **根因（已定位）**：**Bedrock 客户端的"当前手里是什么"从来没同步给 `Player::inventory`**。
+  - `Plot::handle_player_digging`（`plot/mod.rs:958`）判木斧用的是
+    `inventory[selected_slot + 36]`；
+  - 而我们只在"放方块 / 右键交互"（R5）时写这个槽（`session.rs` 的 `ItemUse` 分支），
+    快捷栏切换只发 `SelectedSlot`，**不发槽里的物品**；
+  - 于是：拿木斧但服务端槽里还是空的 → 左键走"破坏方块"；放下木斧但槽里还留着斧子 →
+    左键走"选第一个点"。两个症状是**同一个 bug 的两面**，正好对应用户描述。
+- **修法**：处理入站 `MobEquipmentPacket`（Bedrock 切快捷栏/换手持物品时必发）：
+  `container == INVENTORY && slot <= 8` 时同时发 `SelectedSlot(slot)` 和
+  `Slot { 36 + slot, mchprs_item_id(item.id) }`。对照 Geyser `BedrockMobEquipmentTranslator`
+  （它有自己的背包镜像，所以只用 hotbar 槽位；我们没有镜像，必须连物品一起取）。
+
+#### 9.22.4 BUG-032 第 41 条：场上有基岩玩家时，有人离开 plot 会让 plot 线程 panic —— ✅ 已修（2026-11-01 复测无 panic）
+
+**崩溃现场**（2026-11-01 00:41，`logs\bedrock-shift-1101-0032.log`）：
+
+```text
+ERROR mchprs_core::server: plot panicked at crates\core\src\plot\mod.rs:1850:35:
+removal index (is 1) should be < len (is 1)
+   … Plot::handle_commands → Plot::update → Plot::run
+```
+同一秒还有 `removal index (is 0) should be < len (is 0)`。
+
+- **根因**：`Plot::leave_plot` 里 `self.world.packet_senders.remove(player_idx)` 假设
+  "`packet_senders` 的下标 == `players` 的下标"。但 `enter_plot` **只给 Java 后端**
+  push 一条（`if let Some(java_client) = player.client.as_java()`，Bedrock 的方块广播走
+  另一条通道）。只要场上有**一个** Bedrock 玩家，两个列表就错位：
+  - 只剩基岩玩家时 `packet_senders` 是空表 → `remove(0)` 越界；
+  - Java 玩家在前、基岩玩家在后 → 基岩玩家离开时 `remove(1)` 越界。
+  panic 直接把 plot 线程打死（`catch_unwind` 兜住后 plot 不再运行），服务端随后退出。
+- **修法**（`plot/mod.rs::leave_plot`）：
+  - 离开的是 Bedrock 玩家 → 他本来就不在 `packet_senders` 里，**什么都不删**；
+  - 离开的是 Java 玩家 → 删"在他之前进来的 Java 玩家数"那个下标。
+  这样与 `enter_plot` 的唯一 push 点保持一致，且不再依赖两个列表等长。
+- **为什么现在才发现**：以前真机测试要么只有 Java 玩家、要么基岩玩家是最后离开的；
+  这轮两个客户端同时在 plot 里互相验 A1/A3（对看装备与姿态），一离开就撞上了。
+- **复验清单**：① 两个客户端（一 Java 一基岩）同时在 plot，任意一方退出/被踢 → 服务端不崩、
+  另一方仍在；② 基岩玩家单独进出 plot 多次不崩；③ Java 玩家单独进出不崩。
+
+#### 9.22.5 BUG-032 第 42 条：按"整体 +1"改标志位 → 基岩玩家降落变得非常慢 —— ✅ 已解决（2026-11-01 真机验证）
+
+**现象**（2026-11-01 00:41 前的 `bedrock-shift` 版本）：修好"蹲下着火"之后，
+基岩玩家**下降/落地变得非常慢**（像慢动作或低重力）。
+
+- **根因**：第 38 条定下的结论当时写成了"客户端位号整体后移一位"，于是我把
+  `HAS_GRAVITY` 从 bit50 挪到了 **bit51**。真机上客户端认为该实体**没有重力**，
+  下降就被拖慢。也就是说 —— **整体平移是错的**，只有 `ON_FIRE` 之后那一小段错开一位，
+  `CAN_SHOW_NAME(15)`、`HAS_GRAVITY(50)` 这些高位本来就对。
+- **修法**（`protocol.rs`）：把常量拆成两类 ——
+  - `CLIENT_LOW_FLAG_SHIFT = 1` + `low_flag_bit(codec_index)`：**只**给潜行/疾跑用
+    （客户端 `SNEAKING=2`、`SPRINTING=4`，真机验证过）；
+  - 高位（名字/静音/爬梯/呼吸/碰撞/重力）恢复 codec 原序号 15/18/20/36/49/50。
+  `set_actor_data` 的逐字节期望值因此**恢复成与 Cloudburst 完全一致**
+  （`…8080d28080828003…`），测试里额外钉住 15/36/50 三位不许再被挪。
+- **教训（已写进 §0）**：改动协议位号必须**一位一位真机验**，不许从一个已知点
+  外推整张表；"整体平移"这种结论要有一个**跨区**的验证点（这次是 `HAS_GRAVITY`）
+  才能成立。
+- **复验清单**：① 基岩玩家跳跃/下落速度恢复正常；② 蹲下不再着火；③ 疾跑姿态正常；
+  ④ 别人头顶名字正常。
+
+#### 9.22.6 本轮收尾状态（2026-11-01 凌晨）
+
+用户真机回执："没问题了"。第 38~42 条全部关闭：
+
+| 条目 | 内容 | 状态 |
+| --- | --- | --- |
+| 38 | Java 玩家潜行 → 基岩看着火 | ✅ 客户端低位区 +1（潜行 bit2） |
+| 39 | 背包退出重进丢失 | ✅ 进 plot 回传三份容器 |
+| 40 | 木斧/空手左键行为相反 | ✅ 入站 `MobEquipment` 同步槽内物品 |
+| 41 | 场上有基岩玩家时离开 plot 崩服 | ✅ `leave_plot` 不再按玩家下标删 sender |
+| 42 | 整体平移导致降落变慢 | ✅ 基础位回退 codec 序号，只潜行/疾跑 +1 |
+
+**构建/测试**：`cargo build` 通过；`cargo test -p mchprs_network bedrock` = **60 passed**；
+`cargo test --workspace` 其余包全绿。
+
+**运行态**：服务端 PID 1044，日志 `logs\bedrock-flagsfix-1101-0044.log`，
+该日志内 `plot panicked` 计数 = **0**，[R8] 里 `bits=(2, 4)`、`flags=0x6001000148000`
+（基础位与 codec 一致，潜行 `…004`、疾跑 `…010`）均符合预期。
+
+---
+
+### 9.23 剩余问题盘点（2026-11-01，答用户"目前基岩版还有哪些问题"）
+
+> 用户前提：**明确不实现的不算**。因此 §9.18.3 的 14 项（A4/A6/A7/A8/B2/B5/B6/B7/
+> C1–C6）与 B1、C7 全部不列入。
+> 第 43、44 条是这次**重新读代码**发现的（2026-11-01 00:5x）。
+> **用户裁决：「写一下丢物品和写牌子的 Bug」→ 两条已写码 + 编译 + 单测通过（§9.23.4），待真机。**
+
+#### 9.23.1 BUG-032 第 43 条：基岩玩家自己写告示牌，服务端收不到 —— ⚠️ 入站/实时推送已通，**区块携带这条仍未结**（见 §9.25）
+
+- 现象：基岩客户端写完字，自己的画面正常，但别的客户端看不到；
+  重进 plot 后字消失（区块里的方块实体流重新发的是空牌子）。
+- 根因：`session.rs` 的入站 `match` 里**没有** `BlockActorDataPacket` 分支，
+  该包落到 `other => println!("[--] << …")` 被丢掉。
+- 反方向一直是通的：Java 玩家改字 → `handle_update_sign`（`packet_handlers.rs:508`）
+  → `pending_block_entities` → `pending_bedrock_signs` → `BlockActorData` 下发（§9.21.1）。
+- **做法**：入站 `BlockActorDataPacket` → Java `SUpdateSign`（走 `translate.rs`，
+  于是完全复用 plot 的写世界 + 广播逻辑，core 零改动）。
+  - `block_entity.rs` 新增 `sign_rows(&Tags) -> Option<([String;4],[String;4])>`：
+    照自己下发的键反解（`FrontText`/`BackText` → `Text`，四行用 `\n` 拼）。
+    外部输入，缺键/类型不对/非 UTF-8 全当空行，**绝不 panic**；多于四行截断。
+    `None` = 两面都没有 → 不是告示牌（容器类方块实体属 A7，不碰）。
+  - 两面都发（客户端不说它改的是哪一面；全空也发，否则"清空文字"覆盖不掉旧字）。
+  - y 用 `block_position.y as i32 + 64`（`NetworkBlockPosition.y` 是 u32，负高度按补码传）。
+- **已知限制（新增，登记在此）**：没有先校验"那个位置真的是一块牌子"。
+  若基岩玩家在 MCHPRS 不认的位置改了字，`handle_update_sign` 会照 Java 的老行为
+  建一个方块实体（客户端侧是幽灵牌子）。要堵得改 `handle_update_sign`（Java 侧逻辑），
+  本轮不动。
+- 测试：`sign_rows_roundtrip_our_own_nbt`（我们发出去的 NBT 原样解回同样的四行）、
+  `sign_rows_tolerates_junk`、`sign_rows_drops_extra_lines`、
+  `sign_block_actor_data_becomes_update_sign`（两面包 + y+64 + 非牌子不转）。
+
+#### 9.23.2 BUG-032 第 44 条：丢物品不处理 —— ✅ 已修（待真机）
+
+- 根因：`InventoryTransaction` 只处理 `ItemUse`，其余（含丢物品）直接 `continue`
+  （旧注释自认"丢弃、容器搬物先不处理"）。
+- 后果：基岩端按 Q 丢物品，客户端本地清掉、服务端镜像不变 → 切栏或重进后物品"回来"。
+- **形状口径**（Geyser `BedrockInventoryTransactionTranslator`，逐行对照）：
+  `NORMAL` 事务 + **两条** action —— `actions[0]` 来源是 `WORLD_INTERACTION`
+  （物品被"投入世界"），`actions[1]` 是背包那一格（`slot` 是快捷栏 0..=8）。
+  Geyser 判丢用 `getFlag() == Flag.DROP_ITEM`；`InventorySource.Flag` 的常量顺序
+  （javap `bedrock-codec-3.0.0.Beta5` 的 `InventorySource$Flag`）是
+  `DROP_ITEM / PICKUP_ITEM / NONE`，即 DROP_ITEM = 0。
+  **我们没只靠这个 0**：再加一条硬判据"那一格的数量必须变小"，
+  这样 `PICKUP_ITEM`（变大）天然被排除，也不怕真机上 flag 值不同。
+- **做法**：`inventory.rs` 新增 `drop_update(&[InventoryAction<Protocol>]) -> Option<(u32, Option<(u32,u8)>)>`，
+  session 拿到就投 `BedrockInventoryUpdate::Slot { slot: 36 + 快捷栏, item }`——
+  和"切快捷栏"走同一条镜像通道，`Plot` 那侧零改动。丢弃物**不生成实体**
+  （MCHPRS 世界本来就没有掉落物），只是不再"复活"。
+- 兜底：槽位 > 8、物品查不到 MCHPRS id（宁可不同步也不误删剩下的一叠）、
+  `from == 0`、非 `WorldInteraction` 来源，全部返回 `None` 并打
+  `[R5] << InventoryTransaction(Normal) actions=N 未识别`，便于真机看真实形状。
+- 测试：`drop_updates_mirror_stack`（丢 1 个剩 4 个 / 丢整叠清空）、
+  `drop_ignores_pickup_and_container_moves`、`drop_ignores_out_of_range_slot`。
+- **仍未处理**：容器搬物（`actions` 来自容器，属 A7 已裁决不做）、
+  `ItemRelease`（那是"松手/收弓"，Geyser 只调 `releaseItem()`）。
+
+#### 9.23.4 编译与测试结果（2026-11-01 01:01，用户授权"编译加运行测试"）
+
+- `cargo build`：**通过**（16.6s，仅既有 3 条死代码/弃用警告，编辑过的 4 个 rs 零告警）。
+- `cargo test -p mchprs_network bedrock`：**67 passed / 0 failed**（上一轮 60 + 本轮新增 7）。
+- `cargo test --workspace`：全绿（18+6+2+1+67+10+11 等，无失败）。
+- 运行态：服务端 **PID 9052**，日志 `logs\bedrock-sign42-1101-0101.log`，
+  `Bedrock listener on udp 0.0.0.0:19132 protocol=766 version=1.21.50`，io.txt 载入 2 组，无 panic。
+
+#### 9.23.3 台账里已经记着、但一直没排期的（引用，不重复展开）
+
+| 出处 | 项 |
+| --- | --- |
+| §9.21.4-1 | 告示牌超宽行不裁剪（客户端会自己折行，不丢字） |
+| §9.21.4-2 | 告示牌富文本（颜色/加粗）不转 `§` 码，只出纯文本 |
+| §9.21.4-3 | `item_map` 只有 135 条，MCHPRS 有、基岩表里没有的物品显示为空手 |
+| §9.21.4-4 | 旁观者登录头 <1 秒按创造模式走，进 plot 后才补 `SetPlayerGameType` |
+| §9.19-3 | 命令树权限统一发 `ANY`，客户端不隐藏无权命令（服务端仍会拒绝） |
+| §9.21.4-5 残留 | 创造面板换物品后、未切栏/未放置前，别人看你手里还是旧物品（彻底解决要 `ItemStackRequest` = B2，已否） |
+| §9.19-注 | 平台差异：Bedrock 计分板没有 `number_format: blank`，分数数字一定显示 |
+
+**另（非基岩独有，不计入）**：`CSetEquipment` 只发主手、从不发护甲/副手 —— 这是服务端通用行为
+（`player.rs:888` 只填 `slot: 0`），Java 玩家同样看不到别人护甲，不属于基岩版缺口。
+
+---
+
+### 9.24 真机第三轮：两个真问题（2026-11-01 01:05）
+
+> 用户原话：「有问题，基岩版根本不能写告示牌，还有，我一打开背包物品就全给我清空了」
+> 第一条是 §9.23.1 的**反面**（我修的是"收到字怎么存"，真机发现字根本发不出来）；
+> 第二条是**早就存在**的 R1 遗留，只是这轮终于被按到（记作 BUG-032 第 45 条）。
+
+#### 9.24.1 第 43 条（续）：缺的是 `OpenSign` 包，不是解析
+
+- 真机日志（`bedrock-sign42-1101-0101.log`）里**一条 `[A2] << BlockActorData` 都没有** ——
+  客户端压根没发包，因为编辑框根本没弹出来。
+- 根因：MCHPRS 只在"放牌子"时发 Java 的 `COpenSignEditor`（`interaction.rs:489`），
+  Bedrock 后端把它丢进 `send_packet` 的空实现。而**Bedrock 客户端不会自己开编辑框**，
+  必须服务端发 `OpenSignPacket`：Geyser `JavaOpenSignEditorTranslator` 就是把
+  Java `ClientboundOpenSignEditorPacket` → Bedrock `OpenSignPacket{position, frontSide}`。
+- 改动：
+  - `PlayerBackend::send_open_sign(x, y, z, front)`：Java 仍发 `COpenSignEditor`（字节不变），
+    Bedrock 发 `BedrockCommand::OpenSign` → `protocol::open_sign`（y 由网络层 `-64`，
+    `NetworkBlockPosition.y` 是 u32，负高度按补码写）。
+  - `interaction.rs` 放置路径改调它（不再自己 encode）。
+  - 另外补上"**点已有的告示牌**也能编辑"：`on_use` 新增一条 sign 分支，**只对 Bedrock 生效**
+    （`player.client.is_bedrock()` 挡着，Java 玩家仍走原来的 `has_block_entity` 分支，
+    行为一字不变）。否则只能编辑"自己刚放下的那块"。
+  - `session.rs` 收到 `OpenSign` 先发给客户端，再发牌子的 `BlockActorData`（和 Geyser 同序）。
+- 验证口令：放下牌子应立刻弹编辑框 → 写完确定 → 日志出现
+  `[A2] 下发 OpenSign 1 块` 和 `[A2] << BlockActorData pos=… 键=[…]`。
+
+#### 9.24.2 BUG-032 第 45 条：一打开背包，物品全被清空 —— ✅ 已修
+
+- 日志：`[R1] 打开背包：ContainerOpen(...) + 3 个 InventoryContent`。
+- 根因：`inventory::open_inventory_packets` 发的三份 `InventoryContent` 是**全空**的
+  （`inventory_content()` = 36 个空气）。我们是**客户端权威背包**
+  （`StartGame.enable_item_stack_net_manager = false`），客户端把服务端发来的当成权威内容
+  → 界面一开，整包物品被清空（日志里紧接着就是 `MobEquipment slot=0 bedrock_item=0`）。
+- 改动：开背包**只发 `ContainerOpen`**，不再发任何 `InventoryContent`
+  （服务端只知道选中槽，任何"内容"都可能误删玩家真实物品）。
+  `open_inventory_packets` 保留但不再被调用，注释已标"勿再用于真实玩家"。
+- 验证口令：按 E 打开背包 → 东西还在；日志只有
+  `[R1] 打开背包：ContainerOpen(...)（不再下发 InventoryContent，避免清空背包）`。
+
+#### 9.24.3 编译与测试（2026-11-01 01:09）
+
+- `cargo build`：**通过**（17.8s；唯一新警告来自 vendored `start_game.rs` 的
+  `unused import: std::io::Read`，是补丁文件里的既有项，不是本轮代码）。
+- `cargo test -p mchprs_network bedrock`：**67 passed / 0 failed**。
+- `cargo test --workspace`：全绿。
+- 运行态：服务端 **PID 23404**，日志 `logs\bedrock-sign45-1101-0108.log`，
+  `protocol=766 version=1.21.50`，无 panic。
+
+#### 9.24.4 第 43 条真机第三轮：**登录快照根本没带牌子** —— ✅ 已修（待真机）
+
+> 用户："告示牌的文本基岩版还是看不见，只有写下的时候有字，退出重进后就没了，
+> 用 java 版验证是有字的"
+
+**先证明"包本身没写错"**（离线，不用真机）：
+
+- 新探针 `refs/ProbeSign.java` 用 Cloudburst v766 为同一块牌子编出**权威字节**；
+  我们的解码器把它完整解出来（位置 54/-56/483、7 个键、`FrontText.Text="hello\nworld"`），
+  测试 `sign_actor_data_reads_cloudburst_bytes` 常驻。逐段对比后唯一差异是
+  **NBT 键序**（`HashMap` 无序，不影响语义）。
+- 真机日志也证明下发的文字是对的：
+  `[A2] 解析后 正面=["hello","world","",""]`、
+  `[R7] 告示牌 (54, 8, 485) java_state=4307 bedrock_runtime=9209 正面=["hello","world","",""]`
+  （9209 = `minecraft:standing_sign ground_sign_direction=2`，调色板已核对，确实是牌子），
+  以及 `[R7] 告示牌包 hex（163 字节）= …` 与探针同构。
+
+**根因（重进后字没了）**：`Plot::bedrock_snapshot()`（登录/进 plot 的那一批区块）
+用的是 4 参数 `chunk::build_chunk_from_world`，**方块实体传的是空数组**
+—— 那一圈区块里的牌子自然全是空白的。只有之后 `stream_bedrock_chunks()`
+流送到的远处区块走的是 `..._with_signs`。所以"退出重进后字没了"是必然的。
+改动：登录快照改用 `..._with_signs` + `bedrock_signs_in_chunk()`，
+并在快照日志里带上牌子数量（`Bedrock 快照：N×N = M 区块（含 K 块牌子）`）。
+
+**新增诊断**（真机看现象用）：
+- `[R7] 区块 (cx, cz) 负载带 N 块牌子：[(x, y, z, 第一行)]` —— 流送负载里到底有没有牌子；
+- `[R7] 告示牌包 hex（N 字节）= …` —— 实时包的实际字节；
+- `[A2] 解析后 正面=… 反面=…` —— 客户端发上来的字解析成什么。
+
+**待真机确认**：①写完立刻看（不退出）有没有字；②退出重进后有没有字；
+③日志里 `Bedrock 快照：… （含 K 块牌子）` 的 K 是否 ≥ 1。
+
+---
+
+### 9.25 第 43 条**未结**：区块携带的牌子 NBT 客户端不应用（2026-11-01 01:45，用户："先记台账，以后再搞"）
+
+> 用户最后一次真机反馈（2026-11-01 01:41）：
+> "发光了，然后退出重进又没了"（"好" 之后确认重进仍无字）。
+
+#### 9.25.1 已经**真机确认可用**的部分
+
+- **实时推送整条链路是通的**：基岩端写牌 → 客户端 `BlockActorData` → 我们解析 → 写世界
+  → 回推 `BlockActorData` → **客户端立刻显示**（发光白字可见）。
+- 入站解析、世界写入、出站字节三处都有实证（`refs/ProbeSign.java` 对拍 + 日志 hex）。
+
+#### 9.25.2 已经排除的怀疑（都是有实证的，不用再查）
+
+| 怀疑 | 排除依据 |
+| --- | --- |
+| 包字节写错 | `refs/ProbeSign.java`（Cloudburst v766）参考字节 vs 我们的字节：位置/键/文字全一致，唯一差异是 NBT 键序（无语义）。测试 `sign_actor_data_reads_cloudburst_bytes` 常驻 |
+| 文字是空的 | 日志 `[A2] 解析后 正面=["abc",…]`、`[R7] … 正面=["abc",…]`，包 hex 里也有 `616263`（"abc"） |
+| 位置/坐标换算错 | 客户端自报 pos=(52,-56,489)，我们发的一模一样（`4294967240`=-56） |
+| 方块不是牌子 | `java_state=4317 → bedrock_runtime=9214`，调色板里是 `minecraft:standing_sign ground_sign_direction=7` |
+| 子区块/生物群系字节格式错 | `refs/ProbeGeyserChunk.java` 跑 Geyser 自己的类：单值段 `09 01 idx 01 <zigzag>`、生物群系 `01 <zigzag>`，与我们逐字节一致 |
+| 区块尾部需要"长度前缀" | `refs/ProbeChunkNbt.java`：Cloudburst `NbtUtils.createNetworkWriter` 连续 `writeTag` 出来就是**裸 NBT 串**（两个 tag 48 字节，第一个字节 `0a`），与 Geyser、与我们一致 |
+| 登录快照漏了牌子 | 已修（§9.24.4）；新日志 `[R7] 快照区块 (3, 30) 带 3 块牌子：[(54,7,481,""), (52,8,486,"abc"), (54,8,485,"hello")]` 证明算进去了 |
+| 负载尾部没有 NBT | 日志 `[R7] 快照区块 (3, 30) 负载 2296 字节，末尾48字节=…740b68656c6c6f0a776f726c64…`（"hello\nworld" 就在里面） |
+
+#### 9.25.3 现在卡在哪
+
+**客户端收到了"区块里带方块实体"的负载，但不把它应用到牌子上**（重进后空白）；
+而同样的 NBT 走独立 `BlockActorData` 包就立刻生效。所以问题只剩"区块内方块实体的
+承载方式"，不是内容。
+
+#### 9.25.4 下次开工的三条路（按性价比排序）
+
+1. **补发兜底（最省事，10 行）**：登录/进 plot 后，对初始半径内所有牌子再补发一遍
+   `BlockActorData`（复用已经验证可用的实时通道）。代价：多几个小包；好处：不依赖区块路径。
+2. **试 PocketMine 风格**：`refs/PocketMine-MP-stable/src/network/mcpe/serializer/ChunkSerializer.php`
+   的尾部是"边界(0) + `writeByteArray(总长)` + 每块 `writeByteArray(单块长)`"，与 Geyser 的裸 NBT 不同。
+   一次真机 A/B 就能判定客户端要哪种（也可能是两种都收）。
+3. **Geyser 对照抓包**：用既有 `refs/geyser-run` + packet-spy，让同一个人在 Geyser 会话里
+   放牌子，抓 `LevelChunk`（带牌子那一段）与 `BlockEntityData`，和我们逐字节 diff。最权威、最费时。
+
+#### 9.25.5 遗留在代码里的临时诊断（下次开工先处理）
+
+- `crates/network/src/bedrock/block_entity.rs`：`SIGN_DEBUG_GLOW = true`
+  —— **现在牌子文字永远是发光白字**。当初是为了分辨"客户端没收到 vs 黑字看不见"，
+  已分清（黑字+`IgnoreLighting=0` 在真机上**看不见**，所以要么改颜色要么改光照；
+  具体是颜色还是光照还没分离验证）。
+- 新增的 `[R7] 快照区块 … / 负载 … 末尾48字节 …`、`[R7] 告示牌包 hex …`、
+  `[A2] 解析后 …` 三处诊断日志（量不大，保留也行，定位完后建议关掉）。
+- 未提交：工作区仍是 19 文件（17 改 + `block_entity.rs` 新增 + `BACKLOG.md`）。
+- 运行态：服务端 **PID 9788**，日志 `logs\bedrock-snapshotdiag-1101-0138.log`。
+
 
 
 

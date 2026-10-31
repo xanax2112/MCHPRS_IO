@@ -209,6 +209,9 @@ impl ServerBoundPacketHandler for Plot {
             animation: animation_id,
         }
         .encode();
+        // Bedrock 侧的挥手是 `Animate` 事件包（A3）：不在这里补，基岩客户端看到的人
+        // 永远不抬手。先把 uuid 取出来，避免下面同时借 `players`。
+        let uuid = self.players[player].uuid;
         for other_player in 0..self.players.len() {
             if player == other_player {
                 continue;
@@ -216,6 +219,7 @@ impl ServerBoundPacketHandler for Plot {
             self.players[other_player]
                 .client
                 .send_packet(&entity_animation);
+            self.players[other_player].client.send_swing(uuid);
         }
     }
 

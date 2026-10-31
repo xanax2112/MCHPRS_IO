@@ -449,6 +449,11 @@ impl Plot {
 
         // Handle worldedit commands
         if worldedit::execute_command(self, player, command, &mut args) {
+            // `//save`（以及 `//schem save`）会往 schems 目录写新文件：Bedrock 的补全候选
+            // 是软枚举，客户端不会自己重新问，必须由服务端重推（BUG-032 A-t2）。
+            if command == "/save" || command == "/schem" {
+                self.refresh_bedrock_soft_enums(player);
+            }
             // If the command was handled, there is no need to continue;
             return false;
         }

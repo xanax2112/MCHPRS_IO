@@ -45,8 +45,15 @@ def parse_nodes(src: str):
         block = m.group(1)
 
         def field(name):
-            mm = re.search(name + r":\s*(.+?),\n", block, re.S)
-            return mm.group(1).strip() if mm else ""
+            # 按行取字段值，并剥掉行尾注释与逗号。
+            # 不能直接 `name: (.+?),\n`：`parser: Some(Parser::Entity(3)), // Only allow one player`
+            # 这种行尾带注释的写法会匹配失败（曾经因此把 `/teleport <player>` 的
+            # 玩家参数退化成普通字符串）。
+            mm = re.search(name + r":\s*([^\n]*)\n", block)
+            if not mm:
+                return ""
+            value = re.sub(r",\s*//.*$", "", mm.group(1).strip())
+            return value.strip().rstrip(",").strip()
 
         flags = field("flags")
         children_match = re.search(r"children:\s*vec!\[([^\]]*)\]", block, re.S)
@@ -59,7 +66,19 @@ def parse_nodes(src: str):
         if name_raw.startswith("Some("):
             name = name_raw[5:-1].strip().strip('"')
         children = [int(x) for x in re.findall(r"\b(\d+)\b", children_raw)]
-        nodes.append({"kind": kind, "name": name, "children": children, "parser": parser_raw})
+        # 别名命令在 Brigadier 树里是 `REDIRECT | LITERAL` 节点：自己没参数，指到目标节点
+        # （`/tp` → `/teleport`、`/radv` → `/radvance rticks`）。
+        redirect_match = re.search(r"redirect_node:\s*Some\((\d+)\)", block)
+        redirect = int(redirect_match.group(1)) if redirect_match else None
+        nodes.append(
+            {
+                "kind": kind,
+                "name": name,
+                "children": children,
+                "parser": parser_raw,
+                "redirect": redirect,
+            }
+        )
     return nodes
 
 
@@ -105,6 +124,24 @@ def overloads_for(nodes, index, path):
     return out
 
 
+def overloads_via_redirect(nodes, target, path):
+    """别名命令（REDIRECT 节点）的参数：继承**目标节点**的参数列表（A-t1）。
+
+    Java 侧树里别名有两种形态，都要照顾：
+
+    - 重定向到字面量命令（`/tp` → `/teleport`）：目标节点的**子节点**才是参数；
+    - 重定向到某个参数节点（`/radv` → `/radvance` 的 `rticks`）：那个参数**本身就是**
+      别名要接的第一个参数。
+    """
+    node = nodes[target]
+    if node["kind"] == "ARG":
+        return [
+            [param_for(nodes, target, path)] + tail
+            for tail in overloads_for(nodes, target, path)
+        ]
+    return overloads_for(nodes, target, path)
+
+
 def rust_param(spec):
     kind, name, values = spec
     name = name.replace('"', r"\"")
@@ -144,7 +181,12 @@ def main():
     for root in roots:
         node = nodes[root]
         name = node["name"].lstrip("/")
-        overloads = overloads_for(nodes, root, [])
+        # 别名命令（`tp`/`p`/`rp`/`radv`/`wsr`…）自己没参数，参数要从重定向目标继承，
+        # 否则客户端会把它当成"无参数命令"，打 `tp ` 一点补全都没有（A-t1）。
+        if node["redirect"] is not None:
+            overloads = overloads_via_redirect(nodes, node["redirect"], [name])
+        else:
+            overloads = overloads_for(nodes, root, [])
         rendered = []
         for overload in overloads:
             params = ", ".join(rust_param(p) for p in overload)

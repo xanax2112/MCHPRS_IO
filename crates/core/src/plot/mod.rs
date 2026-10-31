@@ -217,6 +217,9 @@ pub struct PlotWorld {
     /// 取走，转成 Bedrock 的 `UpdateBlock`（BUG-032 第 3 条）。
     /// Java 那条路是 `CMultiBlockChange` 批量包，Bedrock 没有对应批量包，只能一条一条发。
     block_changes: Vec<(BlockPos, u32)>,
+    /// 本 tick 变过文字的告示牌位置（BUG-032 A2）：`Plot` 没有玩家列表，
+    /// 所以这里只登记，由 [`Plot::publish_world`] 换成 `BlockActorData` 下发。
+    pub pending_bedrock_signs: Vec<BlockPos>,
 }
 
 impl PlotWorld {
@@ -383,10 +386,20 @@ impl World for PlotWorld {
         for chunk in &mut self.chunks {
             chunk.reset_multi_blocks();
         }
-        for (_, block_entity) in self.pending_block_entities.drain() {
+        // 方块实体：Java 走 `CBlockEntityData` 广播；Bedrock 另走 `BlockActorData`（A2）。
+        // 先收完再遍历 —— `drain()` 借着 `pending_block_entities`，循环里不能再 `&mut self`。
+        let pending: Vec<(BlockPos, CBlockEntityData)> =
+            self.pending_block_entities.drain().collect();
+        for (pos, block_entity) in pending {
             let encoded = block_entity.encode();
             for player in &self.packet_senders {
                 player.send_packet(&encoded);
+            }
+            // 告示牌要另外通知 Bedrock（本层没有玩家列表，只登记位置，
+            // 由 `Plot::publish_world` 换成 `BlockActorData` 发出去）。
+            let is_sign = matches!(self.get_block_entity(pos), Some(BlockEntity::Sign(_)));
+            if is_sign {
+                self.pending_bedrock_signs.push(pos);
             }
         }
         for (_, sound) in self.pending_sounds.drain() {
@@ -683,11 +696,19 @@ impl Plot {
         self.scoreboard.add_player(&player);
         // 动态补全（BUG-032 B4）：Bedrock 的软枚举初始值必须等玩家进 plot 才知道
         // （值来自本 plot 的 io.txt / memory 目录 / schems 目录），所以在这里推。
+        // 注意：此时 `player` 还没进 `self.players`，所以不能用 `refresh_bedrock_soft_enums`
+        // （那个按玩家下标取），只能就地推一次。
         if player.client.is_bedrock() {
             let (schem_files, coord_files, coord_types) = self.bedrock_soft_enum_values(&player);
             player.client.send_soft_enum("schem_files", schem_files);
             player.client.send_soft_enum("coord_files", coord_files);
             player.client.send_soft_enum("coord_types", coord_types);
+            // A5：登录时 `StartGame` 声明的是创造模式，存档里如果是旁观者，
+            // 客户端会一直按创造模式走。进 plot 时按真实模式补一条 `SetPlayerGameType`。
+            player.client.send_game_mode(player.gamemode);
+            // BUG-032 第 39 条：把存档里的背包灌回客户端，否则退出重进后物品栏是空的
+            // （服务端一直有，只是从来没发过）。
+            player.client.send_inventory(bedrock_inventory_snapshot(&player));
         }
         self.players.push(player);
         self.update_view_pos_for_player(self.players.len() - 1, true);
@@ -735,6 +756,30 @@ impl Plot {
         coord_types.dedup();
 
         (schem_files, coord_files, coord_types)
+    }
+
+    /// 重推一次这个玩家的全部软枚举（BUG-032 A-t2）。
+    ///
+    /// 只在**文件目录真的变了**之后调用（`//save`、`/coord` 写文件、undo/redo）：
+    /// Bedrock 客户端不会自己重新要候选值，服务端不推它就一直是登录时那一份。
+    /// 非 Bedrock 玩家直接返回（Java 侧走 `add_command_completions` 那套）。
+    fn refresh_bedrock_soft_enums(&mut self, player_idx: usize) {
+        let Some(player) = self.players.get(player_idx) else {
+            return;
+        };
+        if !player.client.is_bedrock() {
+            return;
+        }
+        let (schem_files, coord_files, coord_types) = self.bedrock_soft_enum_values(player);
+        let schem_count = schem_files.len();
+        let coord_count = coord_files.len();
+        player.client.send_soft_enum("schem_files", schem_files);
+        player.client.send_soft_enum("coord_files", coord_files);
+        player.client.send_soft_enum("coord_types", coord_types);
+        println!(
+            "[B4] 软枚举刷新（玩家 {}）：schem_files={schem_count}、coord_files={coord_count}",
+            player.username
+        );
     }
 
     fn get_chunk_distance(x1: i32, z1: i32, x2: i32, z2: i32) -> u32 {
@@ -1579,6 +1624,12 @@ impl Plot {
     /// 只能逐条 `UpdateBlock`，所以这里一次把整批塞给会话线程（别一个方块一条指令）。
     fn send_bedrock_block_changes(&mut self) {
         let changes = std::mem::take(&mut self.world.block_changes);
+        // 告示牌（A2）：`flush_block_changes` 只登记了位置，这里换成本地文档再下发。
+        // 和方块缓存一样，**不管有没有 Bedrock 玩家**都要把队列取空。
+        let signs = std::mem::take(&mut self.world.pending_bedrock_signs);
+        for pos in signs {
+            self.push_bedrock_sign(pos);
+        }
         // 方块变化同时让区块缓存失效（BUG-032 第 26 条）：如果玩家离开视距再回来，
         // 客户端会重新请求那个区块，而缓存里可能还是旧状态。
         // **这一步不能放在"有没有 Bedrock 玩家"之后** —— 缓存是全 plot 共享的。
@@ -1796,7 +1847,21 @@ impl Plot {
 
     fn leave_plot(&mut self, uuid: u128) -> Player {
         let player_idx = self.players.iter().position(|p| p.uuid == uuid).unwrap();
-        self.world.packet_senders.remove(player_idx);
+        // **`packet_senders` 不是按玩家下标对齐的**：`enter_plot` 只给 **Java** 后端
+        // push 一条（Bedrock 玩家的方块广播走另一条通道）。所以：
+        //   - 离开的是 Bedrock 玩家 → 他本来就不在表里，**什么都不删**；
+        //   - 离开的是 Java 玩家 → 删"在他之前进来的 Java 玩家数"那个下标。
+        // 直接拿玩家下标去 remove 会删错人甚至越界 panic（BUG-032 第 41 条：
+        // 场上有基岩玩家时，任何人离开 plot 都会炸掉 plot 线程）。
+        if !self.players[player_idx].client.is_bedrock() {
+            let java_idx = self.players[..player_idx]
+                .iter()
+                .filter(|p| !p.client.is_bedrock())
+                .count();
+            if java_idx < self.world.packet_senders.len() {
+                self.world.packet_senders.remove(java_idx);
+            }
+        }
         let player = self.players.remove(player_idx);
 
         let destroy_other_entities = CRemoveEntities {
@@ -2054,29 +2119,57 @@ impl Plot {
         // 会直接卡住 tick（BUG-032 第 19 条）。有日志才能判断要不要搬到工作线程。
         let started = Instant::now();
         let mut chunks = Vec::new();
+        let mut sign_count = 0usize;
         for dx in -chunk_radius..=chunk_radius {
             for dz in -chunk_radius..=chunk_radius {
                 let chunk_x = center_x + dx;
                 let chunk_z = center_z + dz;
-                let payload = mchprs_network::bedrock::chunk::build_chunk_from_world(
+                let signs = self.bedrock_signs_in_chunk((chunk_x, chunk_z));
+                sign_count += signs.len();
+                if !signs.is_empty() {
+                    println!(
+                        "[R7] 快照区块 ({chunk_x}, {chunk_z}) 带 {} 块牌子：{:?}",
+                        signs.len(),
+                        signs
+                            .iter()
+                            .map(|s| (s.x, s.y, s.z, s.front[0].clone()))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                let payload = mchprs_network::bedrock::chunk::build_chunk_from_world_with_signs(
                     |x, y, z| self.world.get_block_raw(BlockPos::new(x, y, z)),
                     chunk_x,
                     chunk_z,
                     1, // minecraft:plains
+                    // BUG-032 第 43 条：登录这一批区块也必须带上告示牌文字。
+                    // 以前这里用的是 4 参数的 `build_chunk_from_world`（方块实体为空），
+                    // 于是**进 plot 时**（含退出重进）那一圈区块里的牌子全是空白的，
+                    // 只有后来流送到的远处区块才有字 —— 真机现象就是"重进后字没了"。
+                    &signs,
                 );
+                if !signs.is_empty() {
+                    // 诊断：负载末尾 48 字节（方块实体 NBT 就在最后），能直接看出
+                    // "牌子 NBT 到底有没有写进区块负载"。
+                    let tail = &payload[payload.len().saturating_sub(48)..];
+                    let hex: String = tail.iter().map(|b| format!("{b:02x}")).collect();
+                    println!(
+                        "[R7] 快照区块 ({chunk_x}, {chunk_z}) 负载 {} 字节，末尾48字节={hex}",
+                        payload.len()
+                    );
+                }
                 chunks.push((chunk_x, chunk_z, payload));
             }
         }
 
         let side = chunk_radius * 2 + 1;
         info!(
-            "Bedrock 快照：{}×{} = {} 区块，耗时 {:?}",
+            "Bedrock 快照：{}×{} = {} 区块（含 {} 块牌子），耗时 {:?}",
             side,
             side,
             chunks.len(),
+            sign_count,
             started.elapsed()
         );
-
         mchprs_network::bedrock::bridge::PlotSnapshot {
             spawn: match spawn {
                 // 存档位置是玩家的真实坐标，不要再 +0.5（那会让玩家出生时轻微偏移）。
@@ -2162,6 +2255,15 @@ impl Plot {
                 position: (p.pos.x, p.pos.y, p.pos.z),
                 rotation: (p.yaw, p.pitch),
                 on_ground: p.on_ground,
+                // A1 主手物品：快捷栏在 Java 背包里是 36..=44。
+                held_item: p
+                    .inventory
+                    .get(p.selected_slot as usize + 36)
+                    .and_then(|slot| slot.as_ref())
+                    .map(|stack| (stack.item_type.get_id(), stack.count)),
+                // A3 姿态：潜行/疾跑各一位。
+                sneaking: p.crouching,
+                sprinting: p.sprinting,
             })
             .collect();
         for player in &self.players {
@@ -2189,14 +2291,101 @@ impl Plot {
         if let Some(cached) = self.bedrock_chunk_cache.get(&chunk) {
             return cached.clone();
         }
-        let payload = mchprs_network::bedrock::chunk::build_chunk_from_world(
+        // A2：这一块区块里的告示牌，随负载一起发（否则进 plot 时全是空白牌子）。
+        let signs = self.bedrock_signs_in_chunk(chunk);
+        if !signs.is_empty() {
+            println!(
+                "[R7] 区块 ({}, {}) 负载带 {} 块牌子：{:?}",
+                chunk.0,
+                chunk.1,
+                signs.len(),
+                signs
+                    .iter()
+                    .map(|s| (s.x, s.y, s.z, s.front[0].clone()))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let payload = mchprs_network::bedrock::chunk::build_chunk_from_world_with_signs(
             |x, y, z| self.world.get_block_raw(BlockPos::new(x, y, z)),
             chunk.0,
             chunk.1,
             1, // minecraft:plains
+            &signs,
         );
         self.bedrock_chunk_cache.insert(chunk, payload.clone());
         payload
+    }
+
+    /// 收集某个 Bedrock 区块里所有告示牌的四行文字（A2）。
+    ///
+    /// 行文本在 MCHPRS 里是 **JSON 文本组件**（`{"text":"..."}`），Bedrock 要的是
+    /// 纯字符串，所以这里做一次降级（`sign_rows_to_legacy`）。
+    fn bedrock_signs_in_chunk(
+        &self,
+        chunk: (i32, i32),
+    ) -> Vec<mchprs_network::bedrock::bridge::BedrockSign> {
+        let mut out = Vec::new();
+        let chunk_index = self.world.get_chunk_index_for_chunk(chunk.0, chunk.1);
+        let Some(chunk_ref) = self.world.chunks.get(chunk_index) else {
+            return out;
+        };
+        for (pos, block_entity) in &chunk_ref.block_entities {
+            let BlockEntity::Sign(sign) = block_entity else {
+                continue;
+            };
+            // 局部坐标 → 世界坐标（局部是 `x & 0xF` / `z & 0xF`）。
+            let x = chunk.0 * 16 + pos.x;
+            let z = chunk.1 * 16 + pos.z;
+            out.push(mchprs_network::bedrock::bridge::BedrockSign {
+                x,
+                y: pos.y,
+                z,
+                front: sign_rows_to_legacy(&sign.front_rows),
+                back: sign_rows_to_legacy(&sign.back_rows),
+            });
+        }
+        out
+    }
+
+    /// 一块告示牌的**实时更新**（A2）：玩家改字/放牌后立刻推给每个 Bedrock 客户端。
+    ///
+    /// 同时让这一个区块的缓存失效 —— 不然之后进 plot 的人（或流送重发）
+    /// 拿到的是"改字之前"缓存下来的旧负载，牌子上还是旧文字。
+    fn push_bedrock_sign(&mut self, pos: BlockPos) {
+        let sign = match self.world.get_block_entity(pos) {
+            Some(BlockEntity::Sign(sign)) => (**sign).clone(),
+            _ => return,
+        };
+        self.bedrock_chunk_dirty
+            .insert((pos.x.div_euclid(16), pos.z.div_euclid(16)));
+        let update = mchprs_network::bedrock::bridge::BedrockSign {
+            x: pos.x,
+            y: pos.y,
+            z: pos.z,
+            front: sign_rows_to_legacy(&sign.front_rows),
+            back: sign_rows_to_legacy(&sign.back_rows),
+        };
+        // 诊断（BUG-032 第 43 条真机第二轮）：真机上"字不显示"，必须看清
+        // ①方块映射到哪个 Bedrock 运行时 id（是不是牌子）②发下去的文字到底是什么。
+        let java_state = self.world.get_block_raw(pos);
+        let bedrock_runtime = mchprs_network::bedrock::bedrock_block_state(java_state);
+        println!(
+            "[R7] 告示牌 ({}, {}, {}) java_state={java_state} bedrock_runtime={bedrock_runtime} 正面={:?} 反面={:?}",
+            pos.x, pos.y, pos.z, update.front, update.back
+        );
+        let mut sent = 0;
+        for player in &self.players {
+            if player.client.is_bedrock() {
+                player.client.send_sign(update.clone());
+                sent += 1;
+            }
+        }
+        if sent > 0 {
+            println!(
+                "[R7] 告示牌 ({}, {}, {}) 已推给 {sent} 个 Bedrock 客户端",
+                pos.x, pos.y, pos.z
+            );
+        }
     }
 
     /// 每 tick 给每个 Bedrock 玩家推一批区块（BUG-032 第 26 条增量区块 +
@@ -2545,6 +2734,7 @@ impl Plot {
             pending_block_entities: FxHashMap::default(),
             pending_sounds: FxHashMap::default(),
             block_changes: Vec::new(),
+            pending_bedrock_signs: Vec::new(),
         };
         let tps = plot_data.tps;
         Plot {
@@ -2718,9 +2908,85 @@ impl Plot {
     }
 }
 
+/// 把 MCHPRS 的 46 格背包映射成 Bedrock 的三份容器（BUG-032 第 39 条）。
+///
+/// Java 槽位布局（`crates/core/src/player.rs` 建的是 `vec![None; 46]`）：
+/// `0..=4` 合成/特殊、`5..=8` 护甲（头/胸/腿/靴）、`9..=35` 主背包 27 格、
+/// `36..=44` 快捷栏 9 格、`45` 副手。
+/// Bedrock 的 `INVENTORY` 容器是 `0..=8` 快捷栏 + `9..=35` 主背包，顺序与 Java 相同。
+fn bedrock_inventory_snapshot(
+    player: &Player,
+) -> mchprs_network::bedrock::bridge::BedrockInventorySnapshot {
+    let item = |slot: usize| {
+        player
+            .inventory
+            .get(slot)
+            .and_then(|s| s.as_ref())
+            .map(|stack| (stack.item_type.get_id(), stack.count))
+    };
+    let mut main = Vec::with_capacity(36);
+    for slot in 0..9 {
+        main.push(item(36 + slot)); // 快捷栏
+    }
+    for slot in 9..36 {
+        main.push(item(slot)); // 主背包
+    }
+    let armor: Vec<Option<(u32, u8)>> = (5..9).map(item).collect();
+    mchprs_network::bedrock::bridge::BedrockInventorySnapshot {
+        main,
+        armor,
+        offhand: item(45),
+        selected_slot: player.selected_slot.min(8) as u8,
+    }
+}
+
+/// 把 MCHPRS 存的**四行 JSON 文本组件**降级成 Bedrock 要的纯字符串（BUG-032 A2）。
+fn sign_rows_to_legacy(rows: &[String; 4]) -> [String; 4] {
+    [
+        sign_row_to_legacy(&rows[0]),
+        sign_row_to_legacy(&rows[1]),
+        sign_row_to_legacy(&rows[2]),
+        sign_row_to_legacy(&rows[3]),
+    ]
+}
+
+/// 单行：`{"text":"..."}` → `...`（颜色/格式位暂不降级，见 BACKLOG §9.21）。
+///
+/// 对应 Geyser `MessageTranslator.convertMessageLenient` 的最小可用子集：
+/// 纯字符串直接取；对象取 `text` 再递归拼 `extra`；数组按顺序拼接。
+/// 解析失败时**原样返回**输入（宁可显示一段 JSON，也不要整行消失）。
+fn sign_row_to_legacy(row: &str) -> String {
+    fn walk(value: &serde_json::Value, out: &mut String) {
+        match value {
+            serde_json::Value::String(text) => out.push_str(text),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, out);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                if let Some(serde_json::Value::String(text)) = map.get("text") {
+                    out.push_str(text);
+                }
+                if let Some(extra) = map.get("extra") {
+                    walk(extra, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    match serde_json::from_str::<serde_json::Value>(row) {
+        Ok(value) => {
+            let mut out = String::new();
+            walk(&value, &mut out);
+            out
+        }
+        Err(_) => row.to_string(),
+    }
+}
+
 /// Extracts a human-readable message from a panic payload.
-fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(message) = payload.downcast_ref::<&'static str>() {
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {    if let Some(message) = payload.downcast_ref::<&'static str>() {
         (*message).to_string()
     } else if let Some(message) = payload.downcast_ref::<String>() {
         message.clone()

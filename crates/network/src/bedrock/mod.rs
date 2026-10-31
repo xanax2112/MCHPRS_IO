@@ -12,6 +12,7 @@
 //!   逐字节对齐，见本模块的 `#[cfg(test)]` 回归测试。
 
 pub mod block_map;
+pub mod block_entity;
 pub mod bridge;
 pub mod chunk;
 pub mod commands;
@@ -58,6 +59,20 @@ pub fn mchprs_item_id(bedrock_item_id: i32) -> Option<u32> {
         .binary_search_by_key(&bedrock_item_id, |(_, bedrock_id, _)| *bedrock_id)
         .ok()
         .map(|index| item_map::ITEM_MAP[index].2)
+}
+
+/// 把 MCHPRS（Java）的物品 id 反查成 Bedrock 的物品网络 id（BUG-032 A1）。
+///
+/// `mchprs_item_id` 的反向：`ITEM_MAP` 只有 135 条，且是按 Bedrock id 排序的，
+/// 所以反向查只能线性扫（一次 Sync 每人每 tick 至多一次，开销可忽略）。
+///
+/// **查不到就返回 `None`**：MCHPRS 认这个物品、但 Bedrock 表里没有对应条目时，
+/// 绝不能拿 Java id 顶替（那会在客户端显示成完全不相干的物品）。
+pub fn bedrock_item_id(mchprs_item_id: u32) -> Option<i32> {
+    item_map::ITEM_MAP
+        .iter()
+        .find(|(_, _, java_id)| *java_id == mchprs_item_id)
+        .map(|(_, bedrock_id, _)| *bedrock_id)
 }
 
 #[cfg(test)]

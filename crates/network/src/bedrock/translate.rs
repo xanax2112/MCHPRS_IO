@@ -12,7 +12,8 @@
 //! 只转义真正有语义的包；`SubChunkRequest` 这类 Bedrock 专有的直接丢弃。
 
 use crate::packets::serverbound::{
-    SChatCommand, SChatMessage, SPlayerAction, SSetPlayerPositionAndRotation, ServerBoundPacket,
+    SChatCommand, SChatMessage, SPlayerAction, SPlayerCommand, SSetPlayerPositionAndRotation,
+    SSwingArm, SUpdateSign, ServerBoundPacket,
 };
 use bedrock::protocol::V766 as Protocol;
 
@@ -21,6 +22,23 @@ use bedrock::protocol::V766 as Protocol;
 /// 不直接 import 这个枚举：它在 vendored crate 里位于私有子模块，只通过 `pub use` 重导出，
 /// 路径随时会随上游重构变化；这里钉住数值（1 << 50），并在注释里留下出处。
 const VERTICAL_COLLISION: u128 = 1 << 50;
+
+/// 潜行 / 疾跑的"开始 / 结束"位（`PlayerAuthInputFlags`，v766 的 `input_data` 是 u128）。
+///
+/// 出处：`BedrockPlayerAuthInputTranslator` 对这四个位各发一条 Java
+/// `ServerboundPlayerCommandPacket`（`START_SNEAKING` / `STOP_SNEAKING` /
+/// `START_SPRINTING` / `STOP_SPRINTING`）。少了这一步，**基岩玩家自己**潜行/疾跑
+/// 在 Java 玩家和其它基岩玩家眼里永远是站着不动（A3）。
+const START_SPRINTING: u128 = 1 << 25;
+const STOP_SPRINTING: u128 = 1 << 26;
+const START_SNEAKING: u128 = 1 << 27;
+const STOP_SNEAKING: u128 = 1 << 28;
+
+/// Java `PlayerCommand` 的动作号（`handle_player_command` 里那套 0/1/3/4）。
+const ACTION_START_SNEAKING: i32 = 0;
+const ACTION_STOP_SNEAKING: i32 = 1;
+const ACTION_START_SPRINTING: i32 = 3;
+const ACTION_STOP_SPRINTING: i32 = 4;
 
 /// Java 版聊天的长度上限。Geyser `MessageTranslator.isTooLong` 用的也是 256，
 /// 超过就直接丢掉（Geyser 会额外给玩家发一句"太长"，这里没做，见 BACKLOG 说明）。
@@ -56,6 +74,19 @@ pub fn translate(packet: &Protocol) -> Vec<Box<dyn ServerBoundPacket>> {
                 on_ground,
             }));
 
+            // 潜行 / 疾跑的"开始 / 结束"位 → Java 的 `SPlayerCommand`（A3）。
+            //
+            // Geyser 只用这四个"边沿位"（不是 `SNEAKING`/`SPRINTING` 状态位）：
+            // 每个边沿各发一条命令包，服务端自己维护状态。
+            for action in sneak_sprint_actions(input.input_data) {
+                out.push(Box::new(SPlayerCommand {
+                    // plot 的 `handle_player_command` 不看 entity_id（用的是 player 下标）。
+                    entity_id: 0,
+                    action_id: action,
+                    jump_boost: 0,
+                }));
+            }
+
             // 方块交互：Bedrock 的 PlayerBlockActionData → Java 的 SPlayerAction。
             if let Some(actions) = &input.player_block_actions {
                 for action in actions {
@@ -85,6 +116,17 @@ pub fn translate(packet: &Protocol) -> Vec<Box<dyn ServerBoundPacket>> {
                 }
             }
         }
+        Protocol::AnimatePacket(animate) => {
+            // Bedrock 的挥手 → Java 的 `SSwingArm`（Geyser `BedrockAnimateTranslator`：
+            // 只认 `SWING_ARM`，行船那种带时长的动画没有对应物）。
+            //
+            // 没照 Geyser 做 25ms 去抖：它防的是 Java 服务端的包限流器，MCHPRS 没有限流器，
+            // 丢掉真实挥手反而会让动画缺失（真机若出现刷屏/抖动再补）。
+            use bedrock::protocol::v662::packets::AnimateAction;
+            if matches!(animate.action, AnimateAction::Swing) {
+                out.push(Box::new(SSwingArm { hand: 0 }));
+            }
+        }
         Protocol::TextPacket(text) => {
             // 玩家在聊天框里打字（或把命令当聊天发出来）。
             //
@@ -112,6 +154,40 @@ pub fn translate(packet: &Protocol) -> Vec<Box<dyn ServerBoundPacket>> {
                     signature: None,
                     message_count: 0,
                     acknowledged: [0; 3],
+                }));
+            }
+        }
+        Protocol::BlockActorDataPacket(data) => {
+            // 基岩玩家写完告示牌 / 改字（BUG-032 第 43 条）。
+            //
+            // 以前这里**根本没有这个分支**，包只会落到 `other =>` 打一行日志：
+            // 玩家自己看得到刚刚写的字（客户端本地就有），别的客户端看不到，
+            // 重进 plot 后字也没了（区块里的方块实体流重新发的是空牌子）。
+            //
+            // 转成 Java 的 `SUpdateSign`，plot 的 `handle_update_sign` 会写进世界并
+            // `publish_world()`：Java 走 `CBlockEntityData`、Bedrock 走 `BlockActorData`
+            // （§9.21.1 的双通道）。这样"基岩改字 → 所有人可见"也闭环了。
+            let Some((front, back)) = crate::bedrock::block_entity::sign_rows(&data.actor_data_tags)
+            else {
+                // 不是告示牌（容器类方块实体属 §9.18.3 的 A7，已裁决不做）。
+                return out;
+            };
+            // 包里的 y 是 **Bedrock 坐标**（`NetworkBlockPosition.y` 是 u32，
+            // 负高度按补码传，cast 回来即可），转 Java 要 `+ 64`。
+            let (x, y, z) = (
+                data.block_position.x,
+                data.block_position.y as i32 + 64,
+                data.block_position.z,
+            );
+            // 两面都发：客户端的 NBT 里两面都有，我们不知道它改的是哪一面。
+            // 全空也照发 —— 清空文字必须能把旧字覆盖掉。
+            for (is_front_text, lines) in [(true, front), (false, back)] {
+                out.push(Box::new(SUpdateSign {
+                    x,
+                    y,
+                    z,
+                    is_front_text,
+                    lines,
                 }));
             }
         }
@@ -146,6 +222,24 @@ pub fn translate(packet: &Protocol) -> Vec<Box<dyn ServerBoundPacket>> {
             }
         }
         _ => {}
+    }
+    out
+}
+
+/// 把 `PlayerAuthInput.input_data` 里的四个"边沿位"翻译成 Java `PlayerCommand` 的动作号。
+///
+/// 顺序固定（先潜行后疾跑），便于测试与日志复现；同一位里两个边沿不可能同时置。
+fn sneak_sprint_actions(input_data: u128) -> Vec<i32> {
+    let mut out = Vec::new();
+    for (bit, action) in [
+        (START_SNEAKING, ACTION_START_SNEAKING),
+        (STOP_SNEAKING, ACTION_STOP_SNEAKING),
+        (START_SPRINTING, ACTION_START_SPRINTING),
+        (STOP_SPRINTING, ACTION_STOP_SPRINTING),
+    ] {
+        if input_data & bit != 0 {
+            out.push(action);
+        }
     }
     out
 }
@@ -264,6 +358,117 @@ mod tests {
             // 1.21 起末尾多了"过滤后文本"字段（`text.rs` 的出站包也写了同样的事）
             filtered_message: String::new(),
         }))
+    }
+
+    /// A3：四个边沿位各自映射到 Java 的 0/1/3/4，且没置位就一条都不发。
+    #[test]
+    fn sneak_and_sprint_edges_become_player_commands() {
+        assert!(sneak_sprint_actions(0).is_empty());
+        assert_eq!(sneak_sprint_actions(START_SNEAKING), vec![0]);
+        assert_eq!(sneak_sprint_actions(STOP_SNEAKING), vec![1]);
+        assert_eq!(sneak_sprint_actions(START_SPRINTING), vec![3]);
+        assert_eq!(sneak_sprint_actions(STOP_SPRINTING), vec![4]);
+        // 同时置两位：两条都要发，且按固定顺序
+        assert_eq!(
+            sneak_sprint_actions(START_SNEAKING | START_SPRINTING),
+            vec![0, 3]
+        );
+        // `SNEAKING`(1<<8) 这种"状态位"不该产生命令（只有边沿位才发）
+        assert!(sneak_sprint_actions(1 << 8).is_empty());
+    }
+
+    /// A3：Bedrock 的挥手动画 → Java 的 `SSwingArm`（主手）。
+    #[test]
+    fn animate_swing_becomes_swing_arm() {
+        use bedrock::protocol::v662::packets::{AnimateAction, AnimatePacket};
+        use bedrock::protocol::v662::types::ActorRuntimeID;
+
+        #[derive(Default)]
+        struct Swings(Vec<i32>);
+        impl ServerBoundPacketHandler for Swings {
+            fn handle_swing_arm(&mut self, packet: SSwingArm, _player_idx: usize) {
+                self.0.push(packet.hand);
+            }
+        }
+
+        let swing = Protocol::AnimatePacket(Box::new(AnimatePacket::<Protocol> {
+            action: AnimateAction::Swing,
+            target_runtime_id: ActorRuntimeID(1),
+        }));
+        let packets = translate(&swing);
+        let mut capture = Swings::default();
+        for packet in packets {
+            packet.handle(&mut capture, 0);
+        }
+        assert_eq!(capture.0, vec![0], "应当转成一条主手挥手");
+
+        // 其它动画（行船划桨等）不转
+        let row = Protocol::AnimatePacket(Box::new(AnimatePacket::<Protocol> {
+            action: AnimateAction::RowLeft { rowing_time: 1.0 },
+            target_runtime_id: ActorRuntimeID(1),
+        }));
+        assert!(translate(&row).is_empty());
+    }
+
+    /// BUG-032 第 43 条：基岩客户端写完告示牌 → 两条 `SUpdateSign`（正面 + 反面），
+    /// y 从 Bedrock 坐标换回 MCHPRS 坐标（`+ 64`）；不是告示牌的 `BlockActorData` 不转。
+    #[test]
+    fn sign_block_actor_data_becomes_update_sign() {
+        use bedrock::protocol::v662::packets::BlockActorDataPacket;
+        use bedrock::protocol::v662::types::NetworkBlockPosition;
+
+        #[derive(Default)]
+        struct Signs(Vec<(i32, i32, i32, bool, String)>);
+        impl ServerBoundPacketHandler for Signs {
+            fn handle_update_sign(&mut self, packet: SUpdateSign, _player_idx: usize) {
+                self.0.push((
+                    packet.x,
+                    packet.y,
+                    packet.z,
+                    packet.is_front_text,
+                    packet.lines[0].clone(),
+                ));
+            }
+        }
+
+        fn side(text: &str) -> nbtx::Value {
+            let mut map = nbtx::Compound::default();
+            map.insert("Text".into(), nbtx::Value::String(text.into()));
+            nbtx::Value::Compound(map)
+        }
+
+        let mut tags: std::collections::HashMap<String, nbtx::Value> =
+            std::collections::HashMap::new();
+        tags.insert("FrontText".to_string(), side("第一行\n第二行"));
+        tags.insert("BackText".to_string(), side(""));
+
+        let packet = Protocol::BlockActorDataPacket(Box::new(BlockActorDataPacket::<Protocol> {
+            // Bedrock 坐标 y=6 → MCHPRS y=70
+            block_position: NetworkBlockPosition { x: 10, y: 6, z: -3 },
+            actor_data_tags: tags,
+        }));
+        let mut capture = Signs::default();
+        for packet in translate(&packet) {
+            packet.handle(&mut capture, 0);
+        }
+        assert_eq!(
+            capture.0,
+            vec![
+                (10, 70, -3, true, String::from("第一行")),
+                (10, 70, -3, false, String::new()),
+            ],
+            "两面都要发，y 必须 +64"
+        );
+
+        // 没有告示牌字段的（容器类方块实体，A7 不做）→ 一条都不发
+        let mut chest: std::collections::HashMap<String, nbtx::Value> =
+            std::collections::HashMap::new();
+        chest.insert("id".to_string(), nbtx::Value::String("Chest".into()));
+        let chest = Protocol::BlockActorDataPacket(Box::new(BlockActorDataPacket::<Protocol> {
+            block_position: NetworkBlockPosition { x: 1, y: 2, z: 3 },
+            actor_data_tags: chest,
+        }));
+        assert!(translate(&chest).is_empty());
     }
 
     /// 空白归一化：行为逐条对着 Geyser `MessageTranslator.normalizeSpace` 抄的。

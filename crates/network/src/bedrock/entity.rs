@@ -15,9 +15,12 @@
 //! 可以是不同的数字。所以这里不去和服务端全局号对齐，由会话线程自己分配
 //! （`session::next_runtime_id()`），只要求**同一条连接内稳定**。
 
-use bedrock::protocol::v662::enums::{BuildPlatform, DataItemType, GameType, PlayerPositionMode};
+use bedrock::protocol::v662::enums::{
+    BuildPlatform, ContainerID, DataItemType, GameType, PlayerPositionMode,
+};
 use bedrock::protocol::v662::packets::{
-    AddPlayerPacket, MovePlayerPacket, PlayerListPacket, RemoveActorPacket,
+    AddPlayerPacket, AnimateAction, AnimatePacket, MobEquipmentPacket, MovePlayerPacket,
+    PlayerListPacket, RemoveActorPacket,
 };
 use bedrock::protocol::v662::types::{
     ActorRuntimeID, ActorUniqueID, DataItem, NetworkItemStackDescriptor, PropertySyncData,
@@ -28,7 +31,7 @@ use uuid::Uuid;
 
 use super::bridge::BedrockPlayerInfo;
 use super::chunk::Y_OFFSET;
-use super::protocol::{abilities_data, player_metadata, Protocol};
+use super::protocol::{abilities_data, player_metadata_with_flags, Protocol};
 
 /// Bedrock 玩家实体的**眼睛高度**偏移（Geyser `EntityDefinitions.PLAYER.offset()` = 1.62）。
 ///
@@ -145,7 +148,7 @@ pub fn player_list_remove(uuid: u128) -> PlayerListPacket<Protocol> {
 /// - 元数据 = 本地玩家那套 + `NAMETAG_ALWAYS_SHOW = 1`
 ///   （Geyser 注释："Since 1.20.60, the nametag does not show properly if this is not set"）。
 pub fn add_player(info: &BedrockPlayerInfo, runtime_id: u64) -> AddPlayerPacket<Protocol> {
-    let mut entity_data = player_metadata();
+    let mut entity_data = player_metadata_with_flags(info.sneaking, info.sprinting);
     entity_data.push(DataItem {
         data_item_id: ActorDataIDs::NametagAlwaysShow,
         data_item_type: DataItemType::Byte(1),
@@ -160,7 +163,7 @@ pub fn add_player(info: &BedrockPlayerInfo, runtime_id: u64) -> AddPlayerPacket<
         velocity: (0.0, 0.0, 0.0),
         rotation: bedrock_rotation(info.rotation),
         y_head_rotation: info.rotation.0,
-        carried_item: empty_item(),
+        carried_item: held_item(info.held_item),
         player_game_type: GameType::Creative,
         entity_data,
         synced_properties: PropertySyncData {
@@ -183,6 +186,74 @@ fn empty_item() -> NetworkItemStackDescriptor {
         net_id_variant: None,
         block_runtime_id: None,
         user_data_buffer: None,
+    }
+}
+
+/// 主手物品的 `NetworkItemStackDescriptor`（A1）。
+///
+/// `None`（空手 / MCHPRS 认识但 Bedrock 表里没有的物品）一律发 `id = 0`：
+/// 客户端看到的就是空手，不会显示成错误物品。
+pub fn held_item(held: Option<(u32, u8)>) -> NetworkItemStackDescriptor {
+    let Some((mchprs_id, count)) = held else {
+        return empty_item();
+    };
+    let Some(bedrock_id) = crate::bedrock::bedrock_item_id(mchprs_id) else {
+        return empty_item();
+    };
+    NetworkItemStackDescriptor {
+        id: bedrock_id,
+        stack_size: Some(count.max(1) as u16),
+        // MCHPRS 只存物品 id/数量，没有 aux（耐久/变种）概念。
+        aux_value: Some(0),
+        net_id_variant: Some(None),
+        block_runtime_id: Some(0),
+        // 空 NBT（和创造面板一样是 10 个 0 字节，见 `creative::EMPTY_ITEM_NBT`）。
+        user_data_buffer: Some(vec![0; 10]),
+    }
+}
+
+/// 别的玩家换了主手物品（A1）。
+///
+/// 字段取值照 Geyser `LivingEntity#updateMainHand`：
+/// `inventorySlot = 0`、`hotbarSlot = -1`（-1 = 不改变观者自己的快捷栏选中）、
+/// `containerId = INVENTORY(0)`。
+pub fn mob_equipment(runtime_id: u64, held: Option<(u32, u8)>) -> MobEquipmentPacket<Protocol> {
+    MobEquipmentPacket {
+        target_runtime_id: ActorRuntimeID(runtime_id),
+        item: held_item(held),
+        slot: 0,
+        selected_slot: -1,
+        container_id: ContainerID::INVENTORY,
+    }
+}
+
+/// 自己的主手物品（BUG-032 第 39 条：背包回传后要告诉客户端"手在哪一格、拿的是什么"）。
+///
+/// 与 [`mob_equipment`] 的区别：这里的 `slot` / `selected_slot` 都是**真实的选中槽**
+/// （不是 -1），因为这是发给自己、用来设置手持物品的。
+pub fn mob_equipment_self(
+    runtime_id: u64,
+    held: Option<(u32, u8)>,
+    selected_slot: u8,
+) -> MobEquipmentPacket<Protocol> {
+    let slot = selected_slot.min(8) as i8;
+    MobEquipmentPacket {
+        target_runtime_id: ActorRuntimeID(runtime_id),
+        item: held_item(held),
+        slot,
+        selected_slot: slot,
+        container_id: ContainerID::INVENTORY,
+    }
+}
+
+/// 别的玩家挥了一下手臂（A3）。
+///
+/// Geyser 的 `JavaAnimateTranslator` 对 Java 的挥手（动画 0）也发
+/// `AnimatePacket(SWING_ARM)`；行船那种带参数的动画我们不用。
+pub fn animate_swing(runtime_id: u64) -> AnimatePacket<Protocol> {
+    AnimatePacket {
+        action: AnimateAction::Swing,
+        target_runtime_id: ActorRuntimeID(runtime_id),
     }
 }
 
@@ -231,13 +302,13 @@ mod tests {
     use bedrock::protocol::ProtoCodec;
 
     fn sample() -> BedrockPlayerInfo {
-        BedrockPlayerInfo {
-            uuid: 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef,
-            username: "liuyitong1".to_string(),
-            position: (128.5, 192.0, 128.5),
-            rotation: (90.0, 12.0),
-            on_ground: true,
-        }
+        BedrockPlayerInfo::new(
+            0x0123_4567_89ab_cdef_0123_4567_89ab_cdef,
+            "liuyitong1",
+            (128.5, 192.0, 128.5),
+            (90.0, 12.0),
+            true,
+        )
     }
 
     fn roundtrip<T: ProtoCodec + std::fmt::Debug>(packet: &T) -> T {
@@ -323,9 +394,62 @@ mod tests {
         assert!((mv.position.1 - add.position.1 - PLAYER_EYE_HEIGHT).abs() < 1e-4);
     }
 
+    /// A3：`AddPlayer` 的元数据里 `FLAGS` 必须带上潜行/疾跑位（生成时就对的）。
     #[test]
-    fn remove_actor_targets_unique_id() {
-        let decoded = roundtrip(&remove_actor(1234));
+    fn add_player_carries_sneak_and_sprint_flags() {
+        let mut info = sample();
+        info.sneaking = true;
+        info.sprinting = true;
+        let decoded = roundtrip(&add_player(&info, 11));
+        let flags = decoded
+            .entity_data
+            .iter()
+            .find(|d| format!("{:?}", d.data_item_id) == "Reserved0")
+            .expect("必须有 FLAGS 条目");
+        let DataItemType::Int64(value) = &flags.data_item_type else {
+            panic!("FLAGS 必须是 Int64，实际 {:?}", flags.data_item_type);
+        };
+        let value = *value as u64;
+        // 客户端位号 = codec 序号 + 1（见 protocol.rs 的 `CLIENT_FLAG_SHIFT`）：
+        // 潜行 = `1<<2`、疾跑 = `1<<4`；`1<<1` 在客户端是 ON_FIRE，绝不能置位。
+        assert_eq!(value & (1 << 2), 1 << 2, "缺 SNEAKING 位");
+        assert_eq!(value & (1 << 4), 1 << 4, "缺 SPRINTING 位");
+        assert_eq!(value & (1 << 1), 0, "客户端 bit1 = ON_FIRE，绝不能置位");
+        // 基础位不能被覆盖丢失（呼吸位少了氧气条会空、移速会变慢）
+        assert_eq!(value & crate::bedrock::protocol::PLAYER_BASE_FLAGS, crate::bedrock::protocol::PLAYER_BASE_FLAGS);
+    }
+
+    /// A1：`MobEquipment` 的固定取值必须和 Geyser `LivingEntity#updateMainHand` 一致：
+    /// inventorySlot=0、hotbarSlot=-1、container=INVENTORY(0)。
+    #[test]
+    fn mob_equipment_matches_geyser_conventions() {
+        // 石头：Java 物品 1 → Bedrock 物品 1
+        let stone = roundtrip(&mob_equipment(5, Some((1, 12))));
+        assert_eq!(stone.target_runtime_id.0, 5);
+        assert_eq!(stone.item.id, 1);
+        assert_eq!(stone.item.stack_size, Some(12));
+        assert_eq!(stone.slot, 0);
+        assert_eq!(stone.selected_slot, -1);
+        assert_eq!(stone.container_id.0, 0);
+
+        // 空手 / 表里没有的物品一律 id = 0（绝不能用 Java id 顶替）
+        let empty = roundtrip(&mob_equipment(5, None));
+        assert_eq!(empty.item.id, 0);
+        assert_eq!(empty.item.stack_size, None);
+        let unknown = roundtrip(&mob_equipment(5, Some((999_999, 1))));
+        assert_eq!(unknown.item.id, 0);
+    }
+
+    /// A3：挥手是 `Animate(Swing = 1)`。
+    #[test]
+    fn animate_swing_uses_swing_action() {
+        let decoded = roundtrip(&animate_swing(77));
+        assert!(matches!(decoded.action, AnimateAction::Swing));
+        assert_eq!(decoded.target_runtime_id.0, 77);
+    }
+
+    #[test]
+    fn remove_actor_targets_unique_id() {        let decoded = roundtrip(&remove_actor(1234));
         assert_eq!(decoded.target_actor_id.0, 1234);
     }
 
