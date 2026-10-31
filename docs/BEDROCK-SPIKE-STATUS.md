@@ -11,6 +11,11 @@
 > 更新：2026-10-29 22:2x
 > 代码：`~/bedrock/spike/`（Rust，独立 crate，未触碰主仓库）
 > 上游：`~/bedrock/bedrock-rs`（本地副本，打过 5 处补丁，见 `HANDOFF.md` §8）
+>
+> ⚠️ **历史文档**（2026-10-29 的 Termux 时期记录）。`~/bedrock/*` 这些路径已作废：
+> 2026-11-01 工作区已拍平，仓库在 `D:\computer\mchprs\bedrock\MCHPRS_IO`，
+> 取证材料在 `D:\computer\mchprs\bedrock\refs\`。看当前状态请读
+> `docs/BEDROCK-AGENT-NOTES.md` 与 `BACKLOG.md` 的 BUG-032 / §9.x。
 
 ---
 

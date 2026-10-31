@@ -171,7 +171,7 @@ fn camera_presets() -> Vec<CameraPreset<Protocol>> {
     ]
 }
 
-fn pname(p: &Protocol) -> &'static str {
+pub(crate) fn pname(p: &Protocol) -> &'static str {
     use V766::*;
     match p {
         RequestNetworkSettingsPacket(_) => "RequestNetworkSettings",
@@ -1656,6 +1656,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         })
                         .collect();
                     println!("[R4] 下发聊天 {} 行", packets.len());
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发聊天失败: {e}");
                         break;
@@ -1703,6 +1704,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     )));
                     sidebar_len = sidebar.lines.len();
                     sidebar_texts = sidebar.lines.iter().map(|l| l.text.clone()).collect();
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发计分板失败: {e}");
                         break;
@@ -1727,6 +1729,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             ))
                         })
                         .collect();
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发方块更新失败: {e}");
                         break;
@@ -1739,6 +1742,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         crate::bedrock::protocol::update_abilities_for(flying, runtime_id, fly_speed),
                     ))];
                     println!("[R2] 能力值跟随：flying={flying} fly_speed={fly_speed}");
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发能力值失败: {e}");
                         break;
@@ -1758,10 +1762,10 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     let packets = vec![Protocol::MovePlayerPacket(Box::new(
                         crate::bedrock::protocol::teleport(runtime_id, bedrock_pos, last_rotation),
                     ))];
-                    println!(
-                        "[R5] 服务端定位：({x:.2}, {y:.2}, {z:.2}) → Bedrock ({:.2}, {:.2}, {:.2})",
+                    crate::bedrock_verbose!("[R5] 服务端定位：({x:.2}, {y:.2}, {z:.2}) → Bedrock ({:.2}, {:.2}, {:.2})",
                         bedrock_pos.0, bedrock_pos.1, bedrock_pos.2
                     );
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发定位失败: {e}");
                         break;
@@ -1836,8 +1840,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     packets.push(Protocol::MobEquipmentPacket(Box::new(
                                         entity::mob_equipment(state.runtime_id, info.held_item),
                                     )));
-                                    println!(
-                                        "[R8] {} 主手物品 {:?} → {:?}",
+                                    crate::bedrock_verbose!("[R8] {} 主手物品 {:?} → {:?}",
                                         info.username, state.held_item, info.held_item
                                     );
                                     state.held_item = info.held_item;
@@ -1853,8 +1856,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                             info.sprinting,
                                         ),
                                     )));
-                                    println!(
-                                        "[R8] {} 姿态 sneaking={} sprinting={} flags=0x{:x} bits={:?}",
+                                    crate::bedrock_verbose!("[R8] {} 姿态 sneaking={} sprinting={} flags=0x{:x} bits={:?}",
                                         info.username,
                                         info.sneaking,
                                         info.sprinting,
@@ -1894,12 +1896,12 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
 
                     if !packets.is_empty() {
                         let count = packets.len();
+                        crate::bedrock::debug::dump_out(&packets);
                         if let Err(e) = conn.send(&packets).await {
                             println!("[!!] 下发玩家同步失败: {e}");
                             break;
                         }
-                        println!(
-                            "[R6] 玩家同步：{count} 个包（线上共 {} 人）",
+                        crate::bedrock_verbose!("[R6] 玩家同步：{count} 个包（线上共 {} 人）",
                             players.len()
                         );
                     }
@@ -1934,6 +1936,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             serialized_chunk_data: data,
                         })));
                     }
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发区块流送失败: {e}");
                         break;
@@ -1966,11 +1969,12 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             Some(state) => packets.push(Protocol::AnimatePacket(Box::new(
                                 crate::bedrock::entity::animate_swing(state.runtime_id),
                             ))),
-                            None => println!("[R8] 挥手目标不在实体表 uuid={uuid:x}，忽略"),
+                            None => crate::bedrock_verbose!("[R8] 挥手目标不在实体表 uuid={uuid:x}，忽略"),
                         }
                     }
                     if !packets.is_empty() {
-                        println!("[R8] 下发挥手 {} 次", packets.len());
+                        crate::bedrock_verbose!("[R8] 下发挥手 {} 次", packets.len());
+                        crate::bedrock::debug::dump_out(&packets);
                         if let Err(e) = conn.send(&packets).await {
                             println!("[!!] 下发挥手失败: {e}");
                             break;
@@ -1984,6 +1988,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         crate::bedrock::protocol::set_game_mode(mode),
                     ))];
                     println!("[R9] 游戏模式 → {mode:?}");
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发游戏模式失败: {e}");
                         break;
@@ -2006,11 +2011,11 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             ))
                         })
                         .collect();
-                    println!(
-                        "[A2] 下发 OpenSign {} 块：{:?}",
+                    crate::bedrock_verbose!("[A2] 下发 OpenSign {} 块：{:?}",
                         open_signs.len(),
                         open_signs
                     );
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发 OpenSign 失败: {e}");
                         break;
@@ -2029,7 +2034,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             ))
                         })
                         .collect();
-                    println!("[R7] 下发告示牌 {count} 块");
+                    crate::bedrock_verbose!("[R7] 下发告示牌 {count} 块");
                     // 诊断：把第一块的实际字节打出来（真机"字不显示"时用来和
                     // `refs/ProbeSign.java` 的参考字节逐段对照）。
                     if let Some(Protocol::BlockActorDataPacket(first)) = packets.first() {
@@ -2040,12 +2045,12 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         }
                         let hex: String =
                             buf.iter().map(|b| format!("{b:02x}")).collect();
-                        println!(
-                            "[R7] 告示牌包 hex（{} 字节）= {}",
+                        crate::bedrock_verbose!("[R7] 告示牌包 hex（{} 字节）= {}",
                             buf.len(),
                             &hex[..hex.len().min(240)]
                         );
                     }
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发告示牌失败: {e}");
                         break;
@@ -2093,14 +2098,14 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             ),
                         )),
                     ];
-                    println!(
-                        "[R10] 背包回传：主背包 {} 格（非空 {}）、护甲 {}、副手 {}、选中槽 {}",
+                    crate::bedrock_verbose!("[R10] 背包回传：主背包 {} 格（非空 {}）、护甲 {}、副手 {}、选中槽 {}",
                         snapshot.main.len(),
                         snapshot.main.iter().filter(|s| s.is_some()).count(),
                         snapshot.armor.iter().filter(|s| s.is_some()).count(),
                         snapshot.offhand.is_some(),
                         selected_slot
                     );
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发背包失败: {e}");
                         break;
@@ -2112,6 +2117,8 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                 let mut close_inventory: Option<(ContainerID, bool)> = None;
                 match received {
                     Ok(batch) => {
+                        // 逐包调试：`debug::PACKETS = true` 时把这一批包名打出来。
+                        crate::bedrock::debug::dump_in(&batch);
                         for p in &batch {
                             // 入站转义：Bedrock 输入 → Java 入站包 → plot 的现有逻辑。
                             // 只有 MCHPRS 世界（真玩家）才需要；Demo 世界没人读这条通道。
@@ -2125,8 +2132,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     // S3：客户端的方块交互（点按/挖掘/放置）走 PerformBlockActions 位
                                     if let Some(actions) = &pa.player_block_actions {
                                         for a in actions {
-                                            println!(
-                                                "[S3] << 方块交互 action={:?} pos={:?} facing={:?}",
+                                            crate::bedrock_verbose!("[S3] << 方块交互 action={:?} pos={:?} facing={:?}",
                                                 a.action_type, a.position, a.facing
                                             );
                                         }
@@ -2157,8 +2163,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                             Instant::now(),
                                         ));
                                         match speed {
-                                            Some(v) => println!(
-                                                "[--] << PlayerAuthInput ×{} 最后 pos=({:.2}, {:.2}, {:.2}) 水平速度={:.2} m/s input=0x{:x}",
+                                            Some(v) => crate::bedrock_verbose!("[--] << PlayerAuthInput ×{} 最后 pos=({:.2}, {:.2}, {:.2}) 水平速度={:.2} m/s input=0x{:x}",
                                                 input_count,
                                                 pa.player_position.0,
                                                 pa.player_position.1,
@@ -2166,8 +2171,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                                 v,
                                                 pa.input_data
                                             ),
-                                            None => println!(
-                                                "[--] << PlayerAuthInput ×{} 最后 pos=({:.2}, {:.2}, {:.2}) input=0x{:x}",
+                                            None => crate::bedrock_verbose!("[--] << PlayerAuthInput ×{} 最后 pos=({:.2}, {:.2}, {:.2}) input=0x{:x}",
                                                 input_count,
                                                 pa.player_position.0,
                                                 pa.player_position.1,
@@ -2180,8 +2184,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     }
                                 }
                                 Protocol::InteractPacket(ip) => {
-                                    println!(
-                                        "[S3] << Interact action={:?} target={:?}",
+                                    crate::bedrock_verbose!("[S3] << Interact action={:?} target={:?}",
                                         ip.action, ip.target_runtime_id
                                     );
                                     // 背包打不开的根因就在这里：Bedrock 客户端按 E 只发这个包，
@@ -2210,13 +2213,11 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     move_count += 1;
                                     if move_window.elapsed() >= LOG_WINDOW {
                                         match speed {
-                                            Some(v) => println!(
-                                                "[--] << MovePlayer ×{} 最后 pos=({:.2}, {:.2}, {:.2}) on_ground={} 水平速度={:.2} m/s",
+                                            Some(v) => crate::bedrock_verbose!("[--] << MovePlayer ×{} 最后 pos=({:.2}, {:.2}, {:.2}) on_ground={} 水平速度={:.2} m/s",
                                                 move_count,
                                                 mp.position.0, mp.position.1, mp.position.2, mp.on_ground, v
                                             ),
-                                            None => println!(
-                                                "[--] << MovePlayer ×{} 最后 pos=({:.2}, {:.2}, {:.2}) on_ground={}",
+                                            None => crate::bedrock_verbose!("[--] << MovePlayer ×{} 最后 pos=({:.2}, {:.2}, {:.2}) on_ground={}",
                                                 move_count,
                                                 mp.position.0, mp.position.1, mp.position.2, mp.on_ground
                                             ),
@@ -2233,7 +2234,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                 Protocol::PlayerHotbarPacket(h) => {
                                     // 快捷栏切槽：核心的 `selected_slot` 要跟上，
                                     // 放方块时才知道手里拿的是第几格。
-                                    println!("[R5] << PlayerHotbar slot={}", h.selected_slot);
+                                    crate::bedrock_verbose!("[R5] << PlayerHotbar slot={}", h.selected_slot);
                                     let _ = inventory_tx.send(
                                         crate::bedrock::bridge::BedrockInventoryUpdate::SelectedSlot(
                                             h.selected_slot,
@@ -2261,8 +2262,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                         .stack_size
                                         .unwrap_or(1)
                                         .clamp(1, 255) as u8;
-                                    println!(
-                                        "[R5] << MobEquipment slot={hotbar} bedrock_item={bedrock_item} → java={java_item:?}×{count}"
+                                    crate::bedrock_verbose!("[R5] << MobEquipment slot={hotbar} bedrock_item={bedrock_item} → java={java_item:?}×{count}"
                                     );
                                     let _ = inventory_tx.send(
                                         crate::bedrock::bridge::BedrockInventoryUpdate::SelectedSlot(
@@ -2292,8 +2292,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     if matches!(&tx.data, InventoryTransactionData::Normal) {
                                         match crate::bedrock::inventory::drop_update(&tx.actions) {
                                             Some((slot, item)) => {
-                                                println!(
-                                                    "[R5] << 丢物品 slot={slot} 剩余={item:?}"
+                                                crate::bedrock_verbose!("[R5] << 丢物品 slot={slot} 剩余={item:?}"
                                                 );
                                                 let _ = inventory_tx.send(
                                                     crate::bedrock::bridge::BedrockInventoryUpdate::Slot {
@@ -2306,13 +2305,11 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                             None => {
                                                 // 没认出来也把形状打出来：真机上一看就知道
                                                 // 客户端这一版到底发了什么（来源/槽位/前后数量）。
-                                                println!(
-                                                    "[R5] << InventoryTransaction(Normal) actions={} 未识别",
+                                                crate::bedrock_verbose!("[R5] << InventoryTransaction(Normal) actions={} 未识别",
                                                     tx.actions.len()
                                                 );
                                                 for (i, action) in tx.actions.iter().enumerate() {
-                                                    println!(
-                                                        "[R5]    action[{i}] 来源={:?} 槽={} from=({}, {:?}) to=({}, {:?})",
+                                                    crate::bedrock_verbose!("[R5]    action[{i}] 来源={:?} 槽={} from=({}, {:?}) to=({}, {:?})",
                                                         action.source.source_type,
                                                         action.slot,
                                                         action.from_item_descriptor.id,
@@ -2329,12 +2326,11 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     // 只关心「对着方块按右键/左键」这一种事务；其余（容器搬物）
                                     // 先不处理。
                                     let InventoryTransactionData::ItemUse(use_data) = &tx.data else {
-                                        println!("[R5] << InventoryTransaction(其他类型)");
+                                        crate::bedrock_verbose!("[R5] << InventoryTransaction(其他类型)");
                                         continue;
                                     };
                                     let action = use_data.action_type.clone();
-                                    println!(
-                                        "[R5] << InventoryTransaction ItemUse action={:?} pos={:?} face={} slot={} held_item={}",
+                                    crate::bedrock_verbose!("[R5] << InventoryTransaction ItemUse action={:?} pos={:?} face={} slot={} held_item={}",
                                         action,
                                         (
                                             use_data.block_position.x,
@@ -2353,8 +2349,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     // Java 的 `BlockFace::from_id` 对越界 id 会 panic，先挡一下：
                                     // Bedrock 与 Java 的 0..=5 顺序一致（Down/Up/North/South/West/East）。
                                     if !(0..=5).contains(&use_data.block_face) {
-                                        println!(
-                                            "[R5] !! 方块面非法 {}，丢弃",
+                                        crate::bedrock_verbose!("[R5] !! 方块面非法 {}，丢弃",
                                             use_data.block_face
                                         );
                                         continue;
@@ -2377,8 +2372,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                                 z: use_data.block_position.z,
                                             },
                                         );
-                                        println!(
-                                            "[R5] !! 未知物品放置（bedrock item id={}）pos=({}, {}, {}) → 请求修正",
+                                        crate::bedrock_verbose!("[R5] !! 未知物品放置（bedrock item id={}）pos=({}, {}, {}) → 请求修正",
                                             use_data.held_item.id,
                                             use_data.block_position.x,
                                             use_data.block_position.y as i32 + 64,
@@ -2419,8 +2413,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                             sequence: 0,
                                         },
                                     ));
-                                    println!(
-                                        "[R5] >> SUseItemOn pos=({}, {}, {}) face={} item={:?}",
+                                    crate::bedrock_verbose!("[R5] >> SUseItemOn pos=({}, {}, {}) face={} item={:?}",
                                         use_data.block_position.x,
                                         use_data.block_position.y as i32 + 64,
                                         use_data.block_position.z,
@@ -2434,23 +2427,21 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     // 这里只做记录；真正让服务端"知道手里有东西"的是上面
                                     // InventoryTransaction 里带过来的 held_item。
                                     for request in &req.requests {
-                                        println!(
-                                            "[R5] << ItemStackRequest id={} actions={}",
+                                        crate::bedrock_verbose!("[R5] << ItemStackRequest id={} actions={}",
                                             request.client_request_id,
                                             request.actions.len()
                                         );
                                     }
                                 }
                                 Protocol::ContainerClosePacket(cc) => {
-                                    println!(
-                                        "[R1] << ContainerClose id={} server_initiated={}",
+                                    crate::bedrock_verbose!("[R1] << ContainerClose id={} server_initiated={}",
                                         cc.container_id.0, cc.server_initiated_close
                                     );
                                     close_inventory =
                                         Some((cc.container_id, cc.server_initiated_close));
                                 }
                                 Protocol::SubChunkRequestPacket(_) => {
-                                    println!("[--] << SubChunkRequest")
+                                    crate::bedrock_verbose!("[--] << SubChunkRequest")
                                 }
                                 Protocol::BlockActorDataPacket(p) => {
                                     // BUG-032 第 43 条：客户端写/改告示牌。这里只打日志 ——
@@ -2462,8 +2453,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                         .map(|k| k.as_str())
                                         .collect();
                                     keys.sort_unstable();
-                                    println!(
-                                        "[A2] << BlockActorData pos=({}, {}, {}) 键={:?}",
+                                    crate::bedrock_verbose!("[A2] << BlockActorData pos=({}, {}, {}) 键={:?}",
                                         p.block_position.x,
                                         p.block_position.y,
                                         p.block_position.z,
@@ -2474,11 +2464,11 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     if let Some((front, back)) =
                                         crate::bedrock::block_entity::sign_rows(&p.actor_data_tags)
                                     {
-                                        println!("[A2]   解析后 正面={front:?} 反面={back:?}");
+                                        crate::bedrock_verbose!("[A2]   解析后 正面={front:?} 反面={back:?}");
                                     }
                                 }
-                                Protocol::Unknown(u) => println!("[--] << Unknown id=0x{:x}", u.id),
-                                other => println!("[--] << {}", pname(other)),
+                                Protocol::Unknown(u) => crate::bedrock_verbose!("[--] << Unknown id=0x{:x}", u.id),
+                                other => crate::bedrock_verbose!("[--] << {}", pname(other)),
                             }
                         }
                     }
@@ -2503,10 +2493,10 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     let packets = vec![Protocol::ContainerOpenPacket(Box::new(
                         crate::bedrock::inventory::container_open(last_pos),
                     ))];
-                    println!(
-                        "[R1] 打开背包：ContainerOpen({:.1},{:.1},{:.1})（不再下发 InventoryContent，避免清空背包）",
+                    crate::bedrock_verbose!("[R1] 打开背包：ContainerOpen({:.1},{:.1},{:.1})（不再下发 InventoryContent，避免清空背包）",
                         last_pos.0, last_pos.1, last_pos.2
                     );
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发背包失败: {e}");
                         break;
@@ -2518,6 +2508,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     let packets = vec![Protocol::ContainerClosePacket(Box::new(
                         crate::bedrock::inventory::container_close(container_id, server_initiated),
                     ))];
+                    crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 回执关背包失败: {e}");
                         break;

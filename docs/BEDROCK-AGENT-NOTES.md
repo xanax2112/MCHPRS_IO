@@ -153,6 +153,21 @@ Set-Location run; & ..\target\debug\mchprs.exe *> D:\computer\mchprs\bedrock\log
   （历史上真把 `session.rs` 写坏过一次）。用编辑器（edit/write 工具），UTF-8 无 BOM、LF。
 - `cargo`/`rustfmt` 在这个 shell 里即使成功也可能回报 `[exit code: 1]`，看输出内容。
 
+### 5.1 调试开关（平时全关，排查时改常量再编译）
+
+`crates/network/src/bedrock/debug.rs` 顶部三个写死的常量：
+
+| 常量 | 作用 | 平时 |
+| --- | --- | --- |
+| `PACKETS` | 逐包收发摘要 `[PKT] << 包名` / `[PKT] >> 包名 (N B)` | `false` |
+| `PACKET_HEX` | 出站包 hex（截断 160 字节），查字节布局用 | `false` |
+| `VERBOSE` | 明细日志 `[--]/[S3]/[R5]/[A2]/[R7]/[R8]/[R10]`（逐事件、量大） | `false` |
+
+开法：把要看的常量改成 `true` → `cargo build` → 起服务，日志里就会出现对应行。
+调用点：入站 `dump_in(&batch)`、每个 `conn.send(&packets)` 之前 `dump_out(&packets)`；
+明细日志用宏 `crate::bedrock_verbose!(...)`（等价 `if VERBOSE { println!(...) }`）。
+**收工前记得改回 `false`**（否则日志会被刷爆）。
+
 ---
 
 ## 6. 单独拿出 `MCHPRS_IO` 还能不能跑基岩版？
@@ -188,7 +203,7 @@ Set-Location run; & ..\target\debug\mchprs.exe *> D:\computer\mchprs\bedrock\log
    Bedrock 运行时 id，反查方块名+属性。用法：
 
    ```powershell
-   $env:NODE_PATH="D:\computer\mchprs\bedrock\bedrock\tools\node_modules"
+   $env:NODE_PATH="D:\computer\mchprs\bedrock\tools\node_modules"
    node D:\computer\mchprs\bedrock\refs\tools\check_state.js 4317   # java state
    node D:\computer\mchprs\bedrock\refs\tools\check_state.js 9214   # bedrock runtime id
    ```

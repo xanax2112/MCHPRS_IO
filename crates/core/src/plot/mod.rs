@@ -2126,7 +2126,7 @@ impl Plot {
                 let chunk_z = center_z + dz;
                 let signs = self.bedrock_signs_in_chunk((chunk_x, chunk_z));
                 sign_count += signs.len();
-                if !signs.is_empty() {
+                if !signs.is_empty() && mchprs_network::bedrock::debug::VERBOSE {
                     println!(
                         "[R7] 快照区块 ({chunk_x}, {chunk_z}) 带 {} 块牌子：{:?}",
                         signs.len(),
@@ -2147,7 +2147,7 @@ impl Plot {
                     // 只有后来流送到的远处区块才有字 —— 真机现象就是"重进后字没了"。
                     &signs,
                 );
-                if !signs.is_empty() {
+                if !signs.is_empty() && mchprs_network::bedrock::debug::VERBOSE {
                     // 诊断：负载末尾 48 字节（方块实体 NBT 就在最后），能直接看出
                     // "牌子 NBT 到底有没有写进区块负载"。
                     let tail = &payload[payload.len().saturating_sub(48)..];
@@ -2293,7 +2293,7 @@ impl Plot {
         }
         // A2：这一块区块里的告示牌，随负载一起发（否则进 plot 时全是空白牌子）。
         let signs = self.bedrock_signs_in_chunk(chunk);
-        if !signs.is_empty() {
+        if !signs.is_empty() && mchprs_network::bedrock::debug::VERBOSE {
             println!(
                 "[R7] 区块 ({}, {}) 负载带 {} 块牌子：{:?}",
                 chunk.0,
@@ -2369,10 +2369,12 @@ impl Plot {
         // ①方块映射到哪个 Bedrock 运行时 id（是不是牌子）②发下去的文字到底是什么。
         let java_state = self.world.get_block_raw(pos);
         let bedrock_runtime = mchprs_network::bedrock::bedrock_block_state(java_state);
-        println!(
-            "[R7] 告示牌 ({}, {}, {}) java_state={java_state} bedrock_runtime={bedrock_runtime} 正面={:?} 反面={:?}",
-            pos.x, pos.y, pos.z, update.front, update.back
-        );
+        if mchprs_network::bedrock::debug::VERBOSE {
+            println!(
+                "[R7] 告示牌 ({}, {}, {}) java_state={java_state} bedrock_runtime={bedrock_runtime} 正面={:?} 反面={:?}",
+                pos.x, pos.y, pos.z, update.front, update.back
+            );
+        }
         let mut sent = 0;
         for player in &self.players {
             if player.client.is_bedrock() {

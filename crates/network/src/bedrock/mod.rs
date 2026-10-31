@@ -19,6 +19,7 @@ pub mod commands;
 mod commands_gen;
 pub mod creative;
 pub mod creative_gen;
+pub mod debug;
 pub mod entity;
 pub mod inventory;
 pub mod items_gen;
