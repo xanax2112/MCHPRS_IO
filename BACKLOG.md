@@ -2400,6 +2400,51 @@ removal index (is 1) should be < len (is 1)
 - 未提交：工作区仍是 19 文件（17 改 + `block_entity.rs` 新增 + `BACKLOG.md`）。
 - 运行态：服务端 **PID 9788**，日志 `logs\bedrock-snapshotdiag-1101-0138.log`。
 
+---
+
+### 9.26 B1 / C7 复核（2026-11-01 02:0x，用户裁决：**都先不做**）
+
+> 用户问"b1 和 c7 你还记得吗"，我复述了两条并给了选项，用户选"都先不做"。
+> 这里把**现状**（重新核对过代码，不是回忆）与将来的具体做法记下来，
+> 免得下次又从头查起。**两条都仍然只是暂缓，不是否决。**
+
+#### 9.26.1 B1（PATCH-008 修 `ItemStackResponse` 类型）现状
+
+`vendor/.../v662/types/item_stack_response_info.rs` 现在只有两个字段：
+
+```rust
+pub struct ItemStackResponseInfo<V: ProtoVersion> {
+    pub result: V::ItemStackNetResult,
+    pub client_request_id: i32,
+}
+```
+
+两处缺陷（实读代码确认）：
+
+1. **缺 containers**：Cloudburst 是 `result + request_id + containers: Vec<ItemStackResponseContainerInfo>`
+   （`item_stack_response_container_info.rs` 里我们已经有了 `container_net_id + slots` 的定义，没人用）。
+2. **run-on 解码**：`deserialize` 里 `stream.read_to_end(&mut result_stream)` 把包余下的字节全吃光
+   —— 与 BUG-032 第 29 条 PATCH-006 同一类坑。改法照 PATCH-006：按顺序逐字段读写，不 `read_to_end`。
+
+影响面：**玩家无可见变化**（`enable_item_stack_net_manager = false`，客户端乐观应用）；
+它是 B2（真正回执，已否决）与"创造面板换物品即时同步"（§9.21.4-5 残留）的前提。
+
+#### 9.26.2 C7（抓包基础设施固化）现状
+
+要做的三件事：
+
+1. 7 个临时脚本 `refs/_patch_*.ps1` / `_patch_*.py` 收敛成一个；
+2. 写进 docs 的两条取证通道：**Geyser packet-spy 抓包**、**Cloudburst Codec 探针**；
+3. 解决"探针怎么编译运行"：现在探针（`ProbeSign` / `ProbeChunkNbt` / `ProbeGeyserChunk` …）
+   每次都要手拼 217 个 jar 的 classpath，且 Geyser 自己的类要额外加
+   `refs\Geyser-...\core\build\classes\java\main`（这轮因此编译失败过一次）。
+
+#### 9.26.3 排期
+
+- 用户 2026-11-01 02:0x：**"都先不做"** → 两条都保持"暂缓"。
+- 当前**更紧急的未结项**是 §9.25（区块携带的牌子 NBT 客户端不应用），
+  以及 §9.25.5 的临时诊断开关 `SIGN_DEBUG_GLOW = true`（牌子目前是发光白字）。
+
 
 
 
