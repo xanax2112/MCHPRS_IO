@@ -2593,6 +2593,43 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
 - 兜底通道（实时 `BlockActorData`）现在是牌子文字的唯一可靠载体；区块内 NBT 只是"顺便发"。
 - 想让牌子文字发光，把 `IgnoreLighting` 设 1 即可（这是唯一影响"发光"的开关，颜色无关）。
 
+---
+
+### 9.30 BUG-032 收尾：给维护 MCHPRS 内核的人（2026-11-01 02:2x）
+
+> 用户确认"没问题了"，本轮基岩版开发结束。这节只写**内核维护者需要知道的事**，
+> 其余细节在 `docs/BEDROCK-AGENT-NOTES.md`（边界 / 改动审计 / 不变量 / 未结清单）。
+
+**一句话**：基岩版是**旁挂**的一整套新模块，MCHPRS 的红石/Java 协议/WorldEdit/存储器逻辑**没有被改写**。
+
+1. **代码在哪**：`crates/network/src/bedrock/**`（协议、会话、区块、实体、背包、计分板、命令树…）
+   全是新增文件；`crates/text` 只新增了 `to_legacy_text`（JSON 文本 → `§` 码）。
+2. **内核只加了"分支/推送"**：`crates/core` 里改动集中在
+   `player.rs`（`PlayerBackend::{Java,Bedrock}` + 一串 `send_*`）、
+   `plot/mod.rs`、`server.rs`、`plot/{packet_handlers,scoreboard,commands,coord,data}.rs`、
+   `interaction.rs`、`config.rs`。所有基岩逻辑都在 `if player.client.is_bedrock()` 里。
+   **Java 侧唯一可见的行为变化**：`leave_plot` 修了一个 panic（基岩玩家在场时有人离开 plot 会崩，
+   见第 41 条）——这是 bug 修复，Java 也受益。
+3. **怎么一键关掉基岩版**：`run/Config.toml` 里的 `bedrock = 19132`（UDP 端口）；
+   **设成 `0` 就完全不监听**（`server.rs` 里 `if CONFIG.bedrock > 0`），
+   Java 侧行为与改动前完全一致。
+4. **依赖**：`vendor/bedrock-rs` 是上游 bedrock-rs 的完整副本（自带独立 workspace，
+   根 `Cargo.toml` 用 `exclude` 隔开），我们对它有 9 处本地补丁，清单见
+   `docs/BEDROCK-AGENT-NOTES.md` §3.5。仓库**不依赖任何外部目录**（已实测整目录拷走
+   `cargo build --offline` 通过）。
+5. **验收状态**：`cargo test -p mchprs_network bedrock` = 70 passed；`cargo test --workspace` 全绿；
+   真机（基岩 1.21.50 / 协议 766）逐项验收通过（创造背包、计分板、命令、看见他人、
+   增量区块、挥手/潜行、游戏模式、丢物品、开背包不清空、告示牌读写）。
+6. **一处反直觉的坑，别去动 chunk 编码**：区块负载里**确实**带了告示牌的方块实体 NBT
+   （离线用 `refs/tools/parse_chunk.js` 解析过，段/生物群系/边界/NBT 几何完全吻合），
+   但真机客户端就是不把它应用到牌子上。现在的做法是**进 plot 时用实时 `BlockActorData`
+   补推附近（±3 区块、最多 64 块）牌子**。哪天客户端"吃了"区块里的实体，兜底也不会冲突。
+7. **已知限制**（都在 §9.21.4 / §9.25，不打算修或暂缓）：告示牌超宽行不裁剪、富文本不转 `§` 码、
+   `item_map` 只有 135 条（表外物品显示空手）、旁观者登录瞬间按创造、计分板必显示分数数字、
+   创造面板换物品后未切栏前别人看你手里还是旧的（要 `ItemStackRequest`，B2 已裁决不做）。
+
+**本轮提交均只在本地**（未 push）。
+
 
 
 
