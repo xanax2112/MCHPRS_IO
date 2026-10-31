@@ -43,7 +43,28 @@ pub enum BedrockCommand {
     /// `(x, y, z)` 是 **MCHPRS（Java）坐标**，会话线程自己减 64 换回 Bedrock 坐标。
     /// 对应 Java 的 `CSynchronizePlayerPosition`：`Player::teleport()` 现在两种后端都走这里。
     Teleport { x: f64, y: f64, z: f64 },
+    /// 线上其它玩家的完整快照（BUG-032 第 22 条完整版）。
+    ///
+    /// core 每 tick 推一份"现在有谁、在哪"的全量列表（**不含自己**），会话线程自己做 diff：
+    /// 新来的发 PlayerList+AddPlayer，走了的发 RemoveActor+PlayerList，动了的发 MovePlayer。
+    ///
+    /// 用全量而不是增量：玩家进出、传送、坠落纠正都要改状态，
+    /// 全量只多占几个字节，却省掉一套容易出错的增量协议。
+    Players(Vec<BedrockPlayerInfo>),
 }
+
+/// 一个要在 Bedrock 客户端里显示的玩家（**MCHPRS/Java 坐标**，会话线程负责 `y - 64`）。
+#[derive(Clone, Debug)]
+pub struct BedrockPlayerInfo {
+    pub uuid: u128,
+    pub username: String,
+    /// MCHPRS 坐标（不是 Bedrock 坐标）。
+    pub position: (f64, f64, f64),
+    /// **Java 顺序** `(yaw, pitch)`；换算成 Bedrock 的 `(pitch, yaw)` 在 `entity` 模块里做。
+    pub rotation: (f32, f32),
+    pub on_ground: bool,
+}
+
 
 /// 计分板一行：`text` 是**已经带 `§` 颜色码**的显示文本，`score` 决定排序（越大越靠上）。
 #[derive(Clone, Debug)]
@@ -119,6 +140,13 @@ impl BedrockHandle {
     /// 投递服务端强制定位（MCHPRS 坐标）。
     pub fn send_teleport(&self, x: f64, y: f64, z: f64) {
         let _ = self.commands.send(BedrockCommand::Teleport { x, y, z });
+    }
+
+    /// 投递"线上其它玩家"的最新快照（BUG-032 第 22 条完整版）。
+    ///
+    /// 空列表也要投递：它表达的是"现在别人都不在了"，会话线程据此销毁残留实体。
+    pub fn send_players(&self, players: Vec<BedrockPlayerInfo>) {
+        let _ = self.commands.send(BedrockCommand::Players(players));
     }
 }
 

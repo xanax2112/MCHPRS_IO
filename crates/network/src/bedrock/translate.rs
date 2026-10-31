@@ -6,6 +6,8 @@
 //! 命令、方块交互、移动、潜行等等都不需要为 Bedrock 再写一套。
 //!
 //! **坐标换算**：Bedrock 的 `y` 比 MCHPRS 少 64，所以转回去要 `y + 64`；x/z 相同。
+//! 另外 Bedrock 上报的 `player_position` 是**眼睛高度**（脚 + 1.62），转 Java 前要减掉
+//! （见 [`crate::bedrock::entity::PLAYER_EYE_HEIGHT`]）。
 //!
 //! 只转义真正有语义的包；`SubChunkRequest` 这类 Bedrock 专有的直接丢弃。
 
@@ -40,7 +42,14 @@ pub fn translate(packet: &Protocol) -> Vec<Box<dyn ServerBoundPacket>> {
 
             out.push(Box::new(SSetPlayerPositionAndRotation {
                 x: input.player_position.0 as f64,
-                y: input.player_position.1 as f64 + 64.0,
+                // Bedrock 客户端上报的是**眼睛高度**（脚 + 1.62），Java 的
+                // `SSetPlayerPositionAndRotation` 要的是**脚**。
+                // 证据：Geyser `BedrockMovePlayer.java:54`：
+                //   `confirmTeleport(packet.getPosition().sub(0, EntityDefinitions.PLAYER.offset(), 0))`
+                // 漏了这一步，Java 玩家看到基岩玩家会高 1.62 格（真机实测"天上 2 格"）。
+                y: input.player_position.1 as f64
+                    - crate::bedrock::entity::PLAYER_EYE_HEIGHT as f64
+                    + 64.0,
                 z: input.player_position.2 as f64,
                 yaw,
                 pitch,

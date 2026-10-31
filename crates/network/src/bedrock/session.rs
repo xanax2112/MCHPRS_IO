@@ -39,7 +39,6 @@ use bedrock::protocol::v662::types::{
 use bedrock::protocol::v662::types::CameraPresets;
 use bedrock::protocol::v662::types::{DataItem, PropertySyncData};
 use bedrock::protocol::v766::types::{AudioListener, CameraPreset};
-use bedrock::protocol::v729::packets::{AttributeData, UpdateAttributesPacket};
 use bedrock::protocol::v662::types::{GameRuleChanged, Type as GameRuleType};
 use bedrock::protocol::v662::types::{
     ActorRuntimeID, ActorUniqueID, ChunkPos, EduSharedUriResource, GameRulesChangedPacketData,
@@ -779,12 +778,20 @@ async fn do_login(
         crate::bedrock::protocol::set_actor_data(runtime_id),
     ))])
     .await?;
+    // Bedrock 的"玩家位置"包（`Respawn` / `MovePlayer`）用**眼睛高度**（脚 + 1.62），
+    // 只有 `AddPlayer` 用脚 —— 见 `entity::PLAYER_EYE_HEIGHT` 里的 Geyser 证据。
+    // 漏掉这一步就是真机上的"基岩看 Java 玩家低 2 格"。
+    let spawn_eye = (
+        spawn_pos.0,
+        spawn_pos.1 + crate::bedrock::entity::PLAYER_EYE_HEIGHT,
+        spawn_pos.2,
+    );
     // Geyser 登录的第一个出生包：RespawnPacket(SERVER_READY, runtimeEntityId=0)。
     // 见下方三连的说明（BUG-032 第 31 条）。
     conn.send(&[Protocol::RespawnPacket(Box::new(RespawnPacket::<Protocol> {
         // Geyser 注释：Bedrock 原版服务端这里就是 0，不是玩家的 runtime id。
         player_runtime_id: ActorRuntimeID(0),
-        position: spawn_pos,
+        position: spawn_eye,
         state: PlayerRespawnState::ReadyToSpawn,
     }))])
     .await?;
@@ -807,10 +814,10 @@ async fn do_login(
     // 相机/视场角会沿用上一局的状态 —— "重进后视场角变大、移动变快"（BUG-032 第 31 条）。
     conn.send(&[
         Protocol::MovePlayerPacket(Box::new(crate::bedrock::protocol::respawn(
-            runtime_id, spawn_pos, (0.0, 0.0),
+            runtime_id, spawn_eye, (0.0, 0.0),
         ))),
         Protocol::MovePlayerPacket(Box::new(crate::bedrock::protocol::teleport(
-            runtime_id, spawn_pos, (0.0, 0.0),
+            runtime_id, spawn_eye, (0.0, 0.0),
         ))),
     ])
     .await?;
@@ -820,7 +827,7 @@ async fn do_login(
         ">>",
         &format!(
             "MovePlayer(Respawn+Teleport {:.1},{:.1},{:.1})",
-            spawn_pos.0, spawn_pos.1, spawn_pos.2
+            spawn_eye.0, spawn_eye.1, spawn_eye.2
         ),
     );
 
@@ -1420,6 +1427,20 @@ fn next_runtime_id() -> u64 {
     NEXT_RUNTIME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// 本连接上"别的玩家"的本地实体状态（BUG-032 第 22 条完整版）。
+///
+/// id 由本连接自己分配：Bedrock 的 runtime id 只是客户端本地句柄，
+/// 不同客户端看到同一个玩家可以是不同数字，只要求会话内稳定。
+struct RemotePlayerState {
+    runtime_id: u64,
+    /// unique id 与 runtime id 用同一个数（Geyser 的 `geyserId` 也是填两处）。
+    unique_id: i64,
+    /// 上次下发的 **Bedrock 坐标**与朝向，用来判断要不要再发 `MovePlayer`。
+    position: (f32, f32, f32),
+    rotation: (f32, f32),
+    on_ground: bool,
+}
+
 pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std::error::Error>> {
     let mut listener = Listener::builder()
         .raknet(addr.parse().unwrap())
@@ -1525,6 +1546,12 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
             let mut sidebar_sent = false;
             let mut sidebar_title = String::new();
             let mut sidebar_len = 0usize;
+            // 上一版每行的文本：用来判断"这一行是不是改过名字"（改过就必须先 REMOVE）。
+            let mut sidebar_texts: Vec<String> = Vec::new();
+            // 别的玩家在本客户端里的实体状态（BUG-032 第 22 条完整版）。
+            // key = 玩家 uuid；runtime/unique id 由本连接自己分配，只要求会话内稳定。
+            let mut remote_players: std::collections::HashMap<u128, RemotePlayerState> =
+                std::collections::HashMap::new();
             loop {
                 // 同时等两件事：客户端发包、服务端下达指令（玩家化后 MCHPRS 可能踢人/推送）。
                 //
@@ -1536,6 +1563,8 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                 let mut block_updates: Vec<(i32, i32, i32, u32)> = Vec::new();
                 let mut abilities: Option<(bool, f32)> = None;
                 let mut teleport_to: Option<(f64, f64, f64)> = None;
+                let mut player_snapshot: Option<Vec<crate::bedrock::bridge::BedrockPlayerInfo>> =
+                    None;
                 let mut should_close = false;
                 let received = tokio::select! {
                     received = conn.recv() => received,
@@ -1553,6 +1582,9 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             }
                             Some(BedrockCommand::Teleport { x, y, z }) => {
                                 teleport_to = Some((x, y, z))
+                            }
+                            Some(BedrockCommand::Players(players)) => {
+                                player_snapshot = Some(players)
                             }
                         }
                         // 返回一个空批次，让下面的收包逻辑什么都不做。
@@ -1579,7 +1611,12 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     }
                 }
 
-                // 计分板推送：先补 objective（首次/标题变了）、再删掉变少的行、最后整行覆写。
+                // 计分板推送：先补 objective（首次/标题变了）、再删掉需要重画的行、最后整行覆写。
+                //
+                // **为什么改文本的行要先 REMOVE**：Bedrock 的侧边栏行文本就是 fake player 名，
+                // 行由 scoreboard_id 标识；同一个 id 只改文本客户端不刷新（Mojang bug MCPE-143063）。
+                // 不先删的话 `/redpiler compile` 之后第一行永远停在 `Stopped`（真机实测）。
+                // Geyser 的做法见 `SidebarDisplaySlot#render0`（文本变了就 remove + set）。
                 if let Some(sidebar) = sidebar_update {
                     let mut packets: Vec<Protocol> = Vec::new();
                     if !sidebar_sent || sidebar.title != sidebar_title {
@@ -1589,6 +1626,18 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         sidebar_sent = true;
                         sidebar_title = sidebar.title.clone();
                     }
+                    // 1) 文本变了的行（含这次新增、下标越界的行）：先删。
+                    let renamed: Vec<usize> = (0..sidebar.lines.len())
+                        .filter(|index| {
+                            sidebar_texts.get(*index) != Some(&sidebar.lines[*index].text)
+                        })
+                        .collect();
+                    if !renamed.is_empty() {
+                        packets.push(Protocol::SetScorePacket(Box::new(
+                            crate::bedrock::scoreboard::remove_scores_at(&renamed),
+                        )));
+                    }
+                    // 2) 行数变少：删掉尾巴。
                     if sidebar.lines.len() < sidebar_len {
                         packets.push(Protocol::SetScorePacket(Box::new(
                             crate::bedrock::scoreboard::remove_scores(
@@ -1597,10 +1646,12 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             ),
                         )));
                     }
+                    // 3) 整行覆写。
                     packets.push(Protocol::SetScorePacket(Box::new(
                         crate::bedrock::scoreboard::change_scores(&sidebar),
                     )));
                     sidebar_len = sidebar.lines.len();
+                    sidebar_texts = sidebar.lines.iter().map(|l| l.text.clone()).collect();
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发计分板失败: {e}");
                         break;
@@ -1646,7 +1697,13 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                 // 服务端强制定位：MCHPRS 坐标 → Bedrock 坐标（`y - 64`）。
                 // 用本连接自己的 runtime id，别再写死 1。
                 if let Some((x, y, z)) = teleport_to {
-                    let bedrock_pos = (x as f32, (y - world::Y_OFFSET as f64) as f32, z as f32);
+                    // `MovePlayer` 用**眼睛高度**（脚 + 1.62），见 `entity::PLAYER_EYE_HEIGHT`。
+                    let bedrock_pos = (
+                        x as f32,
+                        (y - world::Y_OFFSET as f64 + crate::bedrock::entity::PLAYER_EYE_HEIGHT as f64)
+                            as f32,
+                        z as f32,
+                    );
                     let packets = vec![Protocol::MovePlayerPacket(Box::new(
                         crate::bedrock::protocol::teleport(runtime_id, bedrock_pos, last_rotation),
                     ))];
@@ -1659,6 +1716,102 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         break;
                     }
                     last_pos = bedrock_pos;
+                }
+
+                // 别的玩家同步（BUG-032 第 22 条完整版）：core 每 tick 推一份全量快照，
+                // 这里做 diff —— 新来的"先玩家列表、再生成实体"，走了的"先销毁实体、
+                // 再从玩家列表移除"，动了的发 `MovePlayer`。
+                if let Some(players) = player_snapshot {
+                    use crate::bedrock::entity;
+                    let mut packets: Vec<Protocol> = Vec::new();
+
+                    // 1) 已经不在列表里的人。
+                    let alive: std::collections::HashSet<u128> =
+                        players.iter().map(|p| p.uuid).collect();
+                    let gone: Vec<u128> = remote_players
+                        .keys()
+                        .copied()
+                        .filter(|uuid| !alive.contains(uuid))
+                        .collect();
+                    for uuid in gone {
+                        if let Some(state) = remote_players.remove(&uuid) {
+                            packets.push(Protocol::RemoveActorPacket(Box::new(
+                                entity::remove_actor(state.unique_id),
+                            )));
+                            packets.push(Protocol::PlayerListPacket(Box::new(
+                                entity::player_list_remove(uuid),
+                            )));
+                            println!("[R6] 移除玩家实体 uuid={uuid:x} unique={}", state.unique_id);
+                        }
+                    }
+
+                    // 2) 新来的 / 动了的。
+                    for info in &players {
+                        match remote_players.get_mut(&info.uuid) {
+                            None => {
+                                let runtime = next_runtime_id();
+                                let unique_id = runtime as i64;
+                                packets.push(Protocol::PlayerListPacket(Box::new(
+                                    entity::player_list_add(info, unique_id),
+                                )));
+                                packets.push(Protocol::AddPlayerPacket(Box::new(
+                                    entity::add_player(info, runtime),
+                                )));
+                                // 记账用**脚**坐标（`AddPlayer` 发的就是脚）；`MovePlayer` 的 y
+                                // 由 `entity::move_player` 自己 +1.62（见 PLAYER_EYE_HEIGHT）。
+                                let position = entity::bedrock_feet(info.position);
+                                println!(
+                                    "[R6] 生成玩家 {} runtime={runtime} pos={position:?}",
+                                    info.username
+                                );
+                                remote_players.insert(
+                                    info.uuid,
+                                    RemotePlayerState {
+                                        runtime_id: runtime,
+                                        unique_id,
+                                        position,
+                                        rotation: entity::bedrock_rotation(info.rotation),
+                                        on_ground: info.on_ground,
+                                    },
+                                );
+                            }
+                            Some(state) => {
+                                let position = entity::bedrock_feet(info.position);
+                                let rotation = entity::bedrock_rotation(info.rotation);
+                                let moved = (position.0 - state.position.0).abs() > 0.01
+                                    || (position.1 - state.position.1).abs() > 0.01
+                                    || (position.2 - state.position.2).abs() > 0.01;
+                                let turned = (rotation.0 - state.rotation.0).abs() > 0.5
+                                    || (rotation.1 - state.rotation.1).abs() > 0.5;
+                                if !(moved || turned || info.on_ground != state.on_ground) {
+                                    continue;
+                                }
+                                // 一步跨过 8 格只可能是传送（`/tp`、坠落纠正）：
+                                // 用 `mode = Teleport` 让客户端直接落位，别演一段"跑过去"。
+                                let teleported = (position.0 - state.position.0).abs() > 8.0
+                                    || (position.1 - state.position.1).abs() > 8.0
+                                    || (position.2 - state.position.2).abs() > 8.0;
+                                packets.push(Protocol::MovePlayerPacket(Box::new(
+                                    entity::move_player(state.runtime_id, info, teleported),
+                                )));
+                                state.position = position;
+                                state.rotation = rotation;
+                                state.on_ground = info.on_ground;
+                            }
+                        }
+                    }
+
+                    if !packets.is_empty() {
+                        let count = packets.len();
+                        if let Err(e) = conn.send(&packets).await {
+                            println!("[!!] 下发玩家同步失败: {e}");
+                            break;
+                        }
+                        println!(
+                            "[R6] 玩家同步：{count} 个包（线上共 {} 人）",
+                            players.len()
+                        );
+                    }
                 }
 
                 // 背包相关：客户端的请求只置标志，统一在本轮收包结束后发包。

@@ -2035,6 +2035,41 @@ impl Plot {
         for player_idx in 0..self.players.len() {
             self.handle_packets_for_player(player_idx);
         }
+        // 位置刷新完再推一次"谁在哪"（BUG-032 第 22 条完整版）。
+        self.send_bedrock_player_sync();
+    }
+
+    /// 把"线上还有谁、各自在哪"推给每个 Bedrock 玩家（BUG-032 第 22 条完整版）。
+    ///
+    /// 推**全量**列表（不含收件人自己）：玩家进出、传送、坠落纠正都靠这一份收敛，
+    /// 会话线程只做 diff（生成/移动/销毁）。空列表也推 —— 它表示"别人都不在了"。
+    fn send_bedrock_player_sync(&mut self) {
+        if !self.players.iter().any(|p| p.client.is_bedrock()) {
+            return;
+        }
+        let snapshot: Vec<mchprs_network::bedrock::bridge::BedrockPlayerInfo> = self
+            .players
+            .iter()
+            .map(|p| mchprs_network::bedrock::bridge::BedrockPlayerInfo {
+                uuid: p.uuid,
+                username: p.username.clone(),
+                // MCHPRS（Java）坐标；`y - 64` 由网络层做。
+                position: (p.pos.x, p.pos.y, p.pos.z),
+                rotation: (p.yaw, p.pitch),
+                on_ground: p.on_ground,
+            })
+            .collect();
+        for player in &self.players {
+            if !player.client.is_bedrock() {
+                continue;
+            }
+            let others: Vec<_> = snapshot
+                .iter()
+                .filter(|info| info.uuid != player.uuid)
+                .cloned()
+                .collect();
+            player.client.send_players(others);
+        }
     }
 
     fn update(&mut self) {

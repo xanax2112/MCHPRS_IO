@@ -198,6 +198,20 @@ impl PlayerBackend {
         }
     }
 
+    /// 推"线上其它玩家"的快照（BUG-032 第 22 条完整版）。
+    ///
+    /// Java 后端不用：Java 客户端本来就是靠 `CPlayerInfoUpdate` + `CSpawnEntity` 那一套
+    /// 由服务端自己处理的。Bedrock 侧没有等价的通用实现，所以由 `plot` 每 tick 推一份
+    /// 全量列表，会话线程自己 diff（生成/移动/销毁）。
+    pub fn send_players(
+        &self,
+        players: Vec<mchprs_network::bedrock::bridge::BedrockPlayerInfo>,
+    ) {
+        if let Self::Bedrock(link) = self {
+            link.handle.send_players(players);
+        }
+    }
+
     /// 单个方块变化（BUG-032 第 3 条）。
     ///
     /// 以前这里只有 Java 的 `CBlockUpdate`，Bedrock 玩家不在广播列表里，

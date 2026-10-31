@@ -148,6 +148,23 @@ pub fn set_actor_data(runtime_id: u64) -> SetActorDataPacket<Protocol> {
     }
 }
 
+/// 能力值（`SerializedAbilitiesData`）：玩家自己的 `UpdateAbilities` 和
+/// 别的玩家的 `AddPlayer` 共用这一份，保证两边权限/速度口径一致。
+pub fn abilities_data(runtime_id: u64, flying: bool, fly_speed: f32) -> SerializedAbilitiesData<Protocol> {
+    SerializedAbilitiesData {
+        target_player_raw_id: runtime_id as i64,
+        player_permissions: PlayerPermissionLevel::Member,
+        command_permissions: CommandPermissionLevel::Any,
+        layers: vec![SerializedLayer {
+            serialized_layer: SerializedAbilitiesLayer::Base,
+            abilities_set: ABILITY_SET,
+            ability_values: ability_values(flying),
+            fly_speed,
+            walk_speed: 0.1,
+        }],
+    }
+}
+
 /// 能力包（`UpdateAbilities`），创造模式 + 无限资源，飞行位按参数给。
 ///
 /// `flying = false` 是新玩家进世界的默认值（否则会悬空，见 [`ABILITY_VALUES`]）。
@@ -159,18 +176,7 @@ pub fn update_abilities_for(
     fly_speed: f32,
 ) -> UpdateAbilitiesPacket<Protocol> {
     UpdateAbilitiesPacket {
-        data: SerializedAbilitiesData {
-            target_player_raw_id: runtime_id as i64,
-            player_permissions: PlayerPermissionLevel::Member,
-            command_permissions: CommandPermissionLevel::Any,
-            layers: vec![SerializedLayer {
-                serialized_layer: SerializedAbilitiesLayer::Base,
-                abilities_set: ABILITY_SET,
-                ability_values: ability_values(flying),
-                fly_speed,
-                walk_speed: 0.1,
-            }],
-        },
+        data: abilities_data(runtime_id, flying, fly_speed),
     }
 }
 

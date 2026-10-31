@@ -16,6 +16,7 @@ pub mod bridge;
 pub mod chunk;
 pub mod creative;
 pub mod creative_gen;
+pub mod entity;
 pub mod inventory;
 pub mod items_gen;
 pub mod item_map;

@@ -606,7 +606,7 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
 | --- | --- | --- |
 | R1 | 基岩版的创造模式背包**只支持 MCHPRS 支持的方块** | ⛔ 原口径作废（2026-10-31 需求变更为**基岩版原生完整物品栏**）→ ✅ **已实现 + 真机验收通过**（2026-10-31 用户确认"真机验收全部完成"）：`creative.rs` / `creative_gen.rs` 全量面板 + `item_map.rs` 物品映射 |
 | R2 | **出生位置与 Java 版一致** | ✅ **已实现 + 真机验收通过**（2026-10-31）：`server.rs:822` 读 `Player::saved_position()`（`player.rs:466`）作为快照中心与出生点，口径为"同一方块、x/z 相同、y 差 64"；重进不再从天上掉（第 32 条同源） |
-| R3 | 支持**计分板**，即 Java 版右侧的 compiler 状态栏 | ✅ **已实现 + 真机验收通过**（2026-10-31）：`plot/scoreboard.rs:100/164` 推 `BedrockSidebar` → `BedrockCommand::Sidebar` → `session.rs` 用 `SetDisplayObjective` + `SetScore` 下发 |
+| R3 | 支持**计分板**，即 Java 版右侧的 compiler 状态栏 | ✅ **已实现 + 真机验收通过**（2026-10-31）：`plot/scoreboard.rs:100/164` 推 `BedrockSidebar` → `BedrockCommand::Sidebar` → `session.rs` 用 `SetDisplayObjective` + `SetScore` 下发。**改行文本必须先 `REMOVE` 再 `SET`**（Mojang bug MCPE-143063），否则 `Running` 永远不显示 —— 见 §9.13 |
 | R4 | 支持**输入命令**，且**与 Java 玩家权限一致** | ✅ **已实现 + 真机验收通过**（2026-10-31）：`CommandRequest` → `SChatCommand` → plot 线程执行，身份走 `OfflinePlayer:<name>` 与同名 Java 玩家同一 UUID。**剩余**：`AvailableCommands` 仍是空包 → 没有补全/红字校验（见第 8 条矛盾） |
 
 **BUG-032 功能排期（2026-10-29 23:2x，用户选定）**
@@ -699,7 +699,7 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
 | 19 | 轻微 | 快照在 plot 线程同步生成 81 区块 × 24 段 × 4096 ≈ **800 万次** `get_block_raw`，会卡 tick | 记录（阶段二移工作线程/加缓存） |
 | 20 | 轻微 | `do_login` 等 `RequestChunkRadius` 的循环无超时，客户端不发就永久挂住一个 task | ✅ 已修（2026-10-31）：15 秒超时，超时返回错误并关连接 |
 | 21 | 轻微 | 通道 `recv()` 返回 `None` 时日志打成"收到服务端指令 None，断开"，容易误读 | ✅ 已修（指令通道改 tokio unbounded 时一并区分 `Some/None`） |
-| 22 | 轻微 | 玩家 runtime id 写死 `ActorRuntimeID(1)`，与 `Player.entity_id` 是两套编号；阶段二发计分板/让别人看到 Bedrock 玩家时会撞号 | 记录 | ✅ 真机已验证（2026-10-31 第五轮，**小版本**）：`session::next_runtime_id()` 全局递增，每条连接各拿一个；`StartGame`（`target_actor_id`/`target_runtime_id`）、`SetActorData`、`UpdateAbilities`、`MovePlayer(Teleport)` 全部改用它（日志 `[A3] ACCEPT peer runtime_id=N`）。**还没做**：Java 玩家"看得见"Bedrock 玩家（实体 spawn + tab + 装备同步）仍是阶段二；`Player.entity_id`（Java 实体编号）与 Bedrock runtime id 依旧是两套，桥接时要做映射表 |
+| 22 | 轻微 | 玩家 runtime id 写死 `ActorRuntimeID(1)`，与 `Player.entity_id` 是两套编号；阶段二发计分板/让别人看到 Bedrock 玩家时会撞号 | 记录 | ✅ 真机已验证（2026-10-31 第五轮，**小版本**）：`session::next_runtime_id()` 全局递增，每条连接各拿一个；`StartGame`（`target_actor_id`/`target_runtime_id`）、`SetActorData`、`UpdateAbilities`、`MovePlayer(Teleport)` 全部改用它（日志 `[A3] ACCEPT peer runtime_id=N`）。**还没做**：Java 玩家"看得见"Bedrock 玩家（实体 spawn + tab + 装备同步）仍是阶段二；`Player.entity_id`（Java 实体编号）与 Bedrock runtime id 依旧是两套，桥接时要做映射表 | ✅ **完整版已写码 + 已编译 + 真机验收通过（2026-10-31）**：新增 `bedrock/entity.rs` + `BedrockCommand::Players` + `plot::send_bedrock_player_sync()`，Bedrock 客户端现在能看到其它玩家（含 Java 玩家），名字/位置/进出都正常（§9.11）。过程中修掉两个真机 bug：互相看差 1.62 格（§9.12）、计分板行文本不刷新（§9.13）。单测 42/42 |
 | 23 | 轻微 | `start_game` 的 `default_spawn_block_position` 是 `(0,79,0)`，与真实出生点 `(128.5, 64, 128.5)` 不符（指南针/出生点语义） | ✅ 已写码 + 已编译（2026-10-31 第六轮）：Geyser 的 `StartGame` **从不**设置这个字段（保持 Cloudburst 默认值），世界出生点是靠 Java `SetDefaultSpawnPosition` → `SetSpawnPositionPacket(WORLD_SPAWN)` 下发的。照此办理：①`build_level_settings` 里改回 `(0,0,0)` 并注明真实出生点走另一个包；②快照算出 `spawn_pos` 后发 `protocol::set_spawn_position(spawn_block)`（新包，逐字节测试对拍 `refs/ProbeSetSpawn.java`：`028002408002008002408002` / 负坐标 `020dc4ffffff0f42000dc4ffffff0f42`）。**已知与 Geyser 的差异**：`JavaSetDefaultSpawnPositionTranslator` 把 Java 方块坐标原样塞进 `blockPosition`（没做 y-64），我们按 Bedrock 坐标空间发（此时客户端确实在 `y-64`），真机上用指南针核对一次即可定论 → ✅ 真机验收通过（2026-10-31，用户确认"真机验收全部完成"；y 轴口径以 Bedrock 坐标空间为准，未发现指南针异常） |
 | 24 | 既有（非本轮引入） | `Player::save` 用 `write(true).create(true)` **不 truncate**，短数据写长文件留尾巴 → 反序列化失败会重置玩家数据 | ✅ 已修（2026-10-31）：`OpenOptions` 加 `.truncate(true)`（上游问题，改了本仓库这份） |
 | 25 | **真机·严重** | **进世界后悬空、不会自己落到地面**（实测：前 157 条 `PlayerAuthInput` ≈7.9 秒 y 恒为 64.0，之后才下降）。根因：`build_update_abilities` 的 `ABILITY_VALUES = 0x0FBF` 里 **bit9 = `FLYING`**（`0xBF`=1011 1111 → bit0–5 全 1、bit6=0、bit7=1；`0x0F00` 给 bit8–11），等于开局就宣称"正在飞行" → 不施加重力。Geyser 只在 `entity.isFlying()` 时才置这一位 | 📝 已定待写码：初值改 `0x0FBF & !(1<<9) = 0x0DBF`（保留 `MAY_FLY` + `INSTABUILD`）。该常量**有两份**：`session.rs:1099`（上线实际用的）与 `protocol.rs`（有逐字节测试 `update_abilities_matches_geyser_codec`，参考串里的 `bf0f0000` 即 LE u32 `0x0FBF`）→ 必须先用 `refs/ProbeCreativeAbilities.java` + Cloudburst v766 codec 生成 flying=false 的参考字节再改测试期望，不许手改十六进制（铁律 4） | ✅ 已修（2026-10-31）：新探针 `refs/ProbeCreativeNoFly.java` 用 `Geyser-Probe.jar` 跑出参考字节 —— flying=true `…00bf0f0000…`（与旧期望**逐字节一致**，说明编码器本来就对，只是值错）、flying=false `…00bf0d0000…`。`protocol.rs` 改为 `ABILITY_VALUES = 0x0DBF`（不含 `FLYING`）+ `ability_values(flying)` / `update_abilities_for(flying)`，测试对两种状态各断言一条；`session.rs` 的第二份实现已删除，改为调用 `protocol::update_abilities()` |
@@ -1502,8 +1502,159 @@ FOV 也随之变宽。Geyser 源码里本来就有这句注释："客户端在�
 
 1. **`ItemStackResponse` 回执**（PATCH-008）：客户端目前乐观应用，功能正常，但协议上不完整。
 2. **第 26 条增量区块流送**：目前只在登录时发 289 个区块，走远会看到虚空（最大项，建议单独一轮）。
-3. **第 22 条完整**：让 Bedrock 玩家看到其它玩家（`AddPlayer` / `MoveActorDelta` 全缺，现在互相不可见）。
+3. ~~**第 22 条完整**~~ → ✅ 2026-10-31 已写码并**真机验收通过**（§9.11、§9.12），过程中修掉两个附带 bug。
 4. **`AvailableCommands` 真命令树**：把 Brigadier 树转成 Bedrock 格式，客户端才有补全与红字校验。
 5. **第 19 条**：快照生成移到工作线程/加缓存，避免登录瞬间卡 tick。
 6. **抓包基础设施固化**：Geyser 的 `PacketSpy` 补丁 + `refs/Probe*.java` + 本地 Maven 仓库
    （`refs/geyser-deps`）已经能离线复现，后续查协议问题可以直接用。
+
+---
+
+### 9.11 第 22 条完整版：Bedrock 客户端看见别的玩家（2026-10-31 第二十轮）
+
+**问题**：阶段一里服务端知道"线上有谁"，但 Bedrock 客户端一个别的玩家都看不到 ——
+`AddPlayer` / `RemoveActor` / `MovePlayer`（对他人）三类包从来没发过。
+
+**设计（全量快照 + 会话层 diff）**
+
+```text
+plot 每 tick（update_players 末尾）
+  └─ send_bedrock_player_sync()：把 self.players 里所有人打包成 Vec<BedrockPlayerInfo>
+       └─ 给每个 Bedrock 玩家投一份"别人的全量列表"（BedrockCommand::Players）
+            └─ 会话线程 diff：新来的 → PlayerList(Add) + AddPlayer
+                              走了的 → RemoveActor + PlayerList(Remove)
+                              动了的 → MovePlayer（一步跨 >8 格自动升级成 Teleport 模式）
+```
+
+选全量而不是增量：玩家进出、传送、坠落纠正都要改状态，全量只多几个字节，
+却省掉一套容易出错的增量协议；空列表也要推（表达"别人都不在了"）。
+
+**权威依据（铁律 7，全部取自 Geyser / Cloudburst，不猜）**
+
+- 时序：`JavaPlayerInfoUpdateTranslator`（PlayerList ADD）→ `PlayerEntity#spawnEntity`（AddPlayer）。
+- 移动：`PlayerEntity#moveAbsolute` 用的是 **`MovePlayerPacket`**（NORMAL / TELEPORT），
+  **不是** `MoveActorAbsolutePacket`；TELEPORT 时 `teleportationCause = UNKNOWN(0)`。
+- 元数据：本地玩家那套 + `NAMETAG_ALWAYS_SHOW = 1`
+  （Geyser 注释："Since 1.20.60, the nametag does not show properly if this is not set"）。
+- **字段序实测**（`javap -c bedrock-codec-3.0.0.Beta5.jar AddPlayerSerializer_v557`）：
+  `uuid → username → runtimeEntityId(unsigned long varint) → platformChatId → position →
+  motion → rotation(Vector3f，即 pitch/yaw/headYaw 三个 float) → hand → gameType(varint) →
+  metadata → properties → abilities → links → deviceId → buildPlatform(i32 LE)`。
+  **线上没有 `uniqueEntityId`**（类里有 `setUniqueEntityId` 但序列化器不写），
+  所以 `unique id` 只用于 `RemoveActor`，取 `runtime id` 同值 —— Geyser 也是把两者设成同一个 `geyserId`。
+
+**改动清单**
+
+| 文件 | 改动 |
+| --- | --- |
+| `crates/network/src/bedrock/entity.rs`（新） | 五个构造 + 坐标/旋转换算（`bedrock_position` / `bedrock_rotation`）+ 5 条往返测试 |
+| `crates/network/src/bedrock/bridge.rs` | `BedrockPlayerInfo`、`BedrockCommand::Players(..)`、`BedrockHandle::send_players()` |
+| `crates/network/src/bedrock/protocol.rs` | 抽出 `abilities_data(runtime_id, flying, fly_speed)`（自己的 UpdateAbilities 与别人的 AddPlayer 共用） |
+| `crates/network/src/bedrock/session.rs` | `RemotePlayerState` + 收包循环里的 diff 分支（日志前缀 `[R6]`） |
+| `crates/network/src/bedrock/mod.rs` | 注册 `pub mod entity;` |
+| `crates/core/src/player.rs` | `PlayerBackend::send_players()`（Java 后端 no-op） |
+| `crates/core/src/plot/mod.rs` | `send_bedrock_player_sync()` + 在 `update_players()` 末尾调用 |
+
+**验证（本轮）**
+
+- `cargo build` → 通过（28s / 增量 15s），无新增警告。
+- `cargo test -p mchprs_network bedrock` → **40/40**（原 35 + 新增 5：
+  `player_list_add_carries_uuid_name_and_actor_id`、`add_player_y_offsets_position_and_keeps_target_ids`、
+  `move_player_uses_normal_and_teleport_modes`、`remove_actor_targets_unique_id`、`player_list_remove_targets_uuid`）。
+- 启动验证：`target\debug\mchprs.exe`（PID 20432）→ 日志
+  `Bedrock listener on udp 0.0.0.0:19132 (view distance 8 chunks)`、`[A3] LISTEN udp 0.0.0.0:19132`，
+  UDP 19132 与 TCP 25565 都在监听，无 panic。日志 `logs/mchprs-main-22.log`。
+
+**真机验证（2026-10-31 用户确认"基本完美"）**
+
+1. ✅ 两个客户端（一个 Bedrock `liuyitong1` + 一个 Java `123`）互相可见，名字显示正常，
+   位置跟手（20 Hz 推送），退出后实体消失（日志 `[R6] 移除玩家实体 uuid=… unique=2`）。
+2. ✅ **空皮肤没有导致隐形人**：0×0 空皮肤下客户端按默认外观渲染，`empty_skin()` 保留，
+   这条风险关闭（真要发皮肤再说，不再当风险记）。
+3. ⚠️ 但发现 **±1.62 格的高度错位**，以及计分板行文本不刷新两个问题 —— 见 §9.12 / §9.13。
+
+---
+
+### 9.12 真机 bug：两个客户端互相看差 2 格（眼睛高度 1.62）
+
+**现象**（用户 2026-10-31）：`java版看基岩版玩家是在天上2格的位置，基岩版看java版玩家在地下2格的位置`。
+
+**根因**：Bedrock 的"玩家位置"有**两套约定**，我们只做 `y - 64`，少了眼睛高度这一层：
+
+| 方向 | 约定 | Geyser 证据 |
+| --- | --- | --- |
+| 客户端**上报**位置（`PlayerAuthInput.player_position`） | **眼睛**（脚 + 1.62） | `BedrockMovePlayer.java:54`：`confirmTeleport(packet.getPosition().sub(0, EntityDefinitions.PLAYER.offset(), 0))` |
+| 服务端发**别人的移动**（`MovePlayer`）/ 自己的 `Respawn` | **眼睛**（脚 + 1.62） | `PlayerEntity#moveAbsolute`：`setPosition()` 内部给玩家加 offset，再发 `this.position` |
+| 服务端发**生成实体**（`AddPlayer`） | **脚** | `PlayerEntity#spawnEntity`：`addPlayerPacket.setPosition(position.sub(0, offset(), 0))` |
+
+`EntityDefinitions.PLAYER.offset() = 1.62`（`CollisionManager.java:169` 同样减它）。
+我们三处全按脚处理，于是：
+
+- 入站少减 1.62 → 服务端记的 Bedrock 玩家比真实脚高 1.62 → **Java 看他在天上 2 格**
+- 出站 `MovePlayer` 用脚发 → 客户端当成眼睛 → 模型低 1.62 → **基岩版看 Java 玩家在地下 2 格**
+
+**改法（只动基岩版一侧，Java 侧零改动，用户明确要求）**
+
+| 文件 | 改动 |
+| --- | --- |
+| `bedrock/entity.rs` | 新增 `pub const PLAYER_EYE_HEIGHT: f32 = 1.62`；把原 `bedrock_position` 拆成 `bedrock_feet()`（只给 `AddPlayer`）与 `bedrock_eye()`（`MovePlayer`） |
+| `bedrock/translate.rs` | 入站 `y - 1.62 + 64` |
+| `bedrock/session.rs` | 登录的 `Respawn` + `MovePlayer(Respawn/Teleport)`、服务端强制定位（`/tp`）全部用眼睛高度；`[R6]` 记账仍用脚 |
+
+`crates/core`（Java 侧）没有改动 —— 修完后 Java 玩家渲染的高度自动正确，因为服务端存的位置变成了真脚。
+
+**验证**：`cargo test -p mchprs_network bedrock` → **41/41**，新增
+`add_player_uses_feet_while_move_player_uses_eye`（直接断言两者 y 差 = 1.62）；
+`cargo build` 通过；重启后真机用户确认"好，没问题了"。
+
+**教训**：Bedrock 的"位置"要按**包种类**区分（同样是 y，`AddPlayer` 与 `MovePlayer` 差一个身高）；
+以后再发任何带坐标的包，先去 Geyser 找它是 `setPosition` 还是 `sub(offset)`。
+
+---
+
+### 9.13 真机 bug：`/redpiler compile` 后基岩版右侧不显示 `Running`
+
+**现象**（用户 2026-10-31）：输入 `/redpiler compile` 后，基岩版右侧计分板第一行不变成 `Running`。
+
+**日志证据**（`logs/mchprs-main-23.log`）——包**确实发了**，是客户端不刷新：
+
+```
+[R3] 计分板已下发：1 行     ← Stopped
+123 issued command: redpiler compile
+[R3] 计分板已下发：1 行     ← Compiling（同一行、只换文本）
+[R3] 计分板已下发：3 行     ← Running + Flags
+```
+
+**根因**：Bedrock 的侧边栏**行文本就是 fake player 名**，行由 `scoreboard_id` 标识；
+**同一个 id 只改文本，客户端不刷新**（Mojang bug **MCPE-143063**）。
+`Compiling`/`Running` 只是 id=0 那一行换文本 → 客户端一直显示旧的 `Stopped`；
+而 `Flags:` 是**新 id**，所以行数确实变多了，只有第一行卡住。
+
+**Geyser 的规避写法**（`SidebarDisplaySlot#render0`）：
+
+```java
+if (add) addScores.add(score.cachedInfo());
+// 文本变了就必须先 REMOVE 再 SET（MCPE-143063）
+if (add && exists && !(objectiveUpdate || objectiveAdd) && !score.onlyScoreValueChanged()) {
+    removeScores.add(score.cachedInfo());
+}
+```
+
+`Scoreboard#onUpdate` 的顺序也是**先发 REMOVE 包、再发 SET 包**。
+
+**改法**
+
+| 文件 | 改动 |
+| --- | --- |
+| `bedrock/scoreboard.rs` | 新增 `remove_scores_at(&[usize])`（按指定行号删，非连续）；`remove_scores(from,to)` 改成它的包装 |
+| `bedrock/session.rs` | 记录 `sidebar_texts`；推送顺序改为 **① 对文本变了的行发 `REMOVE` → ② 行数变少删尾巴 → ③ 整行 `CHANGE`** |
+
+**验证**：`cargo test -p mchprs_network bedrock` → **42/42**，新增
+`remove_scores_at_keeps_explicit_indices`（非连续下标 0、2 解出来必须正好是这两行）；
+`cargo build` 通过；重启后真机用户确认"ok，可以了"。
+
+**教训**：Bedrock 计分板"改一行字"不是幂等操作，必须删了重加；
+凡涉及 Mojang 已知 bug，把 bug 号写进注释和台账，否则下一个人（未来的我）会再踩一次。
+
+
+

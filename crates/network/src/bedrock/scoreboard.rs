@@ -63,11 +63,24 @@ pub fn change_scores(sidebar: &BedrockSidebar) -> SetScorePacket<Protocol> {
 
 /// 构造 `SetScorePacket::Remove`：删掉行号 `[from, to)`（行数变少时用）。
 pub fn remove_scores(from: usize, to: usize) -> SetScorePacket<Protocol> {
-    let removes = (from..to)
-        .map(|index| ScorePacketInfoRemoveEntry::<Protocol> {
-            id: ScoreboardId {
-                id: index as i64,
-            },
+    let indices: Vec<usize> = (from..to).collect();
+    remove_scores_at(&indices)
+}
+
+/// 构造 `SetScorePacket::Remove`：删掉**指定行号**。
+///
+/// 为什么需要"删指定行"：Bedrock 的计分板行文本就是 fake player 名，行由
+/// `scoreboard_id` 标识。**同一个 id 只改文本时客户端不会刷新**（Mojang bug MCPE-143063）。
+/// Geyser 的处理是：文本变了先把旧行 `REMOVE`，再 `SET` 新行
+/// （`SidebarDisplaySlot#render0`：
+/// `if (add && exists && !(objectiveUpdate || objectiveAdd) && !score.onlyScoreValueChanged()) removeScores.add(...)`）。
+///
+/// 少了这一步，`/redpiler compile` 之后右侧第一行永远停在 `Stopped`（2026-10-31 真机实测）。
+pub fn remove_scores_at(indices: &[usize]) -> SetScorePacket<Protocol> {
+    let removes = indices
+        .iter()
+        .map(|&index| ScorePacketInfoRemoveEntry::<Protocol> {
+            id: ScoreboardId { id: index as i64 },
             objective_name: OBJECTIVE_NAME.to_string(),
             score_value: 0,
         })
@@ -128,5 +141,25 @@ mod tests {
             hex(&remove_scores(2, 3)),
             "0101040d6d63687072735f73746174757300000000"
         );
+    }
+
+    /// 非连续下标的删除（"文本变了的行"往往不连续）：解出来必须正好是那些行号。
+    #[test]
+    fn remove_scores_at_keeps_explicit_indices() {
+        let decoded = {
+            let mut buf = Vec::new();
+            remove_scores_at(&[0, 2])
+                .serialize(&mut buf)
+                .expect("serialize");
+            SetScorePacket::<Protocol>::deserialize(&mut buf.as_slice()).expect("deserialize")
+        };
+        let SetScorePacket::Remove(entries) = decoded else {
+            panic!("expected REMOVE");
+        };
+        let ids: Vec<i64> = entries.iter().map(|e| e.id.id).collect();
+        assert_eq!(ids, vec![0, 2]);
+        assert!(entries
+            .iter()
+            .all(|e| e.objective_name == OBJECTIVE_NAME && e.score_value == 0));
     }
 }
