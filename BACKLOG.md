@@ -2567,21 +2567,31 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
   负载几何与内容完全正确（§9.28.2），所以这属于"客户端行为"而非"我们写错"。
   区块里的 NBT 继续照发（不删），哪天客户端吃了就自动生效，和兜底不冲突。
 
-#### 9.29.2 去掉发光（用户要求）
+#### 9.29.2 去掉发光（用户要求）—— 颜色试了三轮，最后**不发 `SignTextColor`**
 
-- 删掉临时开关 `SIGN_DEBUG_GLOW` / `SIGN_TEXT_COLOR_GLOW`，`IgnoreLighting` 恒为 **0**（不发光）。
-- 颜色改成**不透明白** `0xFFFFFFFF`（`SIGN_TEXT_COLOR_WHITE`）：
-  - 实测证据链：`0xFF000000`（黑）→ 真机**看不见字**；同色改成发光（`IgnoreLighting=1`）→ 可见。
-  - 用户要去掉发光，所以保留"亮色"改用白色 —— MCHPRS 的 plot 在低光照环境，黑字对比度太差。
-- 测试同步：`sign_nbt_matches_geyser_keys` 断言一面三个键
-  （`Text` / `SignTextColor = 0xFFFFFFFF` / `IgnoreLighting = 0`）。
+真机三轮的颜色对照（都是同一份 NBT，只改这一项）：
+
+| 发的颜色 | `IgnoreLighting` | 真机表现 |
+| --- | --- | --- |
+| `0xFF000000`（"不透明黑"） | 0 | **看不见字**（两次确认） |
+| `0xFFFFFFFF`（白） | 1（发光） | 可见，发光（临时诊断态） |
+| `0xFFFFFFFF`（白） | 0（不发光） | 可见，但**显示成灰色**（用户："没发光之前显示是没问题的"） |
+| **不发这个键**（当前） | 0 | 走客户端默认色 —— 待真机确认 |
+
+结论：客户端对 `SignTextColor` 的通道语义和我们以为的不一样（黑 → 看不见；白 → 被光照压成灰），
+最稳的做法是**完全不写这个键** —— Geyser 的 `SignBlockEntityTranslator` 也是只在 Java 牌子带
+`Color` 标签时才写它，其余交给客户端默认色。
+
+- 改动：`side_nbt` 只写 `Text` + `IgnoreLighting=0`；删掉 `SIGN_TEXT_COLOR_WHITE` 等常量。
+- 测试同步：`sign_nbt_matches_geyser_keys` 断言一面两个键、且**不含** `SignTextColor`。
 - `cargo build` 通过；`cargo test -p mchprs_network bedrock` = **70 passed**。
-- 服务端：**PID 10436**，日志 `logs\bedrock-noglow-1101-*.log`。
+- 服务端：**PID 12020**，日志 `logs\bedrock-signdefault-1101-*.log`。
 
 #### 9.29.3 记一笔给未来
 
-- 告示牌文字颜色不是"随便填"：**黑色在真机上看不见**（已两次踩到），默认用白色最省事。
+- 告示牌文字颜色别自己发明：**黑看不见、白变灰**，交给客户端默认色（不写 `SignTextColor`）。
 - 兜底通道（实时 `BlockActorData`）现在是牌子文字的唯一可靠载体；区块内 NBT 只是"顺便发"。
+- 想让牌子文字发光，把 `IgnoreLighting` 设 1 即可（这是唯一影响"发光"的开关，颜色无关）。
 
 
 

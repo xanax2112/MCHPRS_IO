@@ -226,7 +226,7 @@ Set-Location run; & ..\target\debug\mchprs.exe *> D:\computer\mchprs\bedrock\log
 | 项 | 状态 | 线索 |
 | --- | --- | --- |
 | BUG-032 第 43 条（区块携带的牌子字） | ✅ 功能上关闭（2026-11-01）：进 plot 补推 ±3 区块内最多 64 块牌子 | 台账 §9.28/§9.29；区块内 NBT 仍照发（离线解析证明几何正确），但客户端不吃，所以不依赖它 |
-| 告示牌文字颜色 | **必须白色**（`0xFFFFFFFF`）+ `IgnoreLighting=0` | 黑字真机看不见（踩过两次）；发光是临时诊断时用过的，已按用户要求去掉（§9.29.2） |
+| 告示牌文字颜色 | **不写 `SignTextColor`**（客户端默认色）+ `IgnoreLighting=0` | 血泪史：写 `0xFF000000` 真机看不见、写白变灰；要发光只改 `IgnoreLighting=1`（§9.29.2） |
 | 诊断日志（`[R7] 快照区块`/`告示牌包 hex`/`[A2] 解析后`） | 已挂到 `debug::VERBOSE` | 开 `VERBOSE` 才打（§5.1） |
 | B1（PATCH-008 `ItemStackResponse`） | ✅ 已修（2026-11-01，待编译） | 台账 §9.27.1；`refs\ProbeItemStackResponse.java` + 测试 `item_stack_response_decodes_cloudburst_bytes` |
 | C7（抓包基础设施固化） | ✅ 已做（2026-11-01） | 台账 §9.27.2；`refs\tools\probe.ps1` + `docs/BEDROCK-CAPTURE.md` |

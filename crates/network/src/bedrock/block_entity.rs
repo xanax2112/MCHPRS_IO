@@ -46,22 +46,17 @@ fn compound(fields: Vec<(&str, nbtx::Value)>) -> nbtx::Value {
     nbtx::Value::Compound(map)
 }
 
-/// 告示牌文字颜色：**不透明白**（ARGB `0xFFFFFFFF`）。
+/// 告示牌文字颜色：**不写这个键**，用客户端默认色。
 ///
-/// 为什么不用默认黑（BUG-032 第 43 条收尾时的实测结论）：
-/// - 早期写死 `0xFF000000`（不透明黑），真机上牌子上**完全看不见字**；
-/// - 改成发光白字（同色 + `IgnoreLighting=1`）立刻可见。
-/// - 现在 `IgnoreLighting` 回到 0（不发光，用户要求去掉发光），颜色因此保持白色
-///   —— MCHPRS 的 plot 在地下/低光照环境，黑字对比度太差；白字普通光照下也看得清。
+/// 踩坑记录（BUG-032 第 43 条，三轮真机）：
+/// - 写 `0xFF000000`（"不透明黑"）→ 真机**看不见字**（两次确认）；
+/// - 写 `0xFFFFFFFF` + `IgnoreLighting=1`（发光白）→ 可见，但是发光；
+/// - 写 `0xFFFFFFFF` + `IgnoreLighting=0` → 可见，但**显示成灰色**（用户：不像原来的样子）。
 ///
-/// 写成 `u32` 再 `as i32`：`0xFFFF_FFFF` 超出 `i32::MAX`，直接写字面量会触发
-/// `overflowing_literals`（deny）。
-const SIGN_TEXT_COLOR_WHITE: i32 = 0xFFFF_FFFFu32 as i32;
-
-/// 一侧文字的 NBT（`FrontText` / `BackText`）。
-///
-/// 只写 `Text` + `SignTextColor` + `IgnoreLighting` 三个键（Geyser
-/// `SignBlockEntityTranslator.translateSide` 的子集；`IgnoreLighting` 恒为 0 = 不发光）。
+/// 结论：客户端对 `SignTextColor` 的通道语义和我们以为的不一样（亮色会被光照压成灰，
+/// 而"黑"直接看不见），所以干脆**不发这个键** —— Geyser `SignBlockEntityTranslator`
+/// 也是只在 Java 牌子带 `Color` 标签时才写它，其余走客户端默认色。
+/// `IgnoreLighting` 保持 0（不发光）。
 fn side_nbt(rows: &[String; 4]) -> nbtx::Value {
     let mut text = rows.join("\n");
     // Geyser：去掉尾部换行（否则编辑时光标从牌子最底下开始）。
@@ -70,10 +65,6 @@ fn side_nbt(rows: &[String; 4]) -> nbtx::Value {
     }
     compound(vec![
         ("Text", nbtx::Value::String(text.as_str().into())),
-        (
-            "SignTextColor",
-            nbtx::Value::Int(SIGN_TEXT_COLOR_WHITE),
-        ),
         ("IgnoreLighting", nbtx::Value::Byte(0)),
     ])
 }
@@ -197,8 +188,8 @@ mod tests {
 
     /// 告示牌 NBT 的键必须和 Geyser 一致（少一个键客户端就不认这块牌子）。
     ///
-    /// 一面三个键：`Text` + `SignTextColor`（不透明白）+ `IgnoreLighting`（0 = 不发光）。
-    /// 颜色为什么是白、为什么曾经写黑导致"看不见"，见 `side_nbt` / `SIGN_TEXT_COLOR_WHITE` 注释。
+    /// 一面两个键：`Text` + `IgnoreLighting`（0 = 不发光）；**不写 `SignTextColor`**。
+    /// 为什么不写颜色（黑看不见、白显示成灰），见 `side_nbt` 的踩坑记录。
     #[test]
     fn sign_nbt_matches_geyser_keys() {
         let map = sign_nbt(&sample());
@@ -213,11 +204,10 @@ mod tests {
         let nbtx::Value::Compound(front) = &map["FrontText"] else {
             panic!("FrontText 必须是 Compound");
         };
-        assert_eq!(front.len(), 3, "一面三个键：Text / SignTextColor / IgnoreLighting");
-        assert_eq!(
-            front.get(b"SignTextColor".as_slice()),
-            Some(&nbtx::Value::Int(-1)),
-            "颜色必须是 0xFFFFFFFF（不透明白）；写黑会让文字在真机上看不见"
+        assert_eq!(front.len(), 2, "一面两个键：Text / IgnoreLighting");
+        assert!(
+            !front.contains_key(b"SignTextColor".as_slice()),
+            "不写 SignTextColor：写黑看不见、写白会显示成灰色"
         );
         assert_eq!(
             front.get(b"IgnoreLighting".as_slice()),
