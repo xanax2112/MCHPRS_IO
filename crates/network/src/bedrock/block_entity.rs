@@ -31,12 +31,6 @@ use super::bridge::BedrockSign;
 use super::chunk::Y_OFFSET;
 use super::protocol::Protocol;
 
-/// Geyser 对 "black" 取 default 0，再补不透明度 → `0xFF000000`。
-///
-/// 写成 `u32` 再 `as i32`：`0xFF00_0000` 超出 `i32::MAX`，直接写成 `i32` 字面量
-/// 会触发 `overflowing_literals`（deny）。
-const SIGN_TEXT_COLOR_DEFAULT: i32 = 0xFF00_0000u32 as i32;
-
 /// 一条 NBT 复合标签（键是 `String`，值是 `nbtx::Value`）。
 ///
 /// 直接用 `String` 而不是 `nbtx::Compound`（它的键是 `bstr::BString`）：
@@ -52,17 +46,22 @@ fn compound(fields: Vec<(&str, nbtx::Value)>) -> nbtx::Value {
     nbtx::Value::Compound(map)
 }
 
-/// 诊断开关（临时）：把告示牌文字设成**发光白字**。
+/// 告示牌文字颜色：**不透明白**（ARGB `0xFFFFFFFF`）。
 ///
-/// 目的：真机上"牌子上看不到字"时，用它区分两种可能 ——
-/// ①客户端**没接受**方块实体（发光也没用）；②客户端接受了，但黑字在这个光照/材质下看不见
-/// （发光白字会立刻显出来）。定位完改回 `false`。
-const SIGN_DEBUG_GLOW: bool = true;
-
-/// 诊断用：如果发光，文字用不透明白色。
-const SIGN_TEXT_COLOR_GLOW: i32 = 0xFFFF_FFFFu32 as i32;
+/// 为什么不用默认黑（BUG-032 第 43 条收尾时的实测结论）：
+/// - 早期写死 `0xFF000000`（不透明黑），真机上牌子上**完全看不见字**；
+/// - 改成发光白字（同色 + `IgnoreLighting=1`）立刻可见。
+/// - 现在 `IgnoreLighting` 回到 0（不发光，用户要求去掉发光），颜色因此保持白色
+///   —— MCHPRS 的 plot 在地下/低光照环境，黑字对比度太差；白字普通光照下也看得清。
+///
+/// 写成 `u32` 再 `as i32`：`0xFFFF_FFFF` 超出 `i32::MAX`，直接写字面量会触发
+/// `overflowing_literals`（deny）。
+const SIGN_TEXT_COLOR_WHITE: i32 = 0xFFFF_FFFFu32 as i32;
 
 /// 一侧文字的 NBT（`FrontText` / `BackText`）。
+///
+/// 只写 `Text` + `SignTextColor` + `IgnoreLighting` 三个键（Geyser
+/// `SignBlockEntityTranslator.translateSide` 的子集；`IgnoreLighting` 恒为 0 = 不发光）。
 fn side_nbt(rows: &[String; 4]) -> nbtx::Value {
     let mut text = rows.join("\n");
     // Geyser：去掉尾部换行（否则编辑时光标从牌子最底下开始）。
@@ -73,16 +72,9 @@ fn side_nbt(rows: &[String; 4]) -> nbtx::Value {
         ("Text", nbtx::Value::String(text.as_str().into())),
         (
             "SignTextColor",
-            nbtx::Value::Int(if SIGN_DEBUG_GLOW {
-                SIGN_TEXT_COLOR_GLOW
-            } else {
-                SIGN_TEXT_COLOR_DEFAULT
-            }),
+            nbtx::Value::Int(SIGN_TEXT_COLOR_WHITE),
         ),
-        (
-            "IgnoreLighting",
-            nbtx::Value::Byte(if SIGN_DEBUG_GLOW { 1 } else { 0 }),
-        ),
+        ("IgnoreLighting", nbtx::Value::Byte(0)),
     ])
 }
 
@@ -203,7 +195,10 @@ mod tests {
         bytes.windows(needle.len()).any(|window| window == needle)
     }
 
-    /// 告示牌 NBT 的键必须和 Geyser 完全一致（少一个键客户端就不认这块牌子）。
+    /// 告示牌 NBT 的键必须和 Geyser 一致（少一个键客户端就不认这块牌子）。
+    ///
+    /// 一面三个键：`Text` + `SignTextColor`（不透明白）+ `IgnoreLighting`（0 = 不发光）。
+    /// 颜色为什么是白、为什么曾经写黑导致"看不见"，见 `side_nbt` / `SIGN_TEXT_COLOR_WHITE` 注释。
     #[test]
     fn sign_nbt_matches_geyser_keys() {
         let map = sign_nbt(&sample());
@@ -215,8 +210,20 @@ mod tests {
         assert_eq!(map["y"], nbtx::Value::Int(6));
         assert_eq!(map["id"], nbtx::Value::String("Sign".into()));
         assert_eq!(map["IsWaxed"], nbtx::Value::Byte(0));
-        // 颜色是 0xFF000000（ARGB 不透明黑），按 i32 看是负数
-        assert_eq!(SIGN_TEXT_COLOR_DEFAULT, -16_777_216);
+        let nbtx::Value::Compound(front) = &map["FrontText"] else {
+            panic!("FrontText 必须是 Compound");
+        };
+        assert_eq!(front.len(), 3, "一面三个键：Text / SignTextColor / IgnoreLighting");
+        assert_eq!(
+            front.get(b"SignTextColor".as_slice()),
+            Some(&nbtx::Value::Int(-1)),
+            "颜色必须是 0xFFFFFFFF（不透明白）；写黑会让文字在真机上看不见"
+        );
+        assert_eq!(
+            front.get(b"IgnoreLighting".as_slice()),
+            Some(&nbtx::Value::Byte(0)),
+            "不能发光（用户要求去掉发光）"
+        );
     }
 
     /// 正面四行按 `\n` 拼接、**尾部空行去掉**；反面必须用 back 那四行
