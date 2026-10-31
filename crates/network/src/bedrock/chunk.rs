@@ -537,7 +537,8 @@ mod tests {
         assert_eq!(with[plain.len()], 10, "方块实体流必须以 TAG_Compound 开头");
     }
 
-    /// 流送队列：已发过的不能重复入队；顺序由近到远（一圈一圈填）。    #[test]
+    /// 流送队列：已发过的不能重复入队；顺序由近到远（一圈一圈填）。
+    #[test]
     fn pending_chunks_skips_sent_and_orders_by_ring() {
         let mut have = std::collections::HashSet::new();
         have.insert((0, 0));

@@ -449,7 +449,8 @@ mod tests {
     }
 
     #[test]
-    fn remove_actor_targets_unique_id() {        let decoded = roundtrip(&remove_actor(1234));
+    fn remove_actor_targets_unique_id() {
+        let decoded = roundtrip(&remove_actor(1234));
         assert_eq!(decoded.target_actor_id.0, 1234);
     }
 

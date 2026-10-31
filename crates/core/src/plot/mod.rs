@@ -2986,7 +2986,8 @@ fn sign_row_to_legacy(row: &str) -> String {
 }
 
 /// Extracts a human-readable message from a panic payload.
-fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {    if let Some(message) = payload.downcast_ref::<&'static str>() {
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
         (*message).to_string()
     } else if let Some(message) = payload.downcast_ref::<String>() {
         message.clone()
