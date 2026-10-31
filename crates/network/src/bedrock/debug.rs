@@ -4,7 +4,9 @@
 //! 用"写死常量"而不是环境变量：服务端是手动起进程的，环境变量经常忘记带，
 //! 而改这一行常量最显眼、不会漏。
 
-use bedrock::protocol::ProtoCodec;
+// 注意：`Protocol`（= `V766`）实现的是 `Packets`（带 PacketHeader），**不是** `ProtoCodec`；
+// 单独那些包结构体才实现 `ProtoCodec`。所以这里要导入 `Packets` + `PacketHeader`。
+use bedrock::protocol::{PacketHeader, Packets};
 
 use super::protocol::Protocol;
 
@@ -39,8 +41,10 @@ pub fn dump_out(packets: &[Protocol]) {
         return;
     }
     for p in packets {
+        // 带上 2 字节 `PacketHeader` 再序列化（`Protocol` 只实现 `Packets`），
+        // 所以长度比真实负载多 2 字节；调试用无所谓，看相对大小即可。
         let mut buf = Vec::new();
-        let _ = p.serialize(&mut buf);
+        let _ = p.serialize(&PacketHeader::default(), &mut buf);
         println!("[PKT] >> {} ({} B)", super::session::pname(p), buf.len());
         if PACKET_HEX {
             let hex: String = buf

@@ -708,6 +708,28 @@ impl Plot {
             player.client.send_game_mode(player.gamemode);
             // BUG-032 第 39 条：把存档里的背包灌回客户端，否则退出重进后物品栏是空的
             // （服务端一直有，只是从来没发过）。
+            // BUG-032 第 43 条兜底：区块负载里**确实**带了牌子 NBT（离线用
+            // `refs\tools\parse_chunk.js` 解析过：段/生物群系/边界/NBT 几何完全吻合，
+            // 方块格子里就是 9209 standing_sign、实体 NBT 的 pos 与文字都对），
+            // 但真机上客户端不把它应用到牌子上；而实时 `BlockActorData` 立刻生效。
+            // 所以进 plot 后把附近（±3 区块、最多 64 块）的牌子用实时通道补推一遍。
+            let pcx = (player.pos.x.floor() as i32).div_euclid(16);
+            let pcz = (player.pos.z.floor() as i32).div_euclid(16);
+            let mut pushed = 0usize;
+            'chunks: for dx in -3..=3 {
+                for dz in -3..=3 {
+                    for sign in self.bedrock_signs_in_chunk((pcx + dx, pcz + dz)) {
+                        if pushed >= 64 {
+                            break 'chunks;
+                        }
+                        player.client.send_sign(sign);
+                        pushed += 1;
+                    }
+                }
+            }
+            if pushed > 0 {
+                info!("Bedrock 进 plot：补推 {pushed} 块告示牌文字（第 43 条兜底）");
+            }
             player.client.send_inventory(bedrock_inventory_snapshot(&player));
         }
         self.players.push(player);

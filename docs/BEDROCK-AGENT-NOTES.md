@@ -225,7 +225,7 @@ Set-Location run; & ..\target\debug\mchprs.exe *> D:\computer\mchprs\bedrock\log
 
 | 项 | 状态 | 线索 |
 | --- | --- | --- |
-| BUG-032 第 43 条（区块携带的牌子字） | **未结**：实时推发生效、重进丢字 | 台账 §9.25；日志已证明区块负载里带了牌子 NBT 但客户端不应用。三条候选：①登录后补发 `BlockActorData` 兜底 ②试 PocketMine 式长度前缀 ③Geyser 对照抓包 |
+| BUG-032 第 43 条（区块携带的牌子字） | **未结**：实时推发生效、重进丢字；已加"进 plot 补推附近 64 块"兜底 | 台账 §9.25 / §9.28；离线解析（`refs\tools\parse_chunk.js`）证明区块负载几何完全正确，方块 9209 与实体 NBT 都在对的位置。候选：①PocketMine 式长度前缀 A/B ②Geyser 对照抓包 |
 | `SIGN_DEBUG_GLOW = true` | 临时诊断开关 | `block_entity.rs`；牌子现在是发光白字。已确认黑字+`IgnoreLighting=0` 在真机看不见，但"颜色 vs 光照"还没分离验证 |
 | 诊断日志（`[R7] 快照区块`/`告示牌包 hex`/`[A2] 解析后`） | 已挂到 `debug::VERBOSE` | 开 `VERBOSE` 才打（§5.1） |
 | B1（PATCH-008 `ItemStackResponse`） | ✅ 已修（2026-11-01，待编译） | 台账 §9.27.1；`refs\ProbeItemStackResponse.java` + 测试 `item_stack_response_decodes_cloudburst_bytes` |

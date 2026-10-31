@@ -2503,6 +2503,56 @@ pub struct ItemStackResponseInfo<V: ProtoVersion> {
 
 **状态**：两条都**未编译**（等"编译"指令）。B2（真正回 `ItemStackResponse`）仍然不做。
 
+---
+
+### 9.28 编译结果 + 第 43 条新证据（2026-11-01 02:0x，用户"编译吧，这次能不能把告示牌的问题探出来了"）
+
+#### 9.28.1 编译 / 测试
+
+- `cargo build`：**通过**（13.0s）。
+  - 中途踩到我自己写的一个编译错误：`Protocol`（= `V766`）实现的是 **`Packets`**（带 `PacketHeader`），
+    **不是** `ProtoCodec`；`debug.rs` 里改成
+    `p.serialize(&PacketHeader::default(), &mut buf)`（长度因此比真实负载多 2 字节，调试用够）。
+- `cargo test -p mchprs_network bedrock`：**70 passed / 0 failed**（含新增的 B1 对拍）。
+- 服务端：**PID 10392**，日志 `logs\bedrock-signfix-1101-0208.log`。
+
+#### 9.28.2 新证据：区块负载**结构上完全正确**
+
+用 `refs\tools\parse_chunk.js`（独立实现，不碰我们的编解码器）解析了
+`build_chunk_from_world_with_signs` 产出的 874 字节负载，结论：
+
+```
+section 0: version=9 layers=1 index=252(-4) 占 523 字节
+生物群系结束于 offset=732
+边界字节=0，NBT 流从 offset=733 开始，剩余 141 字节
+NBT#1: 根名="" id=Sign pos=(52,-56,486) FrontText.Text="abc" IsWaxed=0
+结论：解析后 offset=874，负载长度=874，**完全吻合**
+```
+
+再用 `refs\tools\check_sign_block.js` 查牌子那个格子：
+`bits=1 palette=[11996, 9209]`，格子 (4,6,8) → **运行时 id 9209**（`standing_sign` 的一个朝向）。
+
+也就是说：**方块在、实体在、位置对、文字对、字节几何与规范完全吻合**，
+但真机上客户端不把它应用到牌子上（而同一个包走独立 `BlockActorData` 就生效）。
+这条把"我们写错了"基本排除，剩下的都是"客户端怎么吃"的问题。
+
+#### 9.28.3 兜底：进 plot 时用实时通道补推附近的牌子
+
+既然实时通道是真机验证过可用的，就先让它兜住：
+
+- `Plot::enter_plot`（Bedrock 分支）：算出玩家所在区块，扫 **±3 区块**内所有牌子，
+  **最多 64 块**，逐块 `player.client.send_sign(...)`，日志
+  `Bedrock 进 plot：补推 N 块告示牌文字（第 43 条兜底）`。
+- 时机正确：登录时区块已在 `[C2]` 阶段发完，`enter_plot` 在其后，客户端此时已有区块。
+- 区块里的 NBT 仍然保留（哪天客户端吃了就自动生效，不冲突）。
+
+#### 9.28.4 仍未解
+
+为什么"区块内方块实体"客户端不应用（同一份 NBT 走独立包就吃）。
+候选仍是 §9.25.4 那三条，其中**第 2 条（PocketMine 式长度前缀）**现在最可疑：
+PocketMine 写的是 `边界(0) + varint(总长) + 每块 varint(单块长) + nbt`，
+Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B 一次判定。
+
 
 
 
