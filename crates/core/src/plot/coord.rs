@@ -170,7 +170,7 @@ impl CoordState {
 /// least one group) plus every non-dot `.rom`/`.ram` memory file, whether or
 /// not it parses (BACKLOG.md BUG-022). `io.txt` disabled at load level is
 /// never offered.
-fn file_candidates() -> Vec<String> {
+pub(super) fn file_candidates() -> Vec<String> {
     let mut out = Vec::new();
     let io_table = crate::io::IoTable::load(std::path::Path::new(crate::io::IO_FILE));
     if !io_table.groups.is_empty() {
@@ -199,7 +199,7 @@ fn file_candidates() -> Vec<String> {
 }
 
 /// Type short codes for a memory file.
-fn type_candidates(rom: bool) -> Vec<&'static str> {
+pub(super) fn type_candidates(rom: bool) -> Vec<&'static str> {
     let mut out = vec!["clk", "addr", "rd", "a_addr", "a_rd"];
     if !rom {
         out.extend(["wd", "we", "re", "bwe", "a_wd"]);
@@ -213,7 +213,7 @@ fn type_candidates(rom: bool) -> Vec<&'static str> {
 /// exactly the ones `/coord` is used to repair. Only a file that fails at file
 /// level is hidden, which `file_candidates` already decides
 /// (BACKLOG.md BUG-022).
-fn io_group_candidates() -> Vec<String> {
+pub(super) fn io_group_candidates() -> Vec<String> {
     let Ok(text) = fs::read_to_string(crate::io::IO_FILE) else {
         return Vec::new();
     };

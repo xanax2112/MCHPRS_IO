@@ -681,8 +681,60 @@ impl Plot {
                 .push(PlayerPacketSender::new(java_client));
         }
         self.scoreboard.add_player(&player);
+        // 动态补全（BUG-032 B4）：Bedrock 的软枚举初始值必须等玩家进 plot 才知道
+        // （值来自本 plot 的 io.txt / memory 目录 / schems 目录），所以在这里推。
+        if player.client.is_bedrock() {
+            let (schem_files, coord_files, coord_types) = self.bedrock_soft_enum_values(&player);
+            player.client.send_soft_enum("schem_files", schem_files);
+            player.client.send_soft_enum("coord_files", coord_files);
+            player.client.send_soft_enum("coord_types", coord_types);
+        }
         self.players.push(player);
         self.update_view_pos_for_player(self.players.len() - 1, true);
+    }
+
+    /// Bedrock 软枚举（动态补全）的取值（BUG-032 B4）。
+    ///
+    /// 四份列表：
+    /// - `schem_files`：`//load` 的文件名（`schems` 目录，`schemati` 开启时按玩家 uuid 分目录）
+    /// - `coord_files`：`/coord in` 的第一个参数（`io.txt` + `memory/*.txt`）
+    /// - `coord_types`：`/coord new|add <type>` 的类型码
+    ///
+    /// **没有 `coord_targets`**：`/coord in <file> <name>` 的取值取决于前一个参数
+    /// （`io.txt` 时是组名、`memory/*.txt` 时是类型码），Bedrock 软枚举没法按上下文缩小，
+    /// 给并集会列出错误候选（2026-10-31 真机反馈），所以那一位保持普通字符串。
+    ///
+    /// **平台差异**：Bedrock 的软枚举是"每个参数一份平铺列表"，没法像 Java 那样按前文
+    /// 上下文缩小范围，所以 `coord_targets` 用了并集（客户端会多列几个候选，不影响正确性）。
+    fn bedrock_soft_enum_values(
+        &self,
+        player: &Player,
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let mut schem_files = Vec::new();
+        let mut dir = std::path::PathBuf::from("./schems");
+        if CONFIG.schemati {
+            dir.push(crate::utils::HyphenatedUUID(player.uuid).to_string());
+        }
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    schem_files.push(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+        }
+        schem_files.sort();
+
+        let coord_files = coord::file_candidates();
+
+        let mut coord_types: Vec<String> = coord::type_candidates(true)
+            .into_iter()
+            .chain(coord::type_candidates(false))
+            .map(|ty| ty.to_string())
+            .collect();
+        coord_types.sort();
+        coord_types.dedup();
+
+        (schem_files, coord_files, coord_types)
     }
 
     fn get_chunk_distance(x1: i32, z1: i32, x2: i32, z2: i32) -> u32 {

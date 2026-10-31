@@ -22,6 +22,8 @@
 
 **附加约定**
 
+- **当前分工（用户 2026-10-31 下达）**：AI 只负责**基岩版（BUG-032）开发**；Java 侧代码不在范围内，
+  除用户明确要求外不动 `crates/core` 的 Java 协议/玩家逻辑。未实现项的裁决见 §9.18。
 - 问题一次问清，优先多选；复杂任务用台账逐项跟踪，完成一项记一项。
 - 新建的临时文件一律放 `~/dsh/scratch/`，不留散落文件。
 - 写含单引号的源码必须走 Python 脚本（`chr(39)` 构造），直接用 shell heredoc 会剥掉引号。
@@ -1789,6 +1791,159 @@ Java 客户端根本拿不到这些物品，所以只有 Bedrock 会撞到。
 
 **教训**：Bedrock 的 `LevelChunk` 是"整块替换"，不是"补丁"；凡是能用一个 `UpdateBlock`
 说清楚的变化，绝不要重发区块。
+
+---
+
+### 9.18 未实现清单与决策（2026-10-31，用户逐条裁决）
+
+> **范围约定（用户 2026-10-31 明确）**：AI 当前**只负责基岩版开发**；Java 侧不在本轮范围内。
+> 本节只记录"做 / 不做"的裁决与理由，**不代表现在开始做**；执行顺序见文末。
+
+#### 9.18.1 背景：未实现项是从哪查出来的
+
+不是凭印象列的，全部有代码依据：
+
+- **实体/方块表现**：`MobEquipment`、`BlockActorData`、`Animate`（出站）、`PlaySound`/`LevelEvent`
+  在 `crates/network/src/bedrock/` 里搜不到任何构造；`chunk.rs` 里方块实体是
+  `out.push(0); // 边界方块计数（本阶段不下发方块实体）`。
+- **物品数据**：`creative.rs:26` 注释自认"网络 NBT 编码我们还没对齐，发空 NBT"。
+- **gamemode**：`BroadcastMessage::PlayerUpdateGamemode` 只发 Java `CPlayerInfoUpdate`，
+  Bedrock 后端直接丢弃，也从没发过 `SetPlayerGameType`。
+- **协议完整性**：`AvailableCommands` 发的是空包；`ItemStackResponse` 类型残缺（PATCH-008）；
+  `SubChunkRequest` 未处理；皮肤是 0×0。
+- **非基岩遗留**：台账 §6 表与 `UNVERIFIED-0.5.3/0.5.4-alpha.md`。
+
+#### 9.18.2 裁决结果：做（8 项，全部属于基岩版范围）
+
+| 编号 | 项 | 理由 | 预估 |
+| --- | --- | --- | --- |
+| A1 | 其他玩家手持物品（`MobEquipment`） | 别人看你永远空手，最显眼的缺失 | ~60 行 |
+| A2 | 告示牌文字（`BlockActorData` + block entity NBT） | 基岩端告示牌全空白 | ~150 行 |
+| A3 | 挥手 / 潜行 / 疾跑姿势（`Animate` + 动态元数据） | 别人看你永远站着不动 | ~100 行 |
+| A5 | `/gamemode` 对 Bedrock 生效（`SetPlayerGameType`） | 现在切模式基岩端收不到 | ~50 行 |
+| B1 | 修 `ItemStackResponse` 类型（PATCH-008） | 唯一"已知错误"的 vendored 代码（缺 containers + run-on 解码） | ~150 行 |
+| B3 | `AvailableCommands` 静态命令树 | 基岩端无补全/无语法校验；数据源 `DECLARE_COMMANDS`（89 节点）已存在 | ~250 行 |
+| B4 | 动态补全（soft enum：`/coord`、`//load`） | 依赖 B3；没有它 B3 的补全只覆盖命令名 | ~100 行 |
+| C7 | 抓包基础设施固化 | B1 需要 Probe；顺带把 7 个临时 ps1 收敛成 1 个 + docs 写清两条取证通道 | 半天，无协议风险 |
+| A-t1 | 别名合并进目标命令（`tp`/`rp`/`gmc` 不再作为"无参数独立命令"出现） | 用户 2026-10-31 补裁决"做"；生成器按命令别名表合并 | ~40 行 |
+| A-t2 | 软枚举刷新挂点（`//save`、`/coord` 改写文件后重推候选） | 用户 2026-10-31 补裁决"做"；现在只在进 plot 时推一次 | ~30 行 |
+
+#### 9.18.3 裁决结果：不做（14 项）
+
+| 编号 | 项 | 不做的理由 |
+| --- | --- | --- |
+| A4 | 声音 / 粒子 | 需要方块→音效 id 的大表，收益是"好听"，优先级低于可见缺口 |
+| A6 | 创造面板物品 NBT | Bedrock 网络 NBT 编码要逐字段验证，而 MCHPRS 对 NBT 依赖很少 |
+| A7 | 方块容器 GUI | MCHPRS 本身没有真正的容器逻辑，做了也看不到内容 |
+| A8 | 昼夜 / 天气推进 | MCHPRS 没有昼夜与天气，额外造一套无意义 |
+| B2 | 真正回 `ItemStackResponse` | `enable_item_stack_net_manager = false` 时客户端大概率忽略；回执写错比不回更糟 |
+| B5 | `SubChunkRequest` | 纯带宽优化；实测每区块 ≈790 字节，不构成问题 |
+| B6 | 内嵌默认皮肤 | 空皮肤已验证不隐形，只是所有人外观相同 |
+| B7 | 区块 light 段 | Bedrock 1.18+ 客户端算光，真机未报异常；出现"莫名很黑"再取证 |
+| C1 | memory 首行版本号 | 用户明确"不做"（维持原决定） |
+| C2 | 0.5.2-alpha T-01…T-83 验收 | 需要用户实际交互一整轮 |
+| C3 | 演示程序（`test.py` + 加法器世界） | 一直由用户自己补 |
+| C4 | 文档同步（README×2、`protocol*.txt`×2） | 先把功能做完，最后一次性校对 |
+| C5 | `UNVERIFIED-0.5.3/0.5.4` 清单 | 同 C2，需要真机逐项验收 |
+| C6 | Java 侧 BUG-023 技术债（命令树自动生成、派发合并） | 不在基岩版范围；玩家无感 |
+
+#### 9.18.4 执行顺序（仅记录，未启动）
+
+> **用户 2026-10-31 裁决：本轮暂不开工**（先把 B3 命令补全提交固化）。
+> 下列顺序保留为待办清单，开工时按此推进。
+
+1. **实体表现**：A1 + A3 + A5（同一条实体同步通路，一起做最省）
+2. **方块实体**：A2（需要 NBT 编码，独立）
+3. **工具 + 协议**：C7 + B1（C7 先建 Probe 脚本，B1 正好用它出参考字节）
+4. **补全**：B3 + B4（B4 依赖 B3）—— ✅ 2026-10-31 已完成并真机验收（§9.19、§9.20）
+5. **补全小尾巴**：A-t1 别名合并、A-t2 软枚举刷新挂点
+
+每轮流程不变：写码 → 编译 → 起服务 → 真机 → 回写台账 → 提交。
+
+---
+
+### 9.19 B3：Bedrock 命令树（`AvailableCommands`）已写码，待编译
+
+> 状态：📝 **已写码，等用户说"编译"**（铁律 3：写码与编译分离）。尚未真机验证。
+
+**协议细节（全部实测，不是猜）**：新增探针 `refs/ProbeAvailableCommands.java`，
+用 Cloudburst `Bedrock_v766.CODEC` 编码一棵两命令的树，再用脚本 `refs/decode_avail.js`
+逐字段解码，得到：
+
+| 事实 | 实测值 |
+| --- | --- |
+| 参数符号（内置类型） | `0x0010_0000 \| 线上类型编号`。**这个编号不是 `CommandParamType.ordinal()`**：实测 `refs/ProbeParamSymbols.java` 得到 INT=1、FLOAT=3、TARGET=8、STRING=56、BLOCK_POSITION=64、POSITION=65、MESSAGE=67（枚举序号分别是 1/2/8/44/52/53/55）。一开始按枚举序号抄，被字节对拍测试当场揪出 |
+| 参数符号（固定取值集合） | `0x0030_0000 \| enum_data 下标`（如 `0x00300000`/`0x00300001`） |
+| `enum_data[].values` | 是 `enum_values` 的**下标** |
+| `flags` | u16 LE，`0x0080` = `NOT_CHEAT` |
+| `permission_level` | i8，`Any = 0` |
+| 无别名 | `alias_enum = -1`（i32 LE） |
+| constraints | 只有枚举值带 `ALLOW_ALIASES` 等约束才出现；我们不用 → 空 |
+
+**改动清单（Java 侧零改动）**
+
+| 文件 | 内容 |
+| --- | --- |
+| `crates/network/src/bedrock/commands.rs`（新） | `Param` / `CommandDef` + `available_commands()` 编码器 + 3 条测试（Cloudburst 字节对拍、空表 = 8 个 0、生成表覆盖核心命令） |
+| `crates/network/generators/gen_commands.py`（新） | 解析 `crates/core/src/plot/commands.rs` 的 `DECLARE_COMMANDS`（90 节点）→ 生成 `commands_gen.rs`（24 个根命令、按叶子路径展开 overload） |
+| `crates/network/src/bedrock/commands_gen.rs`（生成） | 24 条命令：teleport/tp/stop/rtps/radvance/radv/speed/plot/p/container/load/toggleautorp/redpiler/rp/worldsendrate/wsr/version/gamemode/gmc/gmsp/memory/tick/io/coord |
+| `crates/network/src/bedrock/session.rs` | 登录 `C2` 阶段把空 `AvailableCommands` 换成真表，日志 `AvailableCommands(N 个命令)` |
+| `vendor/.../v662/packets/available_commands.rs` | **PATCH-009**：`EnumDataEntry` 的字段改 `pub`（只改可见性，字节不变） |
+
+**已知限制（v1，记录在案）**
+
+1. 字面量子命令用"单值枚举参数"表达（Geyser 同做法）；Bedrock 没有真正的"字面量子命令"概念。
+2. 别名（`tp` / `rp` / `gmc`…）作为独立命令出现，参数列表不继承目标命令（Java 侧树里它们本来就是空节点）。v2 可以在生成器里合并别名。
+3. 权限统一发 `ANY`（命令树里没有权限信息）；**服务端仍然按权限拒绝**，只是客户端不会再隐藏命令。
+4. 动态取值（`/coord` 的文件名、`//load` 的 schem 列表）走 B4 的 soft enum，见 §9.20。
+
+---
+
+### 9.20 B4：动态补全（soft enum）已写码，待编译
+
+> 状态：📝 **已写码，等用户说"编译"**。与 §9.19 的 B3 一起编译/真机。
+
+**为什么 Bedrock 只能这么做**：Bedrock 客户端**不会**发 `SCommandSuggestionsRequest`，
+所以"候选值随服务端状态变化"只能靠软枚举（soft enum）+ `UpdateSoftEnumPacket` 推送。
+Java 那套 `CCommandSuggestionsResponse` 在 Bedrock 上根本不存在。
+
+**协议细节（全部实测）**：新增探针 `refs/ProbeSoftEnum.java` + 解码脚本：
+
+| 事实 | 实测值 |
+| --- | --- |
+| 软枚举参数的 `parse_symbol` | `0x0410_0000 \| soft_enums 下标`（两个软枚举实测 `0x04100000` / `0x04100001`） |
+| 软枚举取值所在段 | `soft_enums`（**不占** `enum_data` / `enum_values`） |
+| 动态更新 | `UpdateSoftEnumPacket { enum_name, values, update_type }`，`ADD=0 / REMOVE=1 / REPLACE=2` |
+
+**改动清单**
+
+| 文件 | 内容 |
+| --- | --- |
+| `crates/network/src/bedrock/commands.rs` | 新增 `Param::SoftEnum(name)`（符号 = `0x04100000 \| 下标`）、`soft_enum_update()`（REPLACE）+ 2 条测试（结构断言 + REPLACE 字节对拍） |
+| `crates/network/generators/gen_commands.py` | 参数映射加 `SOFT_ENUMS` 规则：`//load filename → schem_files`、`/coord in file → coord_files`、`/coord in <file> target → coord_targets`、`/coord new\|add type → coord_types`（按父路径字面量匹配，避免所有 `target`/`type` 都误挂） |
+| `crates/network/src/bedrock/bridge.rs` | `BedrockCommand::SoftEnum { name, values }` + `BedrockHandle::send_soft_enum()` |
+| `crates/network/src/bedrock/session.rs` | 收到就发 `UpdateSoftEnumPacket(REPLACE)`，日志 `[B4] 软枚举 N = n 项` |
+| `crates/core/src/player.rs` | `PlayerBackend::send_soft_enum()`（Java 后端 no-op） |
+| `crates/core/src/plot/coord.rs` | `file_candidates` / `io_group_candidates` / `type_candidates` 改 `pub(super)`（给 plot 复用，逻辑不变） |
+| `crates/core/src/plot/mod.rs` | `enter_plot` 里给 Bedrock 玩家推 3 份软枚举；新增 `bedrock_soft_enum_values()` |
+
+**取值来源**
+
+- `schem_files`：`./schems` 目录（`CONFIG.schemati` 开时按玩家 uuid 分目录）—— 与 Java 的 `//load` 补全同源
+- `coord_files`：`coord::file_candidates()`（`io.txt` + `memory/*.{rom,ram}.txt`）
+- `coord_types`：`type_candidates(rom)` ∪ `type_candidates(ram)`（`/coord new|add` 的类型码）
+
+**已知限制**
+
+1. 只在**玩家进 plot 时**推一次；之后新增/删除 schem 文件、改 `io.txt` 需要重进 plot 才刷新
+   （v2 可以挂在 `/coord`、`//save`、编译成功后）。
+2. **`/coord in <file> <name>` 这一位没有补全**（原设计想用 `coord_targets` 并集，
+   把 io 组名和类型码混在一起，真机反馈"候选混在一起、看着不对"，2026-10-31 已撤掉）。
+   根因：Bedrock 软枚举是"每个参数一份固定列表"，没法按前一个参数（`io.txt` vs `memory/*.txt`）
+   缩小范围；给并集反而给出**错误候选**，不如不给。
+
+
+
 
 
 

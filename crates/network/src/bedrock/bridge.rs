@@ -57,6 +57,13 @@ pub enum BedrockCommand {
     /// （那样要卡 tick 200~260ms）。`publisher` 只在"玩家中心区块变了"或
     /// "已发方形变大"时带一个，避免客户端把没数据的区域当成已发布（第 27 条）。
     Chunks(BedrockChunkBatch),
+    /// 动态补全：替换一个**软枚举**的全部取值（BUG-032 B4）。
+    ///
+    /// Bedrock 客户端不会发 `SCommandSuggestionsRequest`，所以候选值变化只能靠
+    /// `UpdateSoftEnumPacket(REPLACE)` 推给客户端。`name` 必须和命令树里
+    /// `Param::SoftEnum(name)` 用的一致（`schem_files` / `coord_files` /
+    /// `coord_targets` / `coord_types`）。
+    SoftEnum { name: String, values: Vec<String> },
 }
 
 /// 一批要下发给某个 Bedrock 客户端的区块。
@@ -170,6 +177,14 @@ impl BedrockHandle {
             return;
         }
         let _ = self.commands.send(BedrockCommand::Chunks(batch));
+    }
+
+    /// 投递软枚举取值（BUG-032 B4 动态补全）。
+    pub fn send_soft_enum(&self, name: &str, values: Vec<String>) {
+        let _ = self.commands.send(BedrockCommand::SoftEnum {
+            name: name.to_string(),
+            values,
+        });
     }
 }
 

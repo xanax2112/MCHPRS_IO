@@ -128,8 +128,10 @@ impl<V: ProtoVersion> ProtoCodec for AvailableCommandsPacket<V> {
 
 #[derive(Clone, Debug)]
 pub struct EnumDataEntry {
-    name: String,
-    values: Vec<u32>,
+    // PATCH-009：字段原本私有，`mchprs_network` 无法构造；只改可见性，
+    // **不动序列化逻辑**（线上字节完全不变）。
+    pub name: String,
+    pub values: Vec<u32>,
 }
 
 #[derive(ProtoCodec, Clone, Debug)]

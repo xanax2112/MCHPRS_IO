@@ -222,6 +222,15 @@ impl PlayerBackend {
         }
     }
 
+    /// 推软枚举取值（BUG-032 B4 动态补全）。
+    ///
+    /// Bedrock 客户端不会向服务端要补全，候选值只能这样推过去；Java 后端不用。
+    pub fn send_soft_enum(&self, name: &str, values: Vec<String>) {
+        if let Self::Bedrock(link) = self {
+            link.handle.send_soft_enum(name, values);
+        }
+    }
+
     /// 单个方块变化（BUG-032 第 3 条）。
     ///
     /// 以前这里只有 Java 的 `CBlockUpdate`，Bedrock 玩家不在广播列表里，

@@ -909,20 +909,19 @@ async fn do_login(
     .await?;
     log("C2", start, ">>", "CraftingData(空, clean=true)");
 
-    conn.send(&[Protocol::AvailableCommandsPacket(Box::new(
-        AvailableCommandsPacket::<Protocol> {
-            enum_values: vec![],
-            sub_command_values: vec![],
-            post_fixes: vec![],
-            enum_data: vec![],
-            chained_sub_command_data: vec![],
-            commands: vec![],
-            soft_enums: vec![],
-            constraints: vec![],
-        },
-    ))])
-    .await?;
-    log("C2", start, ">>", "AvailableCommands(空)");
+    // 命令树（BUG-032 B3）：Bedrock 的补全/语法校验**完全靠这个包**（客户端不会像 Java
+    // 那样发 `SCommandSuggestionsRequest`）。表由 `generators/gen_commands.py` 从 Java 侧
+    // `DECLARE_COMMANDS` 生成，保证两侧同源；以前这里是空包，所以基岩端什么都没有。
+    let commands = crate::bedrock::commands::login_commands();
+    let command_count = commands.commands.len();
+    conn.send(&[Protocol::AvailableCommandsPacket(Box::new(commands))])
+        .await?;
+    log(
+        "C2",
+        start,
+        ">>",
+        &format!("AvailableCommands({command_count} 个命令)"),
+    );
 
     conn.send(&[Protocol::UnlockedRecipesPacket(Box::new(
         UnlockedRecipesPacket {
@@ -1586,6 +1585,8 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     None;
                 // 增量区块（BUG-032 第 26 条）：本轮 select 里收到的一批，select 之后统一发。
                 let mut chunk_batch: Option<crate::bedrock::bridge::BedrockChunkBatch> = None;
+                // 软枚举（B4 动态补全）：值变了就整份替换。
+                let mut soft_enum: Option<(String, Vec<String>)> = None;
                 let mut should_close = false;
                 let received = tokio::select! {
                     received = conn.recv() => received,
@@ -1608,6 +1609,9 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                 player_snapshot = Some(players)
                             }
                             Some(BedrockCommand::Chunks(batch)) => chunk_batch = Some(batch),
+                            Some(BedrockCommand::SoftEnum { name, values }) => {
+                                soft_enum = Some((name, values))
+                            }
                         }
                         // 返回一个空批次，让下面的收包逻辑什么都不做。
                         Ok(Vec::new())
@@ -1873,6 +1877,19 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         "[C4] 区块流送 {chunk_count} 个（{bytes} 字节），publisher={:?}",
                         batch.publisher
                     );
+                }
+
+                // 软枚举（B4 动态补全）：整份替换。客户端拿到后，命令补全里就会列出这些值。
+                if let Some((name, values)) = soft_enum {
+                    let count = values.len();
+                    let packet = vec![Protocol::UpdateSoftEnumPacket(Box::new(
+                        crate::bedrock::commands::soft_enum_update(&name, values),
+                    ))];
+                    if let Err(e) = conn.send(&packet).await {
+                        println!("[!!] 下发软枚举失败: {e}");
+                        break;
+                    }
+                    println!("[B4] 软枚举 {name} = {count} 项");
                 }
 
                 // 背包相关：客户端的请求只置标志，统一在本轮收包结束后发包。

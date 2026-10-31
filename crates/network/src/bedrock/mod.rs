@@ -14,6 +14,8 @@
 pub mod block_map;
 pub mod bridge;
 pub mod chunk;
+pub mod commands;
+mod commands_gen;
 pub mod creative;
 pub mod creative_gen;
 pub mod entity;

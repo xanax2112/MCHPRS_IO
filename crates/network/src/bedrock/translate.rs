@@ -120,10 +120,29 @@ pub fn translate(packet: &Protocol) -> Vec<Box<dyn ServerBoundPacket>> {
             if request.internal {
                 return out;
             }
-            // Bedrock 的命令带前导 `/`，Java 的 `SChatCommand` 不带。
-            let command = request.command.trim_start_matches('/');
+            // Bedrock 的命令带前导 `/`，Java 的 `SChatCommand` 不带 —— **但只去掉一层**。
+            //
+            // 不能 `trim_start_matches('/')`（去光）：MCHPRS 的 WorldEdit 命令名字本身带斜杠
+            // （`//load` / `//save` / `//schem`，见 `plot/mod.rs:639`），Java 侧也是只剥一层。
+            // 去光的话 `//load` 会变成 `load`，永远匹配不上（2026-10-31 发现）。
+            let stripped = request.command.strip_prefix('/').unwrap_or(&request.command);
+            // `/load`、`/save` 是 `//load`、`//save` 的单斜杠别名：补回一层，让 plot 侧
+            // 同一套分发逻辑认。**只看第一个词**，参数原样保留。
+            let (head, tail) = match stripped.split_once(' ') {
+                Some((head, tail)) => (head, Some(tail)),
+                None => (stripped, None),
+            };
+            let head = match head {
+                "load" => "/load",
+                "save" => "/save",
+                other => other,
+            };
+            let command = match tail {
+                Some(tail) => format!("{head} {tail}"),
+                None => head.to_string(),
+            };
             if !command.is_empty() {
-                out.push(command_packet(command));
+                out.push(command_packet(&command));
             }
         }
         _ => {}
