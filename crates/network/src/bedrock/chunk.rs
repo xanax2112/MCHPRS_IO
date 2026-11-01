@@ -363,7 +363,7 @@ where
             .map(|(java, bedrock)| format!("{java}->{bedrock}"))
             .collect();
         println!(
-            "[CHUNK] ({chunk_x},{chunk_z}) 方块对 {} 个: {}",
+            "[CHUNK] ({chunk_x},{chunk_z}) block pairs {}: {}",
             seen.len(),
             list.join(" ")
         );

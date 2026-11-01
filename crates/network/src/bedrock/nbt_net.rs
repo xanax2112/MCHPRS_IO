@@ -301,7 +301,7 @@ mod tests {
         put_string(&mut buf, "");
         buf.push(0);
         let err = read_root_compound(&buf).expect_err("根 tag 为 Byte 时应当报错");
-        assert!(err.what.contains("根 tag"), "错误信息: {err}");
+        assert!(err.what.contains("root tag"), "错误信息: {err}");
     }
 
     #[test]
@@ -310,7 +310,7 @@ mod tests {
         buf.push(0);
         buf.push(0xff);
         let err = read_root_compound(&buf).expect_err("尾部残留应当报错");
-        assert!(err.what.contains("尾部残留"), "错误信息: {err}");
+        assert!(err.what.contains("trailing bytes"), "错误信息: {err}");
     }
 
     #[test]
@@ -320,7 +320,7 @@ mod tests {
         put_string(&mut buf, "k");
         varu32(&mut buf, 10);
         let err = read_root_compound(&buf).expect_err("截断字符串应当报错");
-        assert!(err.what.contains("字节"), "错误信息: {err}");
+        assert!(err.what.contains("failed to read"), "错误信息: {err}");
     }
 
     #[test]
@@ -340,7 +340,7 @@ mod tests {
         buf.push(1);
         vari32(&mut buf, -1);
         let err = read_root_compound(&buf).expect_err("负长度应当报错");
-        assert!(err.what.contains("负"), "错误信息: {err}");
+        assert!(err.what.contains("negative length"), "错误信息: {err}");
     }
 
     #[test]
@@ -366,7 +366,7 @@ mod tests {
             buf.push(0);
         }
         let err = read_root_compound(&buf).expect_err("超深嵌套应当报错");
-        assert!(err.what.contains("嵌套"), "错误信息: {err}");
+        assert!(err.what.contains("nesting"), "错误信息: {err}");
     }
 
     /// `size_hint` 与实际写出的字节数必须严格一致（包长度靠它算）。

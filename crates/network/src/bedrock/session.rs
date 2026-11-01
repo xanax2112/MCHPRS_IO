@@ -104,7 +104,7 @@ fn parse_nbt_compound_named(
     match crate::bedrock::nbt_net::read_root_compound(bytes) {
         Ok(map) => map,
         Err(e) => {
-            tracing::error!("Bedrock NBT 资源 {name} 解析失败（{} 字节）: {e}", bytes.len());
+            tracing::error!("failed to parse Bedrock NBT resource {name} ({} bytes): {e}", bytes.len());
             std::collections::HashMap::new()
         }
     }
@@ -444,7 +444,7 @@ async fn do_login(
         _ => None,
     });
     let Some(client_version) = version else {
-        log("B1", start, "!!", "没有收到 RequestNetworkSettings");
+        log("B1", start, "!!", "did not receive RequestNetworkSettings");
         return Err("expected RequestNetworkSettings".into());
     };
     log(
@@ -460,10 +460,10 @@ async fn do_login(
             PlayStatus::LoginFailedServerOld
         };
         conn.send(&[play_status(status)]).await?;
-        log("B1", start, "!!", "协议不匹配，已回 PlayStatus");
+        log("B1", start, "!!", "protocol mismatch, sent PlayStatus");
         return Err(e.into());
     }
-    log("B1", start, "OK", "协议 766 匹配");
+    log("B1", start, "OK", "protocol 766 matched");
 
     // 恢复标准压缩（阈值 256）；StartGame 带物品表后约 52KB，必须压缩
     let settings = NetworkSettings::default();
@@ -589,7 +589,7 @@ async fn do_login(
             }
         }
         if done {
-            log("B3", start, "OK", "资源包阶段完成");
+            log("B3", start, "OK", "resource pack phase done");
             break;
         }
     }
@@ -647,7 +647,7 @@ async fn do_login(
             Ok(batch) => batch?,
             Err(_) => {
                 return Err(format!(
-                    "等待客户端 RequestChunkRadius 超时（{}s）",
+                    "timed out waiting for client RequestChunkRadius ({}s)",
                     CHUNK_RADIUS_WAIT.as_secs()
                 )
                 .into());
@@ -658,13 +658,13 @@ async fn do_login(
             match p {
                 Protocol::RequestChunkRadiusPacket(r) => radius = Some(r.chunk_radius),
                 Protocol::SetLocalPlayerAsInitializedPacket(_) => {
-                    log("C1", start, "::", "客户端自报初始化完成")
+                    log("C1", start, "::", "client reported initialization complete")
                 }
                 _ => {}
             }
         }
         if let Some(r) = radius {
-            log("C1", start, "::", &format!("客户端请求半径 {r}"));
+            log("C1", start, "::", &format!("client requested chunk radius {r}"));
             conn.send(&[Protocol::ChunkRadiusUpdatedPacket(Box::new(
                 ChunkRadiusUpdatedPacket {
                     chunk_radius,
@@ -737,7 +737,7 @@ async fn do_login(
                 })
                 .is_err()
             {
-                return Err("MCHPRS 服务端已关闭，无法获取世界快照".into());
+                return Err("MCHPRS server is shutting down; cannot obtain world snapshot".into());
             }
             // 同步 recv 放阻塞线程池，避免卡住 tokio worker。
             let received = tokio::task::spawn_blocking(move || {
@@ -745,7 +745,7 @@ async fn do_login(
             })
             .await?;
             let snapshot = received
-                .map_err(|_| "等待 MCHPRS 世界快照超时（是否没有 plot 在运行？）")?;
+                .map_err(|_| "timed out waiting for MCHPRS world snapshot (is any plot running?)")?;
             let count = world::BEDROCK_SECTION_COUNT as u32;
             let radius = snapshot.chunk_radius;
             let payloads = snapshot
@@ -832,7 +832,7 @@ async fn do_login(
         crate::bedrock::protocol::set_actor_data(runtime_id),
     ))])
     .await?;
-    log("C2", start, ">>", "SetActorData(玩家初始元数据)");
+    log("C2", start, ">>", "SetActorData(initial player metadata)");
     // 出生握手：**顺序照 Geyser 抄**（`JavaPlayerPositionTranslator` 的未 spawned 分支）：
     //   RespawnPacket(SERVER_READY) → SetEntityData → MovePlayer(RESPAWN) → MovePlayer(TELEPORT)
     //
@@ -903,7 +903,7 @@ async fn do_login(
         trim_material_list: vec![],
     }))])
     .await?;
-    log("C2", start, ">>", "TrimData(空)");
+    log("C2", start, ">>", "TrimData(empty)");
 
     // 合成表：空表 + clear_recipes=true，等价于“没有任何配方”
     conn.send(&[Protocol::CraftingDataPacket(Box::new(
@@ -916,7 +916,7 @@ async fn do_login(
         },
     ))])
     .await?;
-    log("C2", start, ">>", "CraftingData(空, clean=true)");
+    log("C2", start, ">>", "CraftingData(empty, clean=true)");
 
     // 命令树（BUG-032 B3）：Bedrock 的补全/语法校验**完全靠这个包**（客户端不会像 Java
     // 那样发 `SCommandSuggestionsRequest`）。表由 `generators/gen_commands.py` 从 Java 侧
@@ -929,7 +929,7 @@ async fn do_login(
         "C2",
         start,
         ">>",
-        &format!("AvailableCommands({command_count} 个命令)"),
+        &format!("AvailableCommands({command_count} commands)"),
     );
 
     conn.send(&[Protocol::UnlockedRecipesPacket(Box::new(
@@ -939,7 +939,7 @@ async fn do_login(
         },
     ))])
     .await?;
-    log("C2", start, ">>", "UnlockedRecipes(INITIALLY_UNLOCKED, 空)");
+    log("C2", start, ">>", "UnlockedRecipes(INITIALLY_UNLOCKED, empty)");
 
     // ---- 以下顺序与 Geyser GeyserSession.connect() 一致 ----
 
@@ -949,7 +949,7 @@ async fn do_login(
         ItemComponentPacket { items: vec![] },
     ))])
     .await?;
-    log("C2", start, ">>", "ItemComponent(空)");
+    log("C2", start, ">>", "ItemComponent(empty)");
 
     let biomes = parse_nbt_compound_named(BIOME_DEFINITIONS_NBT, "biome_definitions.dat");
     let biome_count = biomes.len();
@@ -964,10 +964,10 @@ async fn do_login(
             "C2",
             start,
             ">>",
-            &format!("BiomeDefinitionList({biome_count} 个)"),
+            &format!("BiomeDefinitionList({biome_count} entries)"),
         );
     } else {
-        log("C2", start, "!!", "生物群系表解析为空，跳过发送");
+        log("C2", start, "!!", "biome definitions parsed empty, skipped sending");
     }
 
     let entities = parse_nbt_compound_named(ENTITY_IDENTIFIERS_NBT, "entity_identifiers.dat");
@@ -983,10 +983,10 @@ async fn do_login(
             "C2",
             start,
             ">>",
-            &format!("AvailableActorIdentifiers({entity_count} 个)"),
+            &format!("AvailableActorIdentifiers({entity_count} entries)"),
         );
     } else {
-        log("C2", start, "!!", "实体标识表解析为空，跳过发送");
+        log("C2", start, "!!", "entity identifiers parsed empty, skipped sending");
     }
 
     // 相机预设：与 Geyser CameraDefinitions 完全一致
@@ -1003,7 +1003,7 @@ async fn do_login(
         "C2",
         start,
         ">>",
-        &format!("CameraPresets({} 个)", presets.len()),
+        &format!("CameraPresets({} entries)", presets.len()),
     );
 
     // 创造模式物品列表（R1）：MCHPRS 支持的每种方块一条，表由 gen_creative.js 生成。
@@ -1013,7 +1013,7 @@ async fn do_login(
         "C2",
         start,
         ">>",
-        &format!("CreativeContent({} 条)", creative.write_entries.len()),
+        &format!("CreativeContent({} entries)", creative.write_entries.len()),
     );
     conn.send(&[Protocol::CreativeContentPacket(Box::new(creative))])
         .await?;
@@ -1074,9 +1074,9 @@ async fn do_login(
         start,
         "::",
         if initialized {
-            "客户端初始化完成，开始发区块"
+            "client initialization complete; sending chunks"
         } else {
-            "未等到初始化包，仍然发区块"
+            "did not wait for the initialization packet; sending chunks anyway"
         },
     );
 
@@ -1126,7 +1126,7 @@ async fn do_login(
         start,
         "OK",
         &format!(
-            "已发送 {} 个区块（合计 {} 字节，平均 {} 字节；登录快照半径 {} 区块，其余流送）",
+            "sent {} chunks ({} bytes total, {} bytes avg; login snapshot radius {} chunks, rest streamed)",
             sent,
             total_bytes,
             total_bytes / sent.max(1),
@@ -1170,10 +1170,10 @@ async fn do_login(
             "C2",
             start,
             "OK",
-            &format!("展示方块 mchprs_id={java_id} -> bedrock={runtime_id} @({dx},80,{dz})"),
+            &format!("display block mchprs_id={java_id} -> bedrock={runtime_id} @({dx},80,{dz})"),
         );
     }
-    log("C2", start, "OK", "红石展示区已下发（按钮/拉杆/红石灯/红石块/音符盒/红石线/活塞/侦测器）");
+    log("C2", start, "OK", "redstone demo area sent (buttons/levers/lamps/blocks/note blocks/wire/pistons/observers)");
     }
 
     conn.send(&[Protocol::SetTimePacket(Box::new(SetTimePacket { time: 6000 }))])
@@ -1221,7 +1221,7 @@ fn selftest(mode: &str) {
             Ok(()) => {
                 std::fs::create_dir_all("logs").ok();
                 std::fs::write("logs/update_abilities.bin", &buf).ok();
-                println!("[SELFTEST] abilities {} 字节", buf.len());
+                println!("[SELFTEST] abilities {} bytes", buf.len());
             }
             Err(e) => println!("[SELFTEST] ERR abilities: {e}"),
         }
@@ -1229,26 +1229,26 @@ fn selftest(mode: &str) {
     }
 
     if mode == "7" {
-        println!("[SELFTEST] StartGame 往返");
+        println!("[SELFTEST] StartGame round trip");
         let pkt = build_start_game(crate::bedrock::protocol::PLAYER_RUNTIME_ID);
         let mut buf: Vec<u8> = Vec::new();
         pkt.serialize(&mut buf).expect("serialize");
-        println!("[SELFTEST] 序列化 len={}", buf.len());
+        println!("[SELFTEST] serialized len={}", buf.len());
         let mut cur = std::io::Cursor::new(&buf[..]);
         match StartGamePacket::<Protocol>::deserialize(&mut cur) {
             Ok(back) => {
                 let pos = cur.position() as usize;
                 println!(
-                    "[SELFTEST] 反序列化 OK，已消费 {}/{} 字节，剩余 {}",
+                    "[SELFTEST] deserialized OK, consumed {}/{} bytes, {} remaining",
                     pos,
                     buf.len(),
                     buf.len() - pos
                 );
                 let mut buf2: Vec<u8> = Vec::new();
                 back.serialize(&mut buf2).expect("re-serialize");
-                println!("[SELFTEST] 再序列化长度={} 一致={}", buf2.len(), buf2 == buf);
+                println!("[SELFTEST] re-serialized len={} identical={}", buf2.len(), buf2 == buf);
             }
-            Err(e) => println!("[SELFTEST] 反序列化失败: {e}"),
+            Err(e) => println!("[SELFTEST] deserialize failed: {e}"),
         }
         return;
     }
@@ -1258,7 +1258,7 @@ fn selftest(mode: &str) {
         pkt.serialize(&mut buf).expect("serialize");
         let path = std::env::args().nth(2).unwrap_or_else(|| String::from("/tmp/startgame.bin"));
         std::fs::write(&path, &buf).expect("write");
-        println!("[SELFTEST] 已写出 {} 字节到 {}", buf.len(), path);
+        println!("[SELFTEST] wrote {} bytes to {}", buf.len(), path);
         return;
     }
     if mode == "meta" {
@@ -1352,7 +1352,7 @@ fn selftest(mode: &str) {
         return;
     }
     if mode == "1" {
-        println!("[SELFTEST] 序列化 LevelSettings");
+        println!("[SELFTEST] serializing LevelSettings");
         let s = build_level_settings();
         let mut buf: Vec<u8> = Vec::new();
         match s.serialize(&mut buf) {
@@ -1365,16 +1365,16 @@ fn selftest(mode: &str) {
         }
         return;
     }
-    println!("[SELFTEST] 1/3 构造 StartGame");
+    println!("[SELFTEST] 1/3 build StartGame");
     let pkt = build_start_game(crate::bedrock::protocol::PLAYER_RUNTIME_ID);
-    println!("[SELFTEST] 2/3 序列化 StartGame");
+    println!("[SELFTEST] 2/3 serialize StartGame");
     let mut buf: Vec<u8> = Vec::new();
     match pkt.serialize(&mut buf) {
         Ok(()) => println!("[SELFTEST] OK StartGame len={}", buf.len()),
         Err(e) => println!("[SELFTEST] ERR StartGame: {e}"),
     }
 
-    println!("[SELFTEST] 3/3 区块数据");
+    println!("[SELFTEST] 3/3 chunk data");
     let d = world::build_payload(&world::ChunkSpec {
         min_section: -4,
         max_section: 19,
@@ -1390,14 +1390,14 @@ fn selftest(mode: &str) {
     // 平台无关：写到当前工作目录下的 logs/，不再写死 Android 路径
     std::fs::create_dir_all("logs").ok();
     std::fs::write("logs/chunk_payload.bin", &d).ok();
-    println!("[SELFTEST] 已写出区块负载 {} 字节", d.len());
+    println!("[SELFTEST] wrote chunk payload of {} bytes", d.len());
     println!(
         "[SELFTEST] OK chunk sub={} total={} head={:02x?}",
         sub_len,
         d.len(),
         &d[..16.min(d.len())]
     );
-    println!("[SELFTEST] 完成，没有崩溃");
+    println!("[SELFTEST] done, no crash");
 }
 
 /// 入站日志的汇总窗口：`PlayerAuthInput`/`MovePlayer` 每到此长度才打一条汇总。
@@ -1465,11 +1465,11 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
             );
             let session_info = match do_login(&mut conn, start, &source, runtime_id).await {
                 Ok(info) => {
-                    println!("[B4] 登录链路完成，等待后续阶段");
+                    println!("[B4] login chain complete, waiting for later phases");
                     Some(info)
                 }
                 Err(e) => {
-                    println!("[!!] 失败: {e}");
+                    println!("[!!] failed: {e}");
                     None
                 }
             };
@@ -1519,7 +1519,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     })
                     .is_err()
                 {
-                    println!("[!!] 无法登记 Bedrock 玩家：服务端通道已关闭");
+                    println!("[!!] cannot register Bedrock player: server channel closed");
                 }
             }
 
@@ -1617,7 +1617,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     }
                 };
                 if should_close {
-                    println!("[C3] 服务端要求断开（或已释放句柄），断开 Bedrock 客户端");
+                    println!("[C3] server requested disconnect (or handle released); closing Bedrock client");
                     break;
                 }
 
@@ -1629,10 +1629,10 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             Protocol::TextPacket(Box::new(crate::bedrock::text::raw_text(text)))
                         })
                         .collect();
-                    crate::bedrock_verbose!("[R4] 下发聊天 {} 行", packets.len());
+                    crate::bedrock_verbose!("[R4] sent {} chat lines", packets.len());
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 下发聊天失败: {e}");
+                        println!("[!!] failed to send chat: {e}");
                         break;
                     }
                 }
@@ -1680,11 +1680,11 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     sidebar_texts = sidebar.lines.iter().map(|l| l.text.clone()).collect();
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 下发计分板失败: {e}");
+                        println!("[!!] failed to send scoreboard: {e}");
                         break;
                     }
                     crate::bedrock_verbose!(
-                        "[R3] 计分板已下发：{} 行，标题={:?}",
+                        "[R3] scoreboard sent: {} lines, title={:?}",
                         sidebar.lines.len(),
                         sidebar.title
                     );
@@ -1705,7 +1705,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         .collect();
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 下发方块更新失败: {e}");
+                        println!("[!!] failed to send block updates: {e}");
                         break;
                     }
                 }
@@ -1715,10 +1715,10 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     let packets = vec![Protocol::UpdateAbilitiesPacket(Box::new(
                         crate::bedrock::protocol::update_abilities_for(flying, runtime_id, fly_speed),
                     ))];
-                    crate::bedrock_verbose!("[R2] 能力值跟随：flying={flying} fly_speed={fly_speed}");
+                    crate::bedrock_verbose!("[R2] abilities updated: flying={flying} fly_speed={fly_speed}");
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 下发能力值失败: {e}");
+                        println!("[!!] failed to send abilities: {e}");
                         break;
                     }
                 }
@@ -1736,12 +1736,12 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     let packets = vec![Protocol::MovePlayerPacket(Box::new(
                         crate::bedrock::protocol::teleport(runtime_id, bedrock_pos, last_rotation),
                     ))];
-                    crate::bedrock_verbose!("[R5] 服务端定位：({x:.2}, {y:.2}, {z:.2}) → Bedrock ({:.2}, {:.2}, {:.2})",
+                    crate::bedrock_verbose!("[R5] server position: ({x:.2}, {y:.2}, {z:.2}) -> Bedrock ({:.2}, {:.2}, {:.2})",
                         bedrock_pos.0, bedrock_pos.1, bedrock_pos.2
                     );
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 下发定位失败: {e}");
+                        println!("[!!] failed to send position: {e}");
                         break;
                     }
                     last_pos = bedrock_pos;
@@ -1770,7 +1770,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             packets.push(Protocol::PlayerListPacket(Box::new(
                                 entity::player_list_remove(uuid),
                             )));
-                            crate::bedrock_verbose!("[R6] 移除玩家实体 uuid={uuid:x} unique={}", state.unique_id);
+                            crate::bedrock_verbose!("[R6] remove player entity uuid={uuid:x} unique={}", state.unique_id);
                         }
                     }
 
@@ -1790,7 +1790,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                 // 由 `entity::move_player` 自己 +1.62（见 PLAYER_EYE_HEIGHT）。
                                 let position = entity::bedrock_feet(info.position);
                                 crate::bedrock_verbose!(
-                                    "[R6] 生成玩家 {} runtime={runtime} pos={position:?}",
+                                    "[R6] spawn player {} runtime={runtime} pos={position:?}",
                                     info.username
                                 );
                                 remote_players.insert(
@@ -1814,7 +1814,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     packets.push(Protocol::MobEquipmentPacket(Box::new(
                                         entity::mob_equipment(state.runtime_id, info.held_item),
                                     )));
-                                    crate::bedrock_verbose!("[R8] {} 主手物品 {:?} → {:?}",
+                                    crate::bedrock_verbose!("[R8] {} main-hand item {:?} -> {:?}",
                                         info.username, state.held_item, info.held_item
                                     );
                                     state.held_item = info.held_item;
@@ -1830,7 +1830,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                             info.sprinting,
                                         ),
                                     )));
-                                    crate::bedrock_verbose!("[R8] {} 姿态 sneaking={} sprinting={} flags=0x{:x} bits={:?}",
+                                    crate::bedrock_verbose!("[R8] {} pose sneaking={} sprinting={} flags=0x{:x} bits={:?}",
                                         info.username,
                                         info.sneaking,
                                         info.sprinting,
@@ -1872,10 +1872,10 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         let count = packets.len();
                         crate::bedrock::debug::dump_out(&packets);
                         if let Err(e) = conn.send(&packets).await {
-                            println!("[!!] 下发玩家同步失败: {e}");
+                            println!("[!!] failed to sync players: {e}");
                             break;
                         }
-                        crate::bedrock_verbose!("[R6] 玩家同步：{count} 个包（线上共 {} 人）",
+                        crate::bedrock_verbose!("[R6] player sync: {count} packets ({} players online)",
                             players.len()
                         );
                     }
@@ -1912,11 +1912,11 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     }
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 下发区块流送失败: {e}");
+                        println!("[!!] failed to send chunk stream: {e}");
                         break;
                     }
                     crate::bedrock_verbose!(
-                        "[C4] 区块流送 {chunk_count} 个（{bytes} 字节），publisher={:?}",
+                        "[C4] streamed {chunk_count} chunks ({bytes} bytes), publisher={:?}",
                         batch.publisher
                     );
                 }
@@ -1928,10 +1928,10 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         crate::bedrock::commands::soft_enum_update(&name, values),
                     ))];
                     if let Err(e) = conn.send(&packet).await {
-                        println!("[!!] 下发软枚举失败: {e}");
+                        println!("[!!] failed to send soft enum: {e}");
                         break;
                     }
-                    println!("[B4] 软枚举 {name} = {count} 项");
+                    println!("[B4] soft enum {name} = {count} entries");
                 }
 
                 // 挥手动效（A3）：一次事件包。目标不在本地实体表里就忽略
@@ -1943,14 +1943,14 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             Some(state) => packets.push(Protocol::AnimatePacket(Box::new(
                                 crate::bedrock::entity::animate_swing(state.runtime_id),
                             ))),
-                            None => crate::bedrock_verbose!("[R8] 挥手目标不在实体表 uuid={uuid:x}，忽略"),
+                            None => crate::bedrock_verbose!("[R8] swing target not in entity table uuid={uuid:x}, ignored"),
                         }
                     }
                     if !packets.is_empty() {
-                        crate::bedrock_verbose!("[R8] 下发挥手 {} 次", packets.len());
+                        crate::bedrock_verbose!("[R8] sent {} swings", packets.len());
                         crate::bedrock::debug::dump_out(&packets);
                         if let Err(e) = conn.send(&packets).await {
-                            println!("[!!] 下发挥手失败: {e}");
+                            println!("[!!] failed to send swing: {e}");
                             break;
                         }
                     }
@@ -1961,10 +1961,10 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     let packets = vec![Protocol::SetPlayerGameTypePacket(Box::new(
                         crate::bedrock::protocol::set_game_mode(mode),
                     ))];
-                    println!("[R9] 游戏模式 → {mode:?}");
+                    println!("[R9] game mode -> {mode:?}");
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 下发游戏模式失败: {e}");
+                        println!("[!!] failed to send game mode: {e}");
                         break;
                     }
                 }
@@ -1985,13 +1985,13 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             ))
                         })
                         .collect();
-                    crate::bedrock_verbose!("[A2] 下发 OpenSign {} 块：{:?}",
+                    crate::bedrock_verbose!("[A2] sent OpenSign {} blocks: {:?}",
                         open_signs.len(),
                         open_signs
                     );
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 下发 OpenSign 失败: {e}");
+                        println!("[!!] failed to send OpenSign: {e}");
                         break;
                     }
                 }
@@ -2008,7 +2008,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             ))
                         })
                         .collect();
-                    crate::bedrock_verbose!("[R7] 下发告示牌 {count} 块");
+                    crate::bedrock_verbose!("[R7] sent {count} signs");
                     // 诊断：把第一块的实际字节打出来（真机"字不显示"时用来和
                     // `refs/ProbeSign.java` 的参考字节逐段对照）。
                     if let Some(Protocol::BlockActorDataPacket(first)) = packets.first() {
@@ -2019,14 +2019,14 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         }
                         let hex: String =
                             buf.iter().map(|b| format!("{b:02x}")).collect();
-                        crate::bedrock_verbose!("[R7] 告示牌包 hex（{} 字节）= {}",
+                        crate::bedrock_verbose!("[R7] sign packet hex ({} bytes) = {}",
                             buf.len(),
                             &hex[..hex.len().min(240)]
                         );
                     }
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 下发告示牌失败: {e}");
+                        println!("[!!] failed to send sign: {e}");
                         break;
                     }
                 }
@@ -2072,7 +2072,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             ),
                         )),
                     ];
-                    crate::bedrock_verbose!("[R10] 背包回传：主背包 {} 格（非空 {}）、护甲 {}、副手 {}、选中槽 {}",
+                    crate::bedrock_verbose!("[R10] inventory echo: main {} slots ({} non-empty), armor {}, offhand {}, selected slot {}",
                         snapshot.main.len(),
                         snapshot.main.iter().filter(|s| s.is_some()).count(),
                         snapshot.armor.iter().filter(|s| s.is_some()).count(),
@@ -2081,7 +2081,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     );
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 下发背包失败: {e}");
+                        println!("[!!] failed to send inventory: {e}");
                         break;
                     }
                 }
@@ -2106,7 +2106,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     // S3：客户端的方块交互（点按/挖掘/放置）走 PerformBlockActions 位
                                     if let Some(actions) = &pa.player_block_actions {
                                         for a in actions {
-                                            crate::bedrock_verbose!("[S3] << 方块交互 action={:?} pos={:?} facing={:?}",
+                                            crate::bedrock_verbose!("[S3] << block interaction action={:?} pos={:?} facing={:?}",
                                                 a.action_type, a.position, a.facing
                                             );
                                         }
@@ -2137,7 +2137,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                             Instant::now(),
                                         ));
                                         match speed {
-                                            Some(v) => crate::bedrock_verbose!("[--] << PlayerAuthInput ×{} 最后 pos=({:.2}, {:.2}, {:.2}) 水平速度={:.2} m/s input=0x{:x}",
+                                            Some(v) => crate::bedrock_verbose!("[--] << PlayerAuthInput x{} last pos=({:.2}, {:.2}, {:.2}) horiz speed={:.2} m/s input=0x{:x}",
                                                 input_count,
                                                 pa.player_position.0,
                                                 pa.player_position.1,
@@ -2145,7 +2145,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                                 v,
                                                 pa.input_data
                                             ),
-                                            None => crate::bedrock_verbose!("[--] << PlayerAuthInput ×{} 最后 pos=({:.2}, {:.2}, {:.2}) input=0x{:x}",
+                                            None => crate::bedrock_verbose!("[--] << PlayerAuthInput x{} last pos=({:.2}, {:.2}, {:.2}) input=0x{:x}",
                                                 input_count,
                                                 pa.player_position.0,
                                                 pa.player_position.1,
@@ -2187,11 +2187,11 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     move_count += 1;
                                     if move_window.elapsed() >= LOG_WINDOW {
                                         match speed {
-                                            Some(v) => crate::bedrock_verbose!("[--] << MovePlayer ×{} 最后 pos=({:.2}, {:.2}, {:.2}) on_ground={} 水平速度={:.2} m/s",
+                                            Some(v) => crate::bedrock_verbose!("[--] << MovePlayer x{} last pos=({:.2}, {:.2}, {:.2}) on_ground={} horiz speed={:.2} m/s",
                                                 move_count,
                                                 mp.position.0, mp.position.1, mp.position.2, mp.on_ground, v
                                             ),
-                                            None => crate::bedrock_verbose!("[--] << MovePlayer ×{} 最后 pos=({:.2}, {:.2}, {:.2}) on_ground={}",
+                                            None => crate::bedrock_verbose!("[--] << MovePlayer x{} last pos=({:.2}, {:.2}, {:.2}) on_ground={}",
                                                 move_count,
                                                 mp.position.0, mp.position.1, mp.position.2, mp.on_ground
                                             ),
@@ -2266,7 +2266,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     if matches!(&tx.data, InventoryTransactionData::Normal) {
                                         match crate::bedrock::inventory::drop_update(&tx.actions) {
                                             Some((slot, item)) => {
-                                                crate::bedrock_verbose!("[R5] << 丢物品 slot={slot} 剩余={item:?}"
+                                                crate::bedrock_verbose!("[R5] << drop item slot={slot} remaining={item:?}"
                                                 );
                                                 let _ = inventory_tx.send(
                                                     crate::bedrock::bridge::BedrockInventoryUpdate::Slot {
@@ -2279,11 +2279,11 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                             None => {
                                                 // 没认出来也把形状打出来：真机上一看就知道
                                                 // 客户端这一版到底发了什么（来源/槽位/前后数量）。
-                                                crate::bedrock_verbose!("[R5] << InventoryTransaction(Normal) actions={} 未识别",
+                                                crate::bedrock_verbose!("[R5] << InventoryTransaction(Normal) actions={} unrecognized",
                                                     tx.actions.len()
                                                 );
                                                 for (i, action) in tx.actions.iter().enumerate() {
-                                                    crate::bedrock_verbose!("[R5]    action[{i}] 来源={:?} 槽={} from=({}, {:?}) to=({}, {:?})",
+                                                    crate::bedrock_verbose!("[R5]    action[{i}] source={:?} slot={} from=({}, {:?}) to=({}, {:?})",
                                                         action.source.source_type,
                                                         action.slot,
                                                         action.from_item_descriptor.id,
@@ -2300,7 +2300,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     // 只关心「对着方块按右键/左键」这一种事务；其余（容器搬物）
                                     // 先不处理。
                                     let InventoryTransactionData::ItemUse(use_data) = &tx.data else {
-                                        crate::bedrock_verbose!("[R5] << InventoryTransaction(其他类型)");
+                                        crate::bedrock_verbose!("[R5] << InventoryTransaction(other type)");
                                         continue;
                                     };
                                     let action = use_data.action_type.clone();
@@ -2323,7 +2323,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     // Java 的 `BlockFace::from_id` 对越界 id 会 panic，先挡一下：
                                     // Bedrock 与 Java 的 0..=5 顺序一致（Down/Up/North/South/West/East）。
                                     if !(0..=5).contains(&use_data.block_face) {
-                                        crate::bedrock_verbose!("[R5] !! 方块面非法 {}，丢弃",
+                                        crate::bedrock_verbose!("[R5] !! invalid block face {}, dropped",
                                             use_data.block_face
                                         );
                                         continue;
@@ -2346,7 +2346,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                                 z: use_data.block_position.z,
                                             },
                                         );
-                                        crate::bedrock_verbose!("[R5] !! 未知物品放置（bedrock item id={}）pos=({}, {}, {}) → 请求修正",
+                                        crate::bedrock_verbose!("[R5] !! unknown item placement (bedrock item id={}) pos=({}, {}, {}) -> requesting correction",
                                             use_data.held_item.id,
                                             use_data.block_position.x,
                                             use_data.block_position.y as i32 + 64,
@@ -2427,7 +2427,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                         .map(|k| k.as_str())
                                         .collect();
                                     keys.sort_unstable();
-                                    crate::bedrock_verbose!("[A2] << BlockActorData pos=({}, {}, {}) 键={:?}",
+                                    crate::bedrock_verbose!("[A2] << BlockActorData pos=({}, {}, {}) keys={:?}",
                                         p.block_position.x,
                                         p.block_position.y,
                                         p.block_position.z,
@@ -2438,7 +2438,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     if let Some((front, back)) =
                                         crate::bedrock::block_entity::sign_rows(&p.actor_data_tags)
                                     {
-                                        crate::bedrock_verbose!("[A2]   解析后 正面={front:?} 反面={back:?}");
+                                        crate::bedrock_verbose!("[A2]   parsed front={front:?} back={back:?}");
                                     }
                                 }
                                 Protocol::Unknown(u) => crate::bedrock_verbose!("[--] << Unknown id=0x{:x}", u.id),
@@ -2449,7 +2449,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     // 以前这里是裸 `Err(_) => break`：客户端一断开，服务端只留一行
                     // "left the game"，完全看不出是解码失败还是对面主动断的（BUG-032 第 29 条）。
                     Err(e) => {
-                        println!("[!!] 收包失败，断开连接: {e}");
+                        println!("[!!] failed to receive packet, disconnecting: {e}");
                         break;
                     }
                 }
@@ -2467,12 +2467,12 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     let packets = vec![Protocol::ContainerOpenPacket(Box::new(
                         crate::bedrock::inventory::container_open(last_pos),
                     ))];
-                    crate::bedrock_verbose!("[R1] 打开背包：ContainerOpen({:.1},{:.1},{:.1})（不再下发 InventoryContent，避免清空背包）",
+                    crate::bedrock_verbose!("[R1] open inventory: ContainerOpen({:.1},{:.1},{:.1}) (no InventoryContent sent, to avoid clearing the inventory)",
                         last_pos.0, last_pos.1, last_pos.2
                     );
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 下发背包失败: {e}");
+                        println!("[!!] failed to send inventory: {e}");
                         break;
                     }
                 }
@@ -2484,7 +2484,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     ))];
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] 回执关背包失败: {e}");
+                        println!("[!!] failed to acknowledge container close: {e}");
                         break;
                     }
                 }
@@ -2528,7 +2528,7 @@ pub fn spawn_mchprs_listener(
             {
                 Ok(runtime) => runtime,
                 Err(err) => {
-                    println!("[!!] Bedrock 监听线程无法创建 tokio 运行时: {err}");
+                    println!("[!!] Bedrock listener thread cannot create a tokio runtime: {err}");
                     return;
                 }
             };
@@ -2538,12 +2538,12 @@ pub fn spawn_mchprs_listener(
                     chunk_radius,
                 };
                 if let Err(err) = serve(addr, source).await {
-                    println!("[!!] Bedrock 监听退出: {err}");
+                    println!("[!!] Bedrock listener exited: {err}");
                 }
             });
         });
     if let Err(err) = spawn_result {
-        println!("[!!] Bedrock 监听线程创建失败: {err}");
+        println!("[!!] failed to spawn Bedrock listener thread: {err}");
     }
 }
 

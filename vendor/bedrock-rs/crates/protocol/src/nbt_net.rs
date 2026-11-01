@@ -51,7 +51,7 @@ impl NbtError {
 
 impl fmt::Display for NbtError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "NBT 解析失败 @{}: {}", self.pos, self.what)
+        write!(f, "NBT parse error at {}: {}", self.pos, self.what)
     }
 }
 
@@ -156,7 +156,7 @@ pub fn read_root_compound(
     if consumed != bytes.len() {
         return Err(NbtError::new(
             consumed,
-            format!("尾部残留 {} 字节", bytes.len() - consumed),
+            format!("{} trailing bytes", bytes.len() - consumed),
         ));
     }
     Ok(map)
@@ -177,7 +177,7 @@ pub fn read_compound_stream<R: Read>(
     if tag != 10 {
         return Err(NbtError::new(
             r.pos,
-            format!("根 tag 必须是 Compound(10)，实际 {tag}"),
+            format!("root tag must be Compound(10), got {tag}"),
         ));
     }
     let _root_name = r.str_bytes()?;
@@ -202,7 +202,7 @@ impl<R: Read> Reader<'_, R> {
 
     fn take(&mut self, n: usize) -> Result<Vec<u8>, NbtError> {
         if n > MAX_ALLOC {
-            return Err(self.err(format!("长度 {n} 超过上限 {MAX_ALLOC}")));
+            return Err(self.err(format!("length {n} exceeds limit {MAX_ALLOC}")));
         }
         let mut buf = vec![0u8; n];
         match self.inner.read_exact(&mut buf) {
@@ -210,7 +210,7 @@ impl<R: Read> Reader<'_, R> {
                 self.pos += n;
                 Ok(buf)
             }
-            Err(e) => Err(self.err(format!("读取 {n} 字节失败: {e}"))),
+            Err(e) => Err(self.err(format!("failed to read {n} bytes: {e}"))),
         }
     }
 
@@ -221,7 +221,7 @@ impl<R: Read> Reader<'_, R> {
                 self.pos += 1;
                 Ok(byte[0])
             }
-            Err(e) => Err(self.err(format!("读到末尾，期望还有 1 字节: {e}"))),
+            Err(e) => Err(self.err(format!("unexpected end of input, expected 1 more byte: {e}"))),
         }
     }
 
@@ -232,7 +232,7 @@ impl<R: Read> Reader<'_, R> {
     fn fixed<const N: usize>(&mut self, what: &str) -> Result<[u8; N], NbtError> {
         match self.take(N)?.try_into() {
             Ok(arr) => Ok(arr),
-            Err(_) => Err(self.err(format!("{what} 长度不符"))),
+            Err(_) => Err(self.err(format!("{what}: length mismatch"))),
         }
     }
 
@@ -255,7 +255,7 @@ impl<R: Read> Reader<'_, R> {
         loop {
             let byte = self.u8()?;
             if shift == 28 && byte > 0x0f {
-                return Err(self.err(format!("u32 varint 溢出（第 5 字节 {byte:#04x}）")));
+                return Err(self.err(format!("u32 varint overflow (5th byte {byte:#04x})")));
             }
             result |= u32::from(byte & 0x7f) << shift;
             if byte & 0x80 == 0 {
@@ -263,7 +263,7 @@ impl<R: Read> Reader<'_, R> {
             }
             shift += 7;
             if shift > 28 {
-                return Err(self.err("u32 varint 超过 5 字节"));
+                return Err(self.err("u32 varint longer than 5 bytes"));
             }
         }
     }
@@ -279,7 +279,7 @@ impl<R: Read> Reader<'_, R> {
         loop {
             let byte = self.u8()?;
             if shift == 63 && byte > 0x01 {
-                return Err(self.err(format!("i64 varint 溢出（第 10 字节 {byte:#04x}）")));
+                return Err(self.err(format!("i64 varint overflow (10th byte {byte:#04x})")));
             }
             result |= u64::from(byte & 0x7f) << shift;
             if byte & 0x80 == 0 {
@@ -287,7 +287,7 @@ impl<R: Read> Reader<'_, R> {
             }
             shift += 7;
             if shift > 63 {
-                return Err(self.err("i64 varint 超过 10 字节"));
+                return Err(self.err("i64 varint longer than 10 bytes"));
             }
         }
         Ok(((result >> 1) as i64) ^ -((result & 1) as i64))
@@ -301,11 +301,11 @@ impl<R: Read> Reader<'_, R> {
     fn seq_len(&mut self, what: &str) -> Result<usize, NbtError> {
         let raw = self.vari32()?;
         if raw < 0 {
-            return Err(self.err(format!("{what} 长度为负: {raw}")));
+            return Err(self.err(format!("{what}: negative length {raw}")));
         }
         let len = raw as usize;
         if len > MAX_ALLOC {
-            return Err(self.err(format!("{what} 长度 {len} 超过上限 {MAX_ALLOC}")));
+            return Err(self.err(format!("{what}: length {len} exceeds limit {MAX_ALLOC}")));
         }
         Ok(len)
     }
@@ -344,24 +344,24 @@ impl<R: Read> Reader<'_, R> {
                 }
                 Ok(nbtx::Value::LongArray(out))
             }
-            other => Err(self.err(format!("不认识的 tag: {other}"))),
+            other => Err(self.err(format!("unknown tag: {other}"))),
         }
     }
 
     fn read_list(&mut self, depth: usize) -> Result<nbtx::ValueList, NbtError> {
         if depth > MAX_DEPTH {
-            return Err(self.err(format!("嵌套超过 {MAX_DEPTH} 层")));
+            return Err(self.err(format!("nesting deeper than {MAX_DEPTH} levels")));
         }
         let elem = self.u8()?;
         let len = self.seq_len("List")?;
         if elem == 0 {
             if len != 0 {
-                return Err(self.err(format!("TAG_End 列表长度必须为 0，实际 {len}")));
+                return Err(self.err(format!("TAG_End list must have length 0, got {len}")));
             }
             return Ok(nbtx::ValueList::End);
         }
         if elem > 12 {
-            return Err(self.err(format!("列表元素 tag 非法: {elem}")));
+            return Err(self.err(format!("invalid list element tag: {elem}")));
         }
 
         if elem == 9 {
@@ -462,13 +462,13 @@ impl<R: Read> Reader<'_, R> {
                 }
                 nbtx::ValueList::LongArray(out)
             }
-            other => return Err(self.err(format!("列表元素 tag 非法: {other}"))),
+            other => return Err(self.err(format!("invalid list element tag: {other}"))),
         })
     }
 
     fn read_compound(&mut self, depth: usize) -> Result<nbtx::Compound, NbtError> {
         if depth > MAX_DEPTH {
-            return Err(self.err(format!("嵌套超过 {MAX_DEPTH} 层")));
+            return Err(self.err(format!("nesting deeper than {MAX_DEPTH} levels")));
         }
         let mut map = nbtx::Compound::default();
         loop {
@@ -477,7 +477,7 @@ impl<R: Read> Reader<'_, R> {
                 return Ok(map);
             }
             if tag > 12 {
-                return Err(self.err(format!("不认识的 tag: {tag}")));
+                return Err(self.err(format!("unknown tag: {tag}")));
             }
             let key = self.str_bytes()?;
             let value = self.read_value(tag, depth + 1)?;
@@ -676,7 +676,7 @@ fn write_list<W: Write>(stream: &mut W, list: &nbtx::ValueList) -> Result<(), Nb
 /// String 的长度前缀：**varu32**（字节数）。
 fn write_str<W: Write>(stream: &mut W, raw: &[u8]) -> Result<(), NbtError> {
     if raw.len() > MAX_ALLOC {
-        return Err(NbtError::new(0, format!("字符串长度 {} 超过上限", raw.len())));
+        return Err(NbtError::new(0, format!("string length {} exceeds limit", raw.len())));
     }
     write_varu32(stream, raw.len() as u32)?;
     stream.write_all(raw).map_err(io_err)
@@ -685,7 +685,7 @@ fn write_str<W: Write>(stream: &mut W, raw: &[u8]) -> Result<(), NbtError> {
 /// 数组/列表的长度前缀：**zigzag varint i32**（与 nbtx `read_seq_len` 一致）。
 fn write_seq_len<W: Write>(stream: &mut W, len: usize, what: &str) -> Result<(), NbtError> {
     let len = i32::try_from(len)
-        .map_err(|_| NbtError::new(0, format!("{what} 长度 {len} 超出 i32")))?;
+        .map_err(|_| NbtError::new(0, format!("{what}: length {len} exceeds i32")))?;
     write_vari32(stream, len)
 }
 
@@ -721,7 +721,7 @@ fn write_vari64<W: Write>(stream: &mut W, value: i64) -> Result<(), NbtError> {
 }
 
 fn io_err(e: std::io::Error) -> NbtError {
-    NbtError::new(0, format!("写入失败: {e}"))
+    NbtError::new(0, format!("write failed: {e}"))
 }
 
 /// 带计数的 writer（用于 `write_compound_stream` 的返回值）。
