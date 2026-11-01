@@ -53,7 +53,7 @@
 | Termux 通道 | SSH 端口 8022，`tx '<命令>'` 直连；sshd 不随重启自启 |
 | 仓库 | Termux 侧 `~/mchprs/source/MCHPRS_IO`，git 分支 `main`，远程 `https://github.com/xanax2112/MCHPRS_IO.git` |
 | 上游对照副本 | `~/mchprs/source/MCHPRS`（只读，基线 `master` @ `d492e43`） |
-| 线上二进制 | `~/mchprs/mchprs`，**0.6.1-alpha**（12,705,136 字节，sha256 `cd0088e398cad314f1857deb7acb6d2f123389b4d2f02bd49b8a85e252a94460`，2026-11-01 23:25 本机构建）；旧版备份：`~/.ssset/backup/mchprs-0.6.0-alpha-20261101`（0.6.0-alpha 实验构建，12,841,800 字节）与 `~/dsh/scratch/mchprs-0.5.4-alpha-pre-coordfix`（0.5.4 + /coord 修复，8,570,096 字节） |
+| 线上二进制 | `~/mchprs/mchprs`，**0.6.1-alpha**（12,705,720 字节，sha256 `5d9a82db78443b0c8f2694e11b73a032655671435e765e2033b5ed3a713a8aa7`，2026-11-01 23:51 本机构建；同版本较早一份 `cd0088e3…` 已被覆盖）；旧版备份：`~/.ssset/backup/mchprs-0.6.0-alpha-20261101`（0.6.0-alpha 实验构建，12,841,800 字节）与 `~/dsh/scratch/mchprs-0.5.4-alpha-pre-coordfix`（0.5.4 + /coord 修复，8,570,096 字节） |
 | 服务器运行目录 | `~/mchprs/source/MCHPRS_IO/run/`（`Config.toml`、`io.txt`、`logs/`、`world/`）；启动方式：`cd run && ../target/release/mchprs`（原 `/storage/emulated/0/termux/MCHPRS_IO/` 已随仓库重解压删除） |
 | 归档目录 | `/storage/emulated/0/termux/old/`（2026-10-28 起）：`backup-2026-10-28/`（旧版本二进制、改动前源码、台账快照）、`scratch-2026-10-28/`（构建日志与临时脚本）、`drafts-2026-10-28/`（旧 rom 草稿） |
 | 最近提交 | `1333d8e`（0.6.1-alpha，已推送 `main`，2026-11-01 23:2x）；其上依次是 `348de7d`（第 50 条）、`8ec69dd`（第 49 条）、`536e09c`（第 47 条）、`5023240`（第 46 条），再往前是远端的 `a3e7d5f`（/coord 步长修复）与 `2586cce` |
@@ -2711,3 +2711,41 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
 - **已知限制（累积）**：§9.33 的重连 5~10 秒；日志英文、注释中文；`[C4]` 等明细日志要开 `debug.rs::VERBOSE` 才看得到。
 
 **至此基岩版从接入到平台无关化全部收口；后续由接手方（termux 侧）长期维护。**
+
+---
+
+### 9.36 第 51 条：core 侧基岩日志降为 debug（2026-11-01 23:4x）
+
+> 用户贴出 `mchprs_core::plot: Bedrock 区块流送完成：289 个区块…` 并追问"为什么会打印"。
+> 结论：§9.34 的日志收口只做了 `crates/network/src/bedrock`，`crates/core` 里的基岩日志漏了。
+
+- **漏掉的原因（自我复盘）**：之前用单行 `grep "tracing::info!"` 审计，**多行格式串全漏**；
+  `crates/core` 里 7 处基岩日志都是 `info!(` / `warn!(` 换行的写法。改用脚本扫"宏调用后 4 行内含中文"才查全。
+- **改动（用户要求"全部改成 debug，正常游玩不要出现"）**：
+  | 位置 | 原 | 现 |
+  | --- | --- | --- |
+  | `plot/mod.rs:2536` | `info!` 区块流送完成（**游玩中反复刷屏**） | `debug!` + 英文 |
+  | `plot/mod.rs:2187` | `info!` Bedrock 快照 | `debug!` + 英文 |
+  | `plot/mod.rs:731` | `info!` 进 plot 补推牌子 | `debug!` + 英文 |
+  | `plot/mod.rs:2545` / `2573` | `debug!`/`warn!` 流送明细、超时告警 | `debug!` + 英文 |
+  | `plot/packet_handlers.rs:54` | `info!` 未知物品放置 | `debug!` + 英文 |
+  | `server.rs:428/483/497/839` | `warn!`（plot 不在运行、同名冲突等） | `debug!` + 英文 |
+- **注意（代价）**：warning 也一起降到 debug 了 —— 这几条异常以后默认看不见，要 `RUST_LOG=debug` 才出。
+  用户明确要求"全部改成 debug"，照办；哪天想恢复可见，单独把 `server.rs` 那 4 条改回 `warn!` 即可。
+- **验收**：`cargo test -p mchprs_network --lib` 86 / `-p mchprs_core --lib` 1 / release 86 全过；
+  core 里中文日志残留 grep = 0。提交 `18824fd`。
+
+### 9.37 第 52 条：rom/ram/io 版本号跟随 crate 版本（2026-11-01 23:5x）
+
+> 用户："rom，ram，io 的版本号改过来"。
+
+- **问题**：版本号散在 4 处写死 `0.5.4-alpha` —— `automation::PROTOCOL_VERSION`（自动化桥 `HELLO` 回包）、
+  `memory.rs` 的 `ROM_TEMPLATE` / `RAM_TEMPLATE`、`io.rs` 的 `IO_TEMPLATE`；每次升版本都要手工追。
+- **做法**：全部改成 `env!("CARGO_PKG_VERSION")`，模板只留正文、写文件时拼 `v<version>` 头：
+  - `automation.rs:51` `PROTOCOL_VERSION = env!("CARGO_PKG_VERSION")`；
+  - `memory.rs` `ensure_dir_and_templates()` 写 `format!("v{} hex words addressed\n{body}", CARGO_PKG_VERSION)`；
+  - `io.rs` `ensure_file()` 写 `format!("v{}\n{IO_TEMPLATE}", CARGO_PKG_VERSION)`；
+  - 数据文件 `run/io.txt`、`run/memory/.rom.txt`、`run/memory/.ram.txt` 首行就地改为 `v0.6.1-alpha`。
+- **兼容性**：解析侧 `MIN_FORMAT_VERSION = (0, 5)` 未动，`v0.5.x` 与 `v0.6.x` 都照读；
+  已有 ROM/RAM 文件下次保存时由 `render()` 自动重写首行。
+- **验收**：编译 + 三个测试集全过；二进制替换（见 §1）。提交 `6011370`。
