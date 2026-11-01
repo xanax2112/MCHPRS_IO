@@ -53,10 +53,10 @@
 | Termux 通道 | SSH 端口 8022，`tx '<命令>'` 直连；sshd 不随重启自启 |
 | 仓库 | Termux 侧 `~/mchprs/source/MCHPRS_IO`，git 分支 `main`，远程 `https://github.com/xanax2112/MCHPRS_IO.git` |
 | 上游对照副本 | `~/mchprs/source/MCHPRS`（只读，基线 `master` @ `d492e43`） |
-| 线上二进制 | `~/mchprs/mchprs`，**0.5.4-alpha + /coord 步长修复**（8,570,096 字节，sha256 `b53325b0…`，2026-10-29 16:01 本机构建）；替换前 0.5.4 原版（`ca895885…`）备份在 `~/dsh/scratch/mchprs-0.5.4-alpha-pre-coordfix`。注意：原归档目录 `/storage/emulated/0/termux/old/` 已不存在（docs 已并入 `MCHPRS_IO/docs/`）
-| 服务器运行目录 | `/storage/emulated/0/termux/MCHPRS_IO/`（`Config.toml`、`io.txt`、`memory/`、`logs/`、`world/`） |
+| 线上二进制 | `~/mchprs/mchprs`，**0.6.1-alpha**（12,705,136 字节，sha256 `cd0088e398cad314f1857deb7acb6d2f123389b4d2f02bd49b8a85e252a94460`，2026-11-01 23:25 本机构建）；旧版备份：`~/.ssset/backup/mchprs-0.6.0-alpha-20261101`（0.6.0-alpha 实验构建，12,841,800 字节）与 `~/dsh/scratch/mchprs-0.5.4-alpha-pre-coordfix`（0.5.4 + /coord 修复，8,570,096 字节） |
+| 服务器运行目录 | `~/mchprs/source/MCHPRS_IO/run/`（`Config.toml`、`io.txt`、`logs/`、`world/`）；启动方式：`cd run && ../target/release/mchprs`（原 `/storage/emulated/0/termux/MCHPRS_IO/` 已随仓库重解压删除） |
 | 归档目录 | `/storage/emulated/0/termux/old/`（2026-10-28 起）：`backup-2026-10-28/`（旧版本二进制、改动前源码、台账快照）、`scratch-2026-10-28/`（构建日志与临时脚本）、`drafts-2026-10-28/`（旧 rom 草稿） |
-| 最近提交 | `36a63e6`（0.5.4-alpha，已推送 `main`）+ 附注标签 `v0.5.4-alpha`（已推送）；`main` 上更早的是 `433e0d9`（0.5.3 的 `/coord` 修复）与 `f945285` |
+| 最近提交 | `1333d8e`（0.6.1-alpha，已推送 `main`，2026-11-01 23:2x）；其上依次是 `348de7d`（第 50 条）、`8ec69dd`（第 49 条）、`536e09c`（第 47 条）、`5023240`（第 46 条），再往前是远端的 `a3e7d5f`（/coord 步长修复）与 `2586cce` |
 | 构建 | `cargo build --release`，aarch64 Termux；`/tmp` 不可写，日志写 `~/dsh/scratch/`。**只改源码时约 2 分钟**（只重编 `mchprs_core` 与根包）；**改 `Cargo.toml` 的版本号时约 8 分钟**——15 个 crate 全是 `version.workspace = true`，版本参与 Cargo 指纹，等于全量冷编（2026-10-29 实测：2 个 crate = 2m06s，13 个 crate = 7m42s）；release 开着 `lto = "fat"`，最后链接阶段最贵 |
 
 ---
@@ -2630,10 +2630,84 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
 
 **本轮提交均只在本地**（未 push）。
 
+---
 
+### 9.31 第 46 条：基岩登录崩溃 —— 自写 varint-NBT 读取器（2026-11-01 21:xx）
 
+> 用户报障：基岩 1.21.51 一登录，plot 线程立即 panic，三连崩。
+> 日志栈：`as_mut_byte_ptr called on wide pointer` ← `Partial::set_shape` ← `nbtx::de::read_map` ← `parse_nbt_compound`。
 
+- **根因**：nbtx `from_bytes` 把目标类型交给 facet 反射（`read_root` 里 `Partial::alloc::<T>()` + `p.set(v)`）；
+  `facet-core 0.50.0-rc.7` 把"宽/细指针"标记压在指针**第 63 位**，而 Android aarch64 的堆指针高字节本身是
+  tag（日志里恒为 `0x34…`），free 时 tag 对不上 → Scudo abort / 断言失败。x86_64 高字节恒 0，所以 PC 上永远复现不了。
+- **做法**：新增 `crates/network/src/bedrock/nbt_net.rs`，按 nbtx `nbt/io.rs` 的 `VarintEndian` 分支自己读
+  （根 tag+根名、compound 循环、String 用 varu32 **字节**长度、`i32/i64` zigzag、`i16/f32/f64` 小端、
+  list/数组长度 zigzag i32），产出 `HashMap<String, nbtx::Value>`，全程 safe Rust、整字节消费、深度上限 64。
+- **验证**：`bedrock_nbt_resources_parse`（两张 `.dat` 非空 + 结构断言）debug/release 都过；
+  最小复现探针（3 条目 HashMap 交给 `nbtx::to_varint_bytes_in`）在 Android 上必崩，证明问题在 nbtx/facet 而非测试框架。
+- **遗留（下一节解决）**：只修了"读"，**写**（区块尾部牌子 NBT、`BlockActorData`）仍走 nbtx → 同一台手机照样 SIGABRT；
+  基线 `2586cce` 同样崩，属遗留问题。
+- 提交 `5023240`。
 
+### 9.32 第 47 条：全砍 facet —— vendor 自写 NBT writer + 3 个包换 `NbtCompound`（2026-11-01 22:0x）
 
+> 用户裁决：**"我明确要全砍"** —— 不接受打 facet 补丁、不接受关堆 tag、不接受 debug/release 分支。
 
+- **范围（用 grep 量过）**：运行路径上只有 3 个包真的带非空 NBT：
+  `BiomeDefinitionListPacket`（87 条）、`AvailableActorIdentifiersPacket`（1 条）、`BlockActorDataPacket`（收发双向）；
+  另外 `sign_chunk_bytes()` 自己调 nbtx writer。其余 9 个带 `#[nbt]` 的包不发不收，`item_component`/`start_game` 只发空 vec（已加断言锁死）。
+- **做法**：
+  1. `vendor/bedrock-rs/crates/protocol/src/nbt_net.rs`（743 行，**全仓库唯一实现**）：read/write + `NbtCompound`
+     手写 `ProtoCodec`（`size_hint` 用计数 Sink，不分配；`deserialize` 读到根 `TAG_End` 即停、不吃后续字段）；
+  2. 三个包字段改 `NbtCompound`、去掉 `#[nbt]`（NOTE(local patch) 注释）；
+  3. `crates/network` 侧只留薄转发 + 测试（vendor 是独立 workspace，`cargo test -p mchprs_network` 编不到它）。
+- **验收**：Android aarch64 debug 86 / release 86 **全过、0 abort**（上一版在这里 SIGABRT）；
+  `cargo build --release` 通过；真机（release）登录 0.97s、快照 5×5=25 区块**含 3 块牌子**、区块流送正常、
+  牌子显示/改字正常，`panick/wide pointer/SIGABRT/ERROR` 零命中。
+- 回退护栏：`crates/network/src/bedrock` 下 `to_varint_bytes_in` / `from_varint_bytes` **零命中**。
+- 提交 `536e09c`。
 
+### 9.33 第 48 条：raknet 会话不回收 —— 退出后立刻重进被拒（**暂不修，已知限制**）
+
+- **现象**：退出世界后 5~10 秒内立刻重进，客户端停在"正在连接服务器…"，服务端连 `[A3] ACCEPT` 都不打。
+- **根因（已核实）**：`raknet` 的 `session_map` 按 `SocketAddr` 去重，新连接命中旧记录直接回 `AlreadyConnected`；
+  旧会话只有走到 `RakSessionOutput::Disconnected` 才会被删，而服务端走**优雅关闭** `conn.close()`
+  （`CLOSE_TIMEOUT=5s`），这段时间旧记录一直在。客户端"退出→重进"复用同一个 UDP 源端口，正好撞上。
+- **更深的坑**：`raknet-tokio/src/session/mod.rs:46` 用 `Some(msg) = msg_rx.recv()` 匹配，
+  通道关闭时该分支被永久禁用（tokio 会禁用不匹配的分支），所以**直接 drop 连接**反而让会话永远不回收（实测从"进两次"恶化成"永远进不去"）。
+  当前代码已恢复 `conn.close().await` 并写明原因，禁止改成 drop。
+- **修法（未做）**：vendor `raknet`/`raknet-tokio`，把该分支改成 `msg = msg_rx.recv()` + `None => DisconnectNow`（约 6 行），
+  再把服务端改成 drop；代价是多一个 `[patch]` 与一份 git 依赖副本。
+- **用户裁决（2026-11-01）**：**暂不修**，先记为已知限制；要修时单独开一轮。
+
+### 9.34 第 49 条：日志收口 —— 正常游玩静默（2026-11-01 22:4x）
+
+> 用户要求：**正常游玩不允许有基岩日志**；"玩家进入/离开"、"执行指令"、"出错"三类除外。
+
+- 删除：`[DBG] SetActorData = …`（基线遗留，每次登录打一整包结构）、fix2 期间新加的快照耗时打印。
+- 转 verbose：6 处逐事件 `println!` → `crate::bedrock_verbose!`（`debug.rs::VERBOSE=false` 时静默）：
+  `[R4]` 聊天、`[R3]` 计分板、`[R2]` 能力值、`[R6]` 生成/移除玩家、`[C4]` **区块流送**（刷屏主力）。
+- 白名单保留：`[A3] ACCEPT`、`[B4] 登录链路完成`、`[C1]/[C2]` 登录步骤、`[R9]` 游戏模式、`[B4]` 软枚举、全部 `[!!]` 错误、`[SELFTEST]`。
+- 真机复核：行走/看牌子/改字一轮，`[DBG]/[C4]/[R3]/[R4]/[R2]/[R6]` **零命中**，只剩登录步骤 + joined/left。
+- 提交 `8ec69dd`。
+
+### 9.35 第 50 条：日志英文化 + 0.6.1-alpha 发布（2026-11-01 23:2x）
+
+> 用户裁决：**"统一英文化，注释没事"** —— 运行期日志/错误文案改英文，中文注释保留。
+> 之后用户交回维护权："基岩版的问题解决后，mchprs 还是你来负责"，本轮由我直接改码（不再走 windows 侧）。
+
+- **范围**：`crates/network/src/bedrock/**` + vendor 的 `nbt_net.rs`，共 **119 处**文案（`119 insertions / 119 deletions`，
+  改动行全部是字符串行）。标签 `[C2]/[R4]/[A3]/[!!]`、协议名、占位符、参数顺序全部保留；注释一个字未动。
+- **同步修正**：`nbt_net` 的 5 条测试断言原本按中文子串匹配错误信息（`contains("尾部残留")` 等），改成英文子串
+  （`"trailing bytes"`、`"negative length"`、`"nesting"`、`"root tag"`、`"failed to read"`）。
+- **版本**：`Cargo.toml` 的 `0.5.4-alpha` → **`0.6.1-alpha`**（`Cargo.lock` 随之更新）。
+- **验收**：Android aarch64 debug 86 / release 86 全过；`cargo build --release` 通过；
+  二进制 **12,705,136 字节**，sha256 `cd0088e3…`，已替换 `~/mchprs/mchprs`（旧版备份见 §1）。
+- **合并与推送**：先 rebase 到远端 `a3e7d5f`（`/coord new|add` 步长修复），冲突只在 `BACKLOG.md` 的
+  "BUG-032 接入进展" 段（远端那版没有），按"保留我们的段落 + 保留远端 BUG-022 补充"解决；
+  22 个提交 rebase 后 0 冲突，`main` = `1333d8e`，**已推送 GitHub**。
+- **平台无关结论**：基岩运行路径上已无 facet/nbtx 反射；NBT 只把 `nbtx::Value` 当数据结构用。
+  同一套 86 条测试在 Android aarch64（rustc 1.99.1）与 Windows x86_64（rustc 1.99.0）均通过。
+- **已知限制（累积）**：§9.33 的重连 5~10 秒；日志英文、注释中文；`[C4]` 等明细日志要开 `debug.rs::VERBOSE` 才看得到。
+
+**至此基岩版从接入到平台无关化全部收口；后续由接手方（termux 侧）长期维护。**
