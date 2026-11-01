@@ -370,10 +370,9 @@ fn check_group(group: &IoGroup, redpiler: &Compiler, world: &impl World) -> Resu
     Ok(())
 }
 
-/// `io.txt` skeleton written when the file is missing. Only the version line
-/// plus an empty input and output group (BACKLOG.md BUG-011).
+/// `io.txt` body written when the file is missing; the `v<version>` line is
+/// prepended at write time so it follows the crate version (BACKLOG.md BUG-011).
 const IO_TEMPLATE: &str = "\
-v0.5.4-alpha
 input none_in = [
 origin = 0
 clk = 0
@@ -392,7 +391,8 @@ pub fn ensure_file() {
     if path.exists() {
         return;
     }
-    if let Err(err) = std::fs::write(path, IO_TEMPLATE) {
+    let content = format!("v{}\n{IO_TEMPLATE}", env!("CARGO_PKG_VERSION"));
+    if let Err(err) = std::fs::write(path, content) {
         tracing::warn!("Could not write {}: {}", IO_FILE, err);
     }
 }

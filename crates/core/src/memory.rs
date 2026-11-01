@@ -48,8 +48,9 @@ use tracing::{info, warn};
 
 /// ROM/RAM templates written on startup. They are dot-prefixed so the loader
 /// skips them; they only document the format (BACKLOG.md BUG-011).
+/// Body of the `.rom.txt` skeleton; the `v<version> hex words addressed`
+/// header is prepended when the file is written, so it follows the crate version.
 const ROM_TEMPLATE: &str = "\
-v0.5.4-alpha hex words addressed
 origin = 0
 clk = 0
 address coordinate = [
@@ -60,8 +61,8 @@ width = 0
 ]
 ";
 
+/// Body of the `.ram.txt` skeleton (same version-header rule as [`ROM_TEMPLATE`]).
 const RAM_TEMPLATE: &str = "\
-v0.5.4-alpha hex words addressed
 origin = 0
 clk = 0, 0, 0
 write enable = 0, 0, 0
@@ -90,7 +91,10 @@ pub fn ensure_dir_and_templates() {
     for (name, body) in [(".rom.txt", ROM_TEMPLATE), (".ram.txt", RAM_TEMPLATE)] {
         let path = Path::new(MEMORY_DIR).join(name);
         if !path.exists()
-            && let Err(err) = fs::write(&path, body)
+            && let Err(err) = fs::write(
+                &path,
+                format!("v{} hex words addressed\n{body}", env!("CARGO_PKG_VERSION")),
+            )
         {
             warn!("Could not write {}: {}", path.display(), err);
         }
@@ -1439,7 +1443,7 @@ pub(crate) fn version_stamp(line: &str) -> Option<(u32, u32)> {
     let mut parts = line.split_whitespace();
     let token = parts.next()?;
     let tail: Vec<&str> = parts.collect();
-    // A bare `v0.5.4-alpha` line is accepted as well, which is what the
+    // A bare `v0.5.x-alpha` line is accepted as well, which is what the
     // generated `io.txt` uses (BACKLOG.md BUG-011); memory files keep the
     // full `hex words addressed` form.
     if !tail.is_empty() && tail != ["hex", "words", "addressed"] {
