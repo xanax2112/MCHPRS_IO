@@ -726,7 +726,6 @@ async fn do_login(
             (payloads, (0.5, 82.0, 0.5), chunk_radius)
         }
         WorldSource::Mchprs { events, .. } => {
-            let snapshot_start = Instant::now();
             let (reply, rx) = mpsc::channel::<PlotSnapshot>();
             if events
                 .send(BedrockEvent::SnapshotRequest {
@@ -747,11 +746,6 @@ async fn do_login(
             .await?;
             let snapshot = received
                 .map_err(|_| "等待 MCHPRS 世界快照超时（是否没有 plot 在运行？）")?;
-            println!(
-                "[C2] t={:.3} 快照已收到（等待 {:.3}s）",
-                wall_clock(),
-                snapshot_start.elapsed().as_secs_f64()
-            );
             let count = world::BEDROCK_SECTION_COUNT as u32;
             let radius = snapshot.chunk_radius;
             let payloads = snapshot
@@ -839,10 +833,6 @@ async fn do_login(
     ))])
     .await?;
     log("C2", start, ">>", "SetActorData(玩家初始元数据)");
-    println!(
-        "  [DBG] SetActorData = {:?}",
-        crate::bedrock::protocol::set_actor_data(runtime_id)
-    );
     // 出生握手：**顺序照 Geyser 抄**（`JavaPlayerPositionTranslator` 的未 spawned 分支）：
     //   RespawnPacket(SERVER_READY) → SetEntityData → MovePlayer(RESPAWN) → MovePlayer(TELEPORT)
     //
@@ -1639,7 +1629,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             Protocol::TextPacket(Box::new(crate::bedrock::text::raw_text(text)))
                         })
                         .collect();
-                    println!("[R4] 下发聊天 {} 行", packets.len());
+                    crate::bedrock_verbose!("[R4] 下发聊天 {} 行", packets.len());
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发聊天失败: {e}");
@@ -1693,7 +1683,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         println!("[!!] 下发计分板失败: {e}");
                         break;
                     }
-                    println!(
+                    crate::bedrock_verbose!(
                         "[R3] 计分板已下发：{} 行，标题={:?}",
                         sidebar.lines.len(),
                         sidebar.title
@@ -1725,7 +1715,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     let packets = vec![Protocol::UpdateAbilitiesPacket(Box::new(
                         crate::bedrock::protocol::update_abilities_for(flying, runtime_id, fly_speed),
                     ))];
-                    println!("[R2] 能力值跟随：flying={flying} fly_speed={fly_speed}");
+                    crate::bedrock_verbose!("[R2] 能力值跟随：flying={flying} fly_speed={fly_speed}");
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
                         println!("[!!] 下发能力值失败: {e}");
@@ -1780,7 +1770,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                             packets.push(Protocol::PlayerListPacket(Box::new(
                                 entity::player_list_remove(uuid),
                             )));
-                            println!("[R6] 移除玩家实体 uuid={uuid:x} unique={}", state.unique_id);
+                            crate::bedrock_verbose!("[R6] 移除玩家实体 uuid={uuid:x} unique={}", state.unique_id);
                         }
                     }
 
@@ -1799,7 +1789,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                 // 记账用**脚**坐标（`AddPlayer` 发的就是脚）；`MovePlayer` 的 y
                                 // 由 `entity::move_player` 自己 +1.62（见 PLAYER_EYE_HEIGHT）。
                                 let position = entity::bedrock_feet(info.position);
-                                println!(
+                                crate::bedrock_verbose!(
                                     "[R6] 生成玩家 {} runtime={runtime} pos={position:?}",
                                     info.username
                                 );
@@ -1925,7 +1915,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         println!("[!!] 下发区块流送失败: {e}");
                         break;
                     }
-                    println!(
+                    crate::bedrock_verbose!(
                         "[C4] 区块流送 {chunk_count} 个（{bytes} 字节），publisher={:?}",
                         batch.publisher
                     );
