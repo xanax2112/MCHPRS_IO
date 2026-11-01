@@ -728,7 +728,7 @@ impl Plot {
                 }
             }
             if pushed > 0 {
-                info!("Bedrock 进 plot：补推 {pushed} 块告示牌文字（第 43 条兜底）");
+                debug!("Bedrock enter plot: pushed {pushed} sign texts (item 43 fallback)");
             }
             player.client.send_inventory(bedrock_inventory_snapshot(&player));
         }
@@ -2184,8 +2184,8 @@ impl Plot {
         }
 
         let side = chunk_radius * 2 + 1;
-        info!(
-            "Bedrock 快照：{}×{} = {} 区块（含 {} 块牌子），耗时 {:?}",
+        debug!(
+            "Bedrock snapshot: {}x{} = {} chunks ({} signs), took {:?}",
             side,
             side,
             chunks.len(),
@@ -2533,8 +2533,8 @@ impl Plot {
                     // 铺满这条日志是"第 19 条真的解决了吗"的验收证据：
                     // 一次性生成是 205~260ms，现在是每 tick 一小批、总耗时分成 N 个 tick。
                     if stream.pending.is_empty() {
-                        info!(
-                            "Bedrock 区块流送完成：{} 个区块，覆盖半径 {} 区块，耗时 {:?}（每 tick 预算 {} 个 / {}ms）",
+                        debug!(
+                            "Bedrock chunk streaming done: {} chunks, radius {}, took {:?} (per-tick budget {} / {}ms)",
                             stream.sent.len(),
                             covered,
                             stream.started.elapsed(),
@@ -2543,7 +2543,7 @@ impl Plot {
                         );
                     }
                     debug!(
-                        "Bedrock 流送：{} 个区块（剩余 {}，已发 {}/{}）",
+                        "Bedrock streaming: {} chunks ({} pending, sent {}/{})",
                         batch.len(),
                         stream.pending.len(),
                         stream.sent.len(),
@@ -2570,7 +2570,7 @@ impl Plot {
         // 打出来才有数据判断要不要继续拆（第 19 条的验收指标）。
         let elapsed = timeline.elapsed();
         if elapsed > Duration::from_millis(20) {
-            warn!("Bedrock 流送这一轮耗时 {elapsed:?}（超过 20ms，检查预算）");
+            debug!("Bedrock streaming round took {elapsed:?} (over 20ms, check budget)");
         }
     }
 

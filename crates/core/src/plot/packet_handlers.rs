@@ -13,7 +13,7 @@ use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
-use tracing::{error, info};
+use tracing::{debug, error};
 
 impl Plot {
     pub(super) fn handle_packets_for_player(&mut self, player: usize) {
@@ -51,8 +51,8 @@ impl Plot {
                     ] {
                         positions.push(pos.offset(face));
                     }
-                    info!(
-                        "Bedrock 未知物品放置 → 修正 MCHPRS({},{},{}) / Bedrock y={}",
+                    debug!(
+                        "Bedrock unknown item placement -> corrected MCHPRS({},{},{}), Bedrock y={}",
                         x,
                         y,
                         z,

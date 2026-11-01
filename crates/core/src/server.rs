@@ -32,7 +32,7 @@ use std::fs;
 use std::io::Cursor;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// `Message` gets send from a plot thread to the server thread.
 #[derive(Debug)]
@@ -425,7 +425,7 @@ impl MinecraftServer {
             .iter()
             .any(|plot| plot.plot_x == 0 && plot.plot_z == 0)
         {
-            warn!("Bedrock 玩家 {username} 要进 plot (0,0)，但该 plot 不在运行，断开");
+            debug!("Bedrock player {username} wants to enter plot (0,0), but that plot is not running; disconnecting");
             link.handle.close_connection();
             return;
         }
@@ -480,7 +480,7 @@ impl MinecraftServer {
             .is_err()
         {
             // 走到这里说明服务端正在退出（接收端已 drop）：把身份表清掉，别留下永久失效的名字。
-            warn!("Bedrock 玩家无法投递 PlayerJoined（服务端已关闭），已回滚身份表");
+            debug!("Bedrock player could not deliver PlayerJoined (server channel closed); rolled back identity table");
             self.bedrock_players.remove(&uuid);
         }
     }
@@ -494,7 +494,7 @@ impl MinecraftServer {
 
         // 同名 Bedrock 玩家已在线时，拒绝这次 Java 登录（同一个 UUID 不能同时在线）。
         if self.bedrock_players.contains_key(&uuid) {
-            warn!("拒绝 Java 玩家 {username}：同名 Bedrock 玩家已在线");
+            debug!("rejected Java player {username}: a Bedrock player with the same name is online");
             client.close_connection();
             return;
         }
@@ -836,7 +836,7 @@ impl MinecraftServer {
                                 });
                         }
                         None => {
-                            warn!("Bedrock 客户端请求世界快照，但 spawn plot (0,0) 不在运行");
+                            debug!("Bedrock client requested a world snapshot, but spawn plot (0,0) is not running");
                         }
                     }
                 }
