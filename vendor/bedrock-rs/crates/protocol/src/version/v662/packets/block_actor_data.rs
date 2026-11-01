@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::nbt_net::NbtCompound;
 use crate::ProtoVersion;
 use bedrock_macros::{packet, ProtoCodec};
 
@@ -6,6 +6,6 @@ use bedrock_macros::{packet, ProtoCodec};
 #[derive(ProtoCodec, Clone, Debug)]
 pub struct BlockActorDataPacket<V: ProtoVersion> {
     pub block_position: V::NetworkBlockPosition,
-    #[nbt]
-    pub actor_data_tags: HashMap<String, nbtx::Value>,
+    // NOTE(local patch): 收发双向都改走 NbtCompound（无 facet）。
+    pub actor_data_tags: NbtCompound,
 }

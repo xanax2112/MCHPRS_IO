@@ -445,7 +445,7 @@ mod tests {
         let packet = Protocol::BlockActorDataPacket(Box::new(BlockActorDataPacket::<Protocol> {
             // Bedrock 坐标 y=6 → MCHPRS y=70
             block_position: NetworkBlockPosition { x: 10, y: 6, z: -3 },
-            actor_data_tags: tags,
+            actor_data_tags: crate::bedrock::nbt_net::NbtCompound::new(tags),
         }));
         let mut capture = Signs::default();
         for packet in translate(&packet) {
@@ -466,7 +466,7 @@ mod tests {
         chest.insert("id".to_string(), nbtx::Value::String("Chest".into()));
         let chest = Protocol::BlockActorDataPacket(Box::new(BlockActorDataPacket::<Protocol> {
             block_position: NetworkBlockPosition { x: 1, y: 2, z: 3 },
-            actor_data_tags: chest,
+            actor_data_tags: crate::bedrock::nbt_net::NbtCompound::new(chest),
         }));
         assert!(translate(&chest).is_empty());
     }

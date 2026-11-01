@@ -97,7 +97,7 @@ pub fn sign_actor_data(sign: &BedrockSign) -> BlockActorDataPacket<Protocol> {
             y: (sign.y - Y_OFFSET) as u32,
             z: sign.z,
         },
-        actor_data_tags: sign_nbt(sign),
+        actor_data_tags: crate::bedrock::nbt_net::NbtCompound::new(sign_nbt(sign)),
     }
 }
 
@@ -147,7 +147,7 @@ fn side_rows(tags: &Tags, key: &str) -> [String; 4] {
 pub fn sign_chunk_bytes(sign: &BedrockSign) -> Vec<u8> {
     let mut out = Vec::new();
     // 写失败只可能是内存问题；这里不 panic，直接返回已经写出的部分（区块仍可用）。
-    let _ = nbtx::to_varint_bytes_in(&mut out, &sign_nbt(sign));
+    let _ = crate::bedrock::nbt_net::write_compound_stream(&sign_nbt(sign), &mut out);
     out
 }
 
@@ -255,7 +255,7 @@ mod tests {
         assert_eq!(bytes[0], 10, "第一个字节必须是 TAG_Compound(10)");
         assert_eq!(*bytes.last().unwrap(), 0, "复合标签必须以 TAG_End(0) 收尾");
         // 能被解析回来（证明是完整的 NBT 文档）
-        let decoded: Tags = nbtx::from_varint_bytes(&mut bytes.as_slice()).expect("parse nbt");
+        let decoded = crate::bedrock::nbt_net::read_root_compound(&bytes).expect("parse nbt");
         assert_eq!(decoded.len(), 7);
     }
 

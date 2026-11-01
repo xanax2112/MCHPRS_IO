@@ -101,7 +101,7 @@ fn parse_nbt_compound_named(
     name: &str,
 ) -> std::collections::HashMap<String, nbtx::Value> {
     // 走自写的 varint-NBT 读取器：不经过 nbtx/facet 反射，见 `nbt_net` 模块注释。
-    match crate::bedrock::nbt_net::parse_root_compound(bytes) {
+    match crate::bedrock::nbt_net::read_root_compound(bytes) {
         Ok(map) => map,
         Err(e) => {
             tracing::error!("Bedrock NBT 资源 {name} 解析失败（{} 字节）: {e}", bytes.len());
@@ -203,9 +203,21 @@ pub(crate) fn pname(p: &Protocol) -> &'static str {
     }
 }
 
+/// 与 tracing 日志对齐用的墙上时间（UTC 秒，带小数）。
+///
+/// 排查"退出→重进卡住"这类**跨连接**时序问题必须用绝对时间：
+/// 单看 `start.elapsed()` 只能说明连接内部过了多久，无法判断两条连接之间空了多长时间。
+fn wall_clock() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
 fn log(step: &str, start: Instant, dir: &str, msg: &str) {
     println!(
-        "[{step}] {:>8.3} {dir} {msg}",
+        "[{step}] t={:.3} {:>8.3} {dir} {msg}",
+        wall_clock(),
         start.elapsed().as_secs_f64()
     );
 }
@@ -714,6 +726,7 @@ async fn do_login(
             (payloads, (0.5, 82.0, 0.5), chunk_radius)
         }
         WorldSource::Mchprs { events, .. } => {
+            let snapshot_start = Instant::now();
             let (reply, rx) = mpsc::channel::<PlotSnapshot>();
             if events
                 .send(BedrockEvent::SnapshotRequest {
@@ -734,6 +747,11 @@ async fn do_login(
             .await?;
             let snapshot = received
                 .map_err(|_| "等待 MCHPRS 世界快照超时（是否没有 plot 在运行？）")?;
+            println!(
+                "[C2] t={:.3} 快照已收到（等待 {:.3}s）",
+                wall_clock(),
+                snapshot_start.elapsed().as_secs_f64()
+            );
             let count = world::BEDROCK_SECTION_COUNT as u32;
             let radius = snapshot.chunk_radius;
             let payloads = snapshot
@@ -948,7 +966,7 @@ async fn do_login(
     if biome_count > 0 {
         conn.send(&[Protocol::BiomeDefinitionListPacket(Box::new(
             BiomeDefinitionListPacket {
-                biome_definition_data: biomes,
+                biome_definition_data: crate::bedrock::nbt_net::NbtCompound::new(biomes),
             },
         ))])
         .await?;
@@ -967,7 +985,7 @@ async fn do_login(
     if entity_count > 0 {
         conn.send(&[Protocol::AvailableActorIdentifiersPacket(Box::new(
             AvailableActorIdentifiersPacket {
-                actor_info_list: entities,
+                actor_info_list: crate::bedrock::nbt_net::NbtCompound::new(entities),
             },
         ))])
         .await?;
@@ -1220,45 +1238,6 @@ fn selftest(mode: &str) {
         return;
     }
 
-    if mode == "2" {
-        println!("[SELFTEST] nbtx ?map");
-        let m: std::collections::HashMap<String, nbtx::Value> = Default::default();
-        let mut cur = std::io::Cursor::new(Vec::new());
-        match nbtx::to_le_bytes_in(&mut cur, &m) {
-            Ok(()) => println!("[SELFTEST] OK empty map bytes={}", cur.get_ref().len()),
-            Err(e) => println!("[SELFTEST] ERR map: {e:?}"),
-        }
-        return;
-    }
-    if mode == "3" {
-        println!("[SELFTEST] nbtx 单条 map");
-        let mut m: std::collections::HashMap<String, nbtx::Value> = Default::default();
-        m.insert(String::from("x"), nbtx::Value::Int(1));
-        let mut cur = std::io::Cursor::new(Vec::new());
-        match nbtx::to_le_bytes_in(&mut cur, &m) {
-            Ok(()) => println!("[SELFTEST] OK 1-entry map bytes={}", cur.get_ref().len()),
-            Err(e) => println!("[SELFTEST] ERR map: {e:?}"),
-        }
-        return;
-    }
-    if mode == "5" {
-        println!("[SELFTEST] nbtx 基础类型 i32");
-        let mut cur = std::io::Cursor::new(Vec::new());
-        match nbtx::to_le_bytes_in(&mut cur, &7i32) {
-            Ok(()) => println!("[SELFTEST] OK i32 bytes={}", cur.get_ref().len()),
-            Err(e) => println!("[SELFTEST] ERR i32: {e:?}"),
-        }
-        return;
-    }
-    if mode == "6" {
-        println!("[SELFTEST] nbtx String");
-        let mut cur = std::io::Cursor::new(Vec::new());
-        match nbtx::to_le_bytes_in(&mut cur, &String::from("hi")) {
-            Ok(()) => println!("[SELFTEST] OK String bytes={}", cur.get_ref().len()),
-            Err(e) => println!("[SELFTEST] ERR String: {e:?}"),
-        }
-        return;
-    }
     if mode == "7" {
         println!("[SELFTEST] StartGame 往返");
         let pkt = build_start_game(crate::bedrock::protocol::PLAYER_RUNTIME_ID);
@@ -1489,7 +1468,11 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
             let mut conn = conn.into_ver::<Protocol>();
             // 每条连接一个自己的实体运行时 id（BUG-032 第 22 条）：以前全写死 1。
             let runtime_id = next_runtime_id();
-            println!("[A3] ACCEPT peer runtime_id={runtime_id}");
+            println!(
+                "[A3] t={:.3} ACCEPT peer runtime_id={runtime_id} addr={}",
+                wall_clock(),
+                conn.get_socket_addr()
+            );
             let session_info = match do_login(&mut conn, start, &source, runtime_id).await {
                 Ok(info) => {
                     println!("[B4] 登录链路完成，等待后续阶段");
@@ -2518,6 +2501,18 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
             }
             // 会话结束：先把存活标记置 false，MCHPRS 侧下一 tick 就会把这个 Bedrock 玩家清掉。
             alive.store(false, std::sync::atomic::Ordering::Relaxed);
+            // **必须走完整的 `close()` 并等它返回**（BUG-032 第 47 条）。
+            //
+            // 试过"300ms 超时就丢弃连接"，结果是灾难：`raknet-tokio/src/session/mod.rs:46`
+            // 里会话任务写的是 `Some(msg) = msg_rx.recv() => {...}`，我们把 `RakSession`
+            // drop 掉后 `recv()` 返回 `None`，这个模式匹配不上、tokio 只把分支禁用，
+            // **不会**触发 `DisconnectNow`；于是 raknet 服务端的 `session_map` 里那条
+            // 旧会话永远不删，同一个 addr（手机退出世界后复用同一 UDP 端口）的新连接
+            // 一律被回 `AlreadyConnected`（`raknet/src/server/mod.rs:589`），
+            // 客户端就永久卡在"正在连接服务器…"。
+            //
+            // 代价：这里会等 `CLOSE_TIMEOUT`（约 5~10 秒）才把会话清掉，这段窗口内
+            // 立刻重进仍会被拒（基线行为）。根治要改 raknet 那个 match 分支，见 windows-2.txt。
             conn.close().await;
         });
     }
@@ -2576,6 +2571,9 @@ mod nbt_resource_tests {
     fn bedrock_nbt_resources_parse() {
         let biomes = parse_nbt_compound(BIOME_DEFINITIONS_NBT);
         let entities = parse_nbt_compound(ENTITY_IDENTIFIERS_NBT);
+        // `selftest("nbt")` 在基线里就没有调用点（只编译不执行），这里用同一条语句
+        // 给出等价输出，方便 `--nocapture` 抄进 REPORT。
+        println!("[SELFTEST] biomes={} entities={}", biomes.len(), entities.len());
         assert!(!biomes.is_empty(), "biome_definitions.dat 解析为空");
         assert!(!entities.is_empty(), "entity_identifiers.dat 解析为空");
 
