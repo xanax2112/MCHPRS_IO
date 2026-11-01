@@ -89,24 +89,25 @@ pub struct BedrockSessionInfo {
 }
 
 fn parse_nbt_compound(bytes: &[u8]) -> std::collections::HashMap<String, nbtx::Value> {
-    type Map = std::collections::HashMap<String, nbtx::Value>;
-    // Geyser 的 .dat 资源是 Bedrock 网络变体（varint 字符串长度），先按它解析
-    let mut s1 = bytes;
-    if let Ok(v) = nbtx::from_bytes::<nbtx::VarintEndian, Map>(&mut s1) {
-        return v;
+    parse_nbt_compound_named(bytes, "NBT")
+}
+
+/// 与 [`parse_nbt_compound`] 相同，但失败日志里带上资源名。
+///
+/// 解析函数本身不知道解的是哪张表，线上只看到"失败了"没法定位，
+/// 所以两个调用点各报一次名字（BUG-032 第 46 条质量门 §5.6）。
+fn parse_nbt_compound_named(
+    bytes: &[u8],
+    name: &str,
+) -> std::collections::HashMap<String, nbtx::Value> {
+    // 走自写的 varint-NBT 读取器：不经过 nbtx/facet 反射，见 `nbt_net` 模块注释。
+    match crate::bedrock::nbt_net::parse_root_compound(bytes) {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::error!("Bedrock NBT 资源 {name} 解析失败（{} 字节）: {e}", bytes.len());
+            std::collections::HashMap::new()
+        }
     }
-    let mut s2 = bytes;
-    if let Ok(v) = nbtx::from_bytes::<byteorder::LittleEndian, Map>(&mut s2) {
-        println!("[::] NBT ?LittleEndian 解析成功");
-        return v;
-    }
-    let mut s3 = bytes;
-    if let Ok(v) = nbtx::from_bytes::<byteorder::BigEndian, Map>(&mut s3) {
-        println!("[::] NBT ?BigEndian 解析成功");
-        return v;
-    }
-    println!("[!!] NBT 三种变体都解析失败");
-    std::collections::HashMap::new()
 }
 
 type Protocol = V766;
@@ -942,7 +943,7 @@ async fn do_login(
     .await?;
     log("C2", start, ">>", "ItemComponent(空)");
 
-    let biomes = parse_nbt_compound(BIOME_DEFINITIONS_NBT);
+    let biomes = parse_nbt_compound_named(BIOME_DEFINITIONS_NBT, "biome_definitions.dat");
     let biome_count = biomes.len();
     if biome_count > 0 {
         conn.send(&[Protocol::BiomeDefinitionListPacket(Box::new(
@@ -961,7 +962,7 @@ async fn do_login(
         log("C2", start, "!!", "生物群系表解析为空，跳过发送");
     }
 
-    let entities = parse_nbt_compound(ENTITY_IDENTIFIERS_NBT);
+    let entities = parse_nbt_compound_named(ENTITY_IDENTIFIERS_NBT, "entity_identifiers.dat");
     let entity_count = entities.len();
     if entity_count > 0 {
         conn.send(&[Protocol::AvailableActorIdentifiersPacket(Box::new(
@@ -2558,5 +2559,34 @@ pub fn spawn_mchprs_listener(
         });
     if let Err(err) = spawn_result {
         println!("[!!] Bedrock 监听线程创建失败: {err}");
+    }
+}
+
+#[cfg(test)]
+mod nbt_resource_tests {
+    use super::{BIOME_DEFINITIONS_NBT, ENTITY_IDENTIFIERS_NBT, parse_nbt_compound};
+
+    /// BUG-032 第 46 条：两张 Geyser 资源都必须能被自写读取器**整字节**解析。
+    ///
+    /// 断言只用结构（不写 87/129 这类魔法数字，资源更新时会脆）：
+    /// - 两张表都非空；
+    /// - 生物群系表的值全是 `Compound`；
+    /// - 实体标识表有 `idlist` 且是**非空列表**。
+    #[test]
+    fn bedrock_nbt_resources_parse() {
+        let biomes = parse_nbt_compound(BIOME_DEFINITIONS_NBT);
+        let entities = parse_nbt_compound(ENTITY_IDENTIFIERS_NBT);
+        assert!(!biomes.is_empty(), "biome_definitions.dat 解析为空");
+        assert!(!entities.is_empty(), "entity_identifiers.dat 解析为空");
+
+        assert!(
+            biomes.values().all(|v| matches!(v, nbtx::Value::Compound(_))),
+            "生物群系表的值应全部是 Compound"
+        );
+
+        match entities.get("idlist") {
+            Some(nbtx::Value::List(list)) => assert!(!list.is_empty(), "idlist 不应为空"),
+            other => panic!("entity_identifiers.dat 的 idlist 缺失或类型不对: {other:?}"),
+        }
     }
 }

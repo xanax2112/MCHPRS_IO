@@ -24,6 +24,7 @@ pub mod entity;
 pub mod inventory;
 pub mod items_gen;
 pub mod item_map;
+mod nbt_net;
 pub mod protocol;
 pub mod scoreboard;
 pub mod session;
