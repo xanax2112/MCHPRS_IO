@@ -510,7 +510,7 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
 | 编号 | 条目 | 状态 |
 | --- | --- | --- |
 | BUG-032 | 基岩版（Bedrock）客户端接入 | 🚧 **阶段一完成（2026-10-31）**：原生 RakNet + vendored `bedrock-rs` 接入主仓库，R1–R4 与第 23/31/32/33 条全部真机验收通过（§9.9.1）；剩余属阶段二（`ItemStackResponse`、增量区块、实体同步、命令树）；见下方「接入进展」 |
-| BUG-035 | Java 侧区块推送：视距不对齐 + 发过不再补 | 📋 待做（2026-11-02 登记；客户端视距 6 / 服务端按 8 推，空洞随机分布） |
+| BUG-035 | Java 侧区块推送：视距不对齐 + 发过不再补 | 📋 待做 · **用户 2026-11-02 决定暂不修，只记录**（客户端视距 6 / 服务端按 8 推，空洞随机分布） |
 
 **BUG-032 基岩版客户端接入（调研）**
 
@@ -988,7 +988,7 @@ node crates/network/generators/gen_creative.js <creative_items.json> <block_pale
 - **半径来源（用户 2026-10-29 指出，我写错了）**：Bedrock 侧的 `ChunkRadiusUpdated`、`NetworkChunkPublisherUpdate`、快照区块数**三处必须同源**，而且来源是 `CONFIG.view_distance`（默认 8，`run/Config.toml` 现为 8；Java 侧 `CLogin` 的 `view_distance`/`simulation_distance` 用的就是它）。我曾把 `session.rs` 写死 `MCHPRS_RADIUS=4` / `DEMO_RADIUS=8`、`plot::build_bedrock_snapshot` 又写死 `CHUNK_RADIUS=4`，等于同时绕过配置**并**让 Bedrock 看到的世界比 Java 小一半。✅ 已修（2026-10-31）：值由 core 侧读 `CONFIG.view_distance` 后**沿调用链传进去**（`spawn_mchprs_listener` 参数 → `WorldSource::Mchprs { chunk_radius }` → `BedrockEvent::SnapshotRequest` → `PrivMessage::BedrockSnapshot` → `build_bedrock_snapshot(chunk_radius)`），网络层依旧不读 core 的 `CONFIG`。`Demo` 源没有配置，继续用示例常量 `DEMO_RADIUS = 8` 并注明"仅示例"。
 - **提交卫生**：`crates/core/src/plot/coord.rs` 的未提交改动是用户自己的 `/coord` 工作，用户 2026-10-29 确认**改动正确**，提交时保留、不要回退。
 
-**BUG-035 Java 侧区块推送：视距不对齐 + 发过就不再补（📋 待做）**
+**BUG-035 Java 侧区块推送：视距不对齐 + 发过就不再补（📋 待做 · 用户 2026-11-02 决定暂不修）**
 
 用户 2026-11-02 08:0x 反馈："Java 版这边推送区块比较激进，有时候进入世界会发现有不少区块没有推送过来。"
 追问确认：**客户端渲染距离 = 6**；空洞**随机分布**（不是整齐一圈）；**在空洞处放一个方块，地面才显示出来**。
@@ -2877,3 +2877,13 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
 
 - **顺带记录（不单列 bug）**：`bedrock/session.rs:2531` 监听线程建运行时失败用的是 `println!`，不是 `tracing`，
   与 §9.34/§9.35 的口径不一致 —— 已并入上面的范围扩展，改为 `error!`。
+
+- **用户裁决（2026-11-02 08:2x）**："不修了，先记录" —— 本条**只归档，不排期、不动代码**。
+  下面这份诊断方案保留给以后（真要修时不用重新查一遍）：
+  - **最小插桩**（只加 `debug!`、不改行为）：在 `update_view_pos_for_player` 里打印
+    "给谁 / 中心在哪 / 本次发了哪些区块坐标 / 共几个"。复现后看空洞坐标**是否出现在发送列表**：
+    出现了 = 客户端没渲染（H2，查 `block_count`/光照）；没出现 = 真没发（H1，直接做对齐+补发）。
+  - **一级修复**：进服发 `Set Chunk Cache Radius`；`handle_client_information` 记住客户端视距，
+    下发半径 = `min(CONFIG.view_distance, 客户端值)`；`CLogin` 的视距同源。
+  - **二级修复**：每玩家维护"已发集合" + 静止时每秒对账补发；分发改为每 tick 小批。
+- **已知影响（用户可接受）**：Java 玩家进服偶见随机空洞，放一个方块后地面才显形；重进或走出 2×视距再回来可恢复。
