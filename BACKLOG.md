@@ -1055,9 +1055,10 @@ node crates/network/generators/gen_creative.js <creative_items.json> <block_pale
   构建中间产物 `app/out/`、预览包 `app/ui-preview.apk` 已加入 `.gitignore`。
 - **用户验收通过（2026-11-02）**："app 侧我验收完成了" —— `apk-backlog.md` 里 20 条待办已按此打勾
   （`FEAT-011` / `FEAT-012` 为已取消项，标注为"验收确认"）。
-- 已知问题随工程自带：**BUG-003** —— 控制台执行 `/stop` 后界面曾误报"启动失败"。
-  0.6.1-alpha 验收时未复现，但代码上 `/stop` 经 `sendCommand()` 直写 stdin、不设 `ST_STOPPING`，
-  推演仍可能出现；复现时按此定位。
+- **BUG-003 已修复（2026-11-02，versionCode 608）**：`sendCommand()` 识别 `/stop` 后按"用户主动关服"
+  处理（进 `ST_STOPPING`），进程退出落到"已停止"而非"启动失败"；另加 15s 兜底避免卡在"关闭中"。
+  产物：`app/mchprs.apk`（4.8 MB），并复制到 `/storage/emulated/0/Download/MCHPRS-0.6.1-alpha-608.apk`
+  供用户验收。
 
 ### 2.12 文档（J）
 

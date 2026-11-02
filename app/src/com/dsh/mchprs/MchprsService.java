@@ -8,7 +8,9 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 
 import java.io.BufferedReader;
@@ -43,6 +45,23 @@ public class MchprsService extends Service {
     private static final int SIGTERM = 15;
 
     private static final LinkedList<String> SERVER_LINES = new LinkedList<String>();
+
+    /** BUG-003：控制台 `/stop` 也属于用户主动停止，要等进程退出的这段窗口别判成失败。 */
+    private static final long STOP_FALLBACK_MS = 15000L;
+
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+
+    /** 若 `/stop` 因为某种原因没让服务器退出，把状态和通知还原，别把界面卡在「关闭中」。 */
+    private final Runnable stopFallback = new Runnable() {
+        @Override
+        public void run() {
+            if (state == ST_STOPPING && proc != null && proc.isAlive()) {
+                appLog("控制台 /stop 后进程仍在运行，状态回退为已就绪");
+                setState(ST_READY, "");
+                updateNotification(Lang.str(MchprsService.this, R.string.noti_running));
+            }
+        }
+    };
     private static MchprsService instance;
     private static Listener listener;
 
@@ -92,11 +111,32 @@ public class MchprsService extends Service {
             s.cmdWriter.write(line);
             s.cmdWriter.write("\n");
             s.cmdWriter.flush();
+            // BUG-003：控制台里敲的 /stop 与点「停止」按钮是同一件事，
+            // 进程随后退出必须按正常关闭处理，不能报「启动失败」。
+            if (isStopCommand(line)) {
+                s.markUserStop();
+            }
             return true;
         } catch (Exception e) {
             s.appLog("写入 stdin 失败: " + e);
             return false;
         }
+    }
+
+    /** `/stop`（允许前后空白与多余参数）。 */
+    private static boolean isStopCommand(String line) {
+        if (line == null) return false;
+        String t = line.trim();
+        return t.equals("/stop") || t.startsWith("/stop ");
+    }
+
+    /** 标记「用户已主动关服」：状态进 STOPPING、通知改成保存中，并挂 15s 兜底。 */
+    private void markUserStop() {
+        heartbeatOn = false;
+        updateNotification(Lang.str(this, R.string.noti_stopping));
+        setState(ST_STOPPING, "");
+        uiHandler.removeCallbacks(stopFallback);
+        uiHandler.postDelayed(stopFallback, STOP_FALLBACK_MS);
     }
 
     /** 只在界面上回显一行（本地输入），不写日志文件。 */

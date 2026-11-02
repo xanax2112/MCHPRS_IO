@@ -4,7 +4,7 @@
 装上就能跑。
 
 - **包名**：`com.dsh.mchprs`
-- **版本**：`0.6.1-alpha`，versionCode **607**
+- **版本**：`0.6.1-alpha`，versionCode **608**
 - **APK**：`mchprs.apk`（约 4.8 MB，内含 aarch64 原生二进制约 12.7 MB 未压缩）
 - **最低系统**：Android 7.0（minSdk 24）；目标 SDK 28
 
@@ -90,9 +90,10 @@ python3 gen_icons.py /storage/emulated/0/termux/MCHPRS_IO/MCHPRS.png res
 
 ## 已知问题
 
-- **BUG-003（0.6.1-alpha 验收未复现，代码路径仍存疑）**：在控制台执行 `/stop` 后服务器正常退出，
-  但界面曾误报「启动失败：服务器进程已退出」。代码上 `/stop` 走 `sendCommand()` 直写 stdin，
-  不经过 `setState(ST_STOPPING)`，所以按推演仍可能出现；复现时从这里定位。
+- ~~**BUG-003**：控制台执行 `/stop` 后界面误报「启动失败：服务器进程已退出」~~
+  —— **已修复（versionCode 608）**：`sendCommand()` 识别 `/stop` 后按"用户主动关服"处理
+  （进 `ST_STOPPING`），进程退出时落到"已停止"而不是"启动失败"；另有 15s 兜底，
+  `/stop` 万一没生效，状态与通知会自动还原，不会卡在"关闭中"。
 
 > **验收状态（2026-11-02）**：用户已完成 app 侧验收，界面与控制台功能通过。
 
