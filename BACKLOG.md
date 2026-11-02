@@ -1120,6 +1120,12 @@ node crates/network/generators/gen_creative.js <creative_items.json> <block_pale
 | --- | --- | --- |
 | BUG-034 | 删除 `manual.md` / `manual_zh.md`，把 memory 的 `clk` 行为写进 `file-formats*` | ✅ 已完成（2026-10-29） |
 
+**BUG-034 补记（2026-11-02 09:0x，用户指示）**
+
+用户："把现在源代码目录的 4 个 0.5.4 0.5.3 文件删掉" —— 已删除仓库根目录下这 4 个过时文件：
+`CHANGELOG-0.5.3-alpha.md`、`CHANGELOG-0.5.4-alpha.md`、`UNVERIFIED-0.5.3-alpha.md`、`UNVERIFIED-0.5.4-alpha.md`。
+删前核对：除这 4 个文件互相引用（以及本台账里的历史提及）外，`README` / `docs` / 构建脚本**无任何引用**，不会造成死链。
+
 **BUG-034 文档整理：删 manual，补 memory `clk` 行为**
 
 用户 2026-10-29 指示：删除两份 `manual`，在 `file-formats` 里写清楚 memory 里 `clk` 的行为。
