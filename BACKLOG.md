@@ -29,7 +29,7 @@
 - 写含单引号的源码必须走 Python 脚本（`chr(39)` 构造），直接用 shell heredoc 会剥掉引号。
 - 状态标记：`✅ 已完成` / `📝 已定待写码` / `🚧 进行中` / `📋 待做` / `⛔ 作废` / `⏳ 等用户`。
 - **接替 / 新窗口**：先读 `~/dsh/HANDOFF-TO-SUCCESSOR.md`（项目交接：概况、进度、踩过的坑、协作规则、基岩版分工），共享目录有同一份副本。
-- **以后新增报错 / 新功能**：先判断能不能并进现有条目——同一机制、同一处行为、只是补充细节或换个现象，就并进对应条目（追加说明、必要时改状态），**不新开编号**；只有当它跟现有条目都不属于同一回事时，才新增条目，编号接着往后排（当前最后一条是 `BUG-034`）。合并还是新增拿不准时先问，不要自己定。（2026-10-29 自查：`width = 0` 端口已并入 BUG-008、`/coord` 步长问题已并入 BUG-022，均按此规则。）
+- **以后新增报错 / 新功能**：先判断能不能并进现有条目——同一机制、同一处行为、只是补充细节或换个现象，就并进对应条目（追加说明、必要时改状态），**不新开编号**；只有当它跟现有条目都不属于同一回事时，才新增条目，编号接着往后排（当前最后一条是 `BUG-035`）。合并还是新增拿不准时先问，不要自己定。（2026-10-29 自查：`width = 0` 端口已并入 BUG-008、`/coord` 步长问题已并入 BUG-022，均按此规则。）
 - **基岩版的问题一律只记在 `BUG-032` 下**（用户 2026-11-01 明确）：不论新功能、改进还是真机 bug，
   都在 BUG-032 条目里用「第 N 条」往后排（当前最后一条是**第 54 条**），**不新开 `BUG-0xx` 编号**。
   2026-11-01 本轮曾误开 `BUG-035/036/037`，当场按本条改回「BUG-032 第 38/39/40 条」。
@@ -510,6 +510,7 @@ format!("group `{}`: {}", name, strip_inner_line(&message))
 | 编号 | 条目 | 状态 |
 | --- | --- | --- |
 | BUG-032 | 基岩版（Bedrock）客户端接入 | 🚧 **阶段一完成（2026-10-31）**：原生 RakNet + vendored `bedrock-rs` 接入主仓库，R1–R4 与第 23/31/32/33 条全部真机验收通过（§9.9.1）；剩余属阶段二（`ItemStackResponse`、增量区块、实体同步、命令树）；见下方「接入进展」 |
+| BUG-035 | Java 侧区块推送：视距不对齐 + 发过不再补 | 📋 待做（2026-11-02 登记；客户端视距 6 / 服务端按 8 推，空洞随机分布） |
 
 **BUG-032 基岩版客户端接入（调研）**
 
@@ -986,6 +987,42 @@ node crates/network/generators/gen_creative.js <creative_items.json> <block_pale
 - 台账误差订正：2.11 节原写"`Abort/StopDestroyBlock` → `SPlayerAction(1/2)`"，代码已按第 4 条改为只转 `StartDestroyBlock`。
 - **半径来源（用户 2026-10-29 指出，我写错了）**：Bedrock 侧的 `ChunkRadiusUpdated`、`NetworkChunkPublisherUpdate`、快照区块数**三处必须同源**，而且来源是 `CONFIG.view_distance`（默认 8，`run/Config.toml` 现为 8；Java 侧 `CLogin` 的 `view_distance`/`simulation_distance` 用的就是它）。我曾把 `session.rs` 写死 `MCHPRS_RADIUS=4` / `DEMO_RADIUS=8`、`plot::build_bedrock_snapshot` 又写死 `CHUNK_RADIUS=4`，等于同时绕过配置**并**让 Bedrock 看到的世界比 Java 小一半。✅ 已修（2026-10-31）：值由 core 侧读 `CONFIG.view_distance` 后**沿调用链传进去**（`spawn_mchprs_listener` 参数 → `WorldSource::Mchprs { chunk_radius }` → `BedrockEvent::SnapshotRequest` → `PrivMessage::BedrockSnapshot` → `build_bedrock_snapshot(chunk_radius)`），网络层依旧不读 core 的 `CONFIG`。`Demo` 源没有配置，继续用示例常量 `DEMO_RADIUS = 8` 并注明"仅示例"。
 - **提交卫生**：`crates/core/src/plot/coord.rs` 的未提交改动是用户自己的 `/coord` 工作，用户 2026-10-29 确认**改动正确**，提交时保留、不要回退。
+
+**BUG-035 Java 侧区块推送：视距不对齐 + 发过就不再补（📋 待做）**
+
+用户 2026-11-02 08:0x 反馈："Java 版这边推送区块比较激进，有时候进入世界会发现有不少区块没有推送过来。"
+追问确认：**客户端渲染距离 = 6**；空洞**随机分布**（不是整齐一圈）；**在空洞处放一个方块，地面才显示出来**。
+
+- **已确认的代码事实**（只读核对，未改码）：
+  1. `crates/core/src/plot/mod.rs:838` `update_view_pos_for_player()` 一次性同步发 `(2×8+1)² = 289` 个区块包，
+     全部阻塞写在 plot 线程上，**无分批、无节流、不等客户端任何回应**。传送/跨视距跳变再整份重发一遍。
+  2. **全仓库没有 `Set Chunk Cache Radius`**（协议里 1.20.4 的 clientbound 那个包，把服务端视距告诉客户端）；
+     只有 `CSetCenterChunk`。原版服务端进服后会立刻发它，客户端据此决定区块缓存数组多大。
+  3. `packet_handlers.rs:249` `handle_client_information()` **丢弃** `SClientInformation.view_distance`
+     （解出来了但只取 `displayed_skin_parts`）。服务端一律按 `CONFIG.view_distance` 推，客户端说 6 也照推 8 圈。
+  4. **没有"已发送集合"**：只靠 `last_chunk_x/z` 推断，区块只在"从窗口外进入窗口内"那一次发。
+     任何一次没接住（客户端丢弃 / 写失败）就是**永久空洞**，除非走出 2×视距再走回来。
+  5. `crates/network/src/lib.rs:29/56/151` 写失败是 `let _ = data.write_compressed(stream)`，**静默吞掉**。
+
+- **根因判断（按可能性排序）**：
+  - **H1（最可能）**：服务端按 8 圈推、客户端缓存按自己视距 6 建 → 距玩家 7~8 的区块客户端直接不接，
+    而服务端已把 `last_chunk` 更新成"发过了"，之后走到那儿也**不再补** → 表现为**随机分布**的空洞
+    （人一走动，被丢的那一圈就凝固在原地）。
+  - **H2（解释"放方块才显形"）**：客户端拿到了区块但**没渲染**（区段被判为空 / 未标脏）。
+    候选是 section 的 `block_count` 或光照数据；放一个方块触发 `CMultiBlockChange`，
+    客户端把该区段重算后才画出来。**这一层光靠读码定不死，必须插桩或抓包。**
+
+- **修复方案（分两级，等用户裁决）**：
+  - **一级（对齐口径，改 3 处）**：①进服发 `Set Chunk Cache Radius`，值 = 实际下发半径；
+    ②记住客户端上报的视距，下发半径 = `min(CONFIG.view_distance, 客户端值)`，`CLogin` 的
+    `view_distance` / `simulation_distance` 同源；③两者取同一变量，避免三处再各自算。
+  - **二级（杜绝永久空洞，改 2 处）**：④每玩家维护"已发集合"，玩家静止时每秒对账一次、缺的补发；
+    ⑤分发改为每 tick 小批（例如 16 块/次），不再一次性 289 包突发。
+  - **H2 成立时追加**：检查 `Chunk::encode_packet` 的 `block_count`、`get_top_most_block` 的高度图取值
+    （该函数目前写的是 `top_most = section_y * 16`，不是 `y + section_y * 16`，见实测）与光照掩码。
+
+- **验收标准**：客户端渲染距离设 4 / 6 / 8 / 12 各进一次，进服后四周无空洞；
+  沿 plot 边缘走一圈不掉块；关掉再进，同一位置不再出现新空洞。
 
 ### 2.12 文档（J）
 
