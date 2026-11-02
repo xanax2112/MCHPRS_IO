@@ -32,6 +32,19 @@ else
 fi
 
 echo "[2/7] 编译资源"
+# 把文档与 python 工具打进 APK：开 App 时由 Assets.java 释放到工作目录
+ASS="$OUT/assets"
+rm -rf "$ASS"
+mkdir -p "$ASS/docs" "$ASS/python"
+cp ../docs/protocol.md ../docs/protocol_zh.md \
+   ../docs/file-formats.md ../docs/file-formats_zh.md "$ASS/docs/"
+cp ../README.md ../README_zh.md "$ASS/"
+cp ../python/correctness.py ../python/timing.py ../python/pipeline.py \
+   ../python/README.md "$ASS/python/"
+cp -r ../python/core "$ASS/python/core"
+rm -rf "$ASS/python/core/__pycache__"
+echo "  内置: $(find "$ASS" -type f | wc -l) 个文件（docs / README / python）"
+
 RES_INPUT=()
 if [ -d res ]; then
     aapt2 compile --dir res -o "$OUT/res.zip"
@@ -44,6 +57,7 @@ fi
 echo "[3/7] aapt2 link"
 mkdir -p "$OUT/gen"
 aapt2 link -o "$OUT/base.apk" -I "$AJ" --manifest AndroidManifest.xml \
+    -A "$ASS" \
     --java "$OUT/gen" \
     --min-sdk-version 24 --target-sdk-version 28 "${RES_INPUT[@]}"
 

@@ -4,7 +4,7 @@
 装上就能跑。
 
 - **包名**：`com.dsh.mchprs`
-- **版本**：`0.6.1-alpha`，versionCode **608**
+- **版本**：`0.6.1-alpha`，versionCode **609**
 - **APK**：`mchprs.apk`（约 4.8 MB，内含 aarch64 原生二进制约 12.7 MB 未压缩）
 - **最低系统**：Android 7.0（minSdk 24）；目标 SDK 28
 
@@ -76,6 +76,27 @@ KEYSTORE=~/my.keystore ANDROID_JAR=/path/android.jar bash build.sh
 ```sh
 python3 gen_icons.py /storage/emulated/0/termux/MCHPRS_IO/MCHPRS.png res
 ```
+
+## 内置文档与 Python 工具
+
+APK 里打包了用户手册与 `python/` 测试工具（24 个文件），**每次打开 App 自动释放**到「工作目录」：
+
+```
+<工作目录>/
+├── README.md / README_zh.md   项目说明
+├── docs/                      protocol.md、file-formats.md 及各中文版
+└── python/                    correctness.py / timing.py / pipeline.py + core/
+```
+
+覆盖规则：
+
+| 内容 | 规则 |
+| --- | --- |
+| `docs/`、`python/core/` | 每次启动覆盖，跟着 APK 版本更新 |
+| `python/` 顶层脚本与 README | **只补缺**，已存在就不动（顶部是你要改的配置区） |
+
+没有存储权限或工作目录不可写时静默跳过，不影响服务器启动。
+想拿到官方最新脚本，删掉 `python/` 再开一次 App 即可。
 
 ## 当前功能
 

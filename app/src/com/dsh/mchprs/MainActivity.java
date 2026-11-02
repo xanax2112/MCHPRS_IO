@@ -80,6 +80,8 @@ public class MainActivity extends Activity implements MchprsService.Listener {
                 + " current=" + Lang.current(this)
                 + " hasChoice=" + Lang.hasChoice(this));
 
+        maybeExtractAssets();
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(0xFF101418);
@@ -477,10 +479,32 @@ public class MainActivity extends Activity implements MchprsService.Listener {
         }
     }
 
+    /**
+     * 把 APK 内打包的 docs 与 python 释放到工作目录（用户 2026-11-02 需求）。
+     * 没有存储权限时跳过，等 {@link #onRequestPermissionsResult} 授权后再调用。
+     */
+    private void maybeExtractAssets() {
+        final String root = WorkDir.get(this);
+        if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                int n = Assets.extract(MainActivity.this, root);
+                if (n > 0) {
+                    Journal.write("[app] 释放内置 docs/python " + n + " 个文件到 " + root);
+                }
+            }
+        }, "mchprs-assets").start();
+    }
+
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
         if (code == REQ_STORAGE) {
             if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) {
+                maybeExtractAssets();
                 startServer();
             } else {
                 applyStatus(MchprsService.ST_FAILED, getString(R.string.err_storage_denied));

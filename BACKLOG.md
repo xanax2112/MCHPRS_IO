@@ -1048,6 +1048,9 @@ node crates/network/generators/gen_creative.js <creative_items.json> <block_pale
     成品 `mchprs.apk`（4.8 MB，内含未压缩的 aarch64 原生二进制）。
   - **不进仓库**：`dsh.keystore`（签名密钥，已加进 `.gitignore`；公开仓库不放私钥）、
     `src/com/dsh/mchprs/*.java.bak`（编辑器备份，无价值）。
+- **内置文档与 python（2026-11-02，versionCode 609）**：APK 打包 24 个文件
+  （`docs/` 的协议与文件格式中英版、根 README 中英、`python/` 全套），开 App 自动释放到
+  设置里的工作目录；`docs/` 与 `python/core/` 每次覆盖、python 顶层脚本只补缺。
 - 该工程有自己的开发台账（Termux 侧 `~/dsh/apk-backlog.md`），主台账不重复记其需求细节。
 - **仓库内可直接构建（2026-11-02）**：`app/build.sh` 里三个外部依赖改成环境变量（`ANDROID_JAR` / `MCHPRS_BIN` / `KEYSTORE`，
   默认值仍是本机习惯路径），脚本本来就 `cd` 到自己目录，因此 `cd app && bash build.sh` 即可就地出包；
