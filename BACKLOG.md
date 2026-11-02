@@ -2967,3 +2967,23 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
     下发半径 = `min(CONFIG.view_distance, 客户端值)`；`CLogin` 的视距同源。
   - **二级修复**：每玩家维护"已发集合" + 静止时每秒对账补发；分发改为每 tick 小批。
 - **已知影响（用户可接受）**：Java 玩家进服偶见随机空洞，放一个方块后地面才显形；重进或走出 2×视距再回来可恢复。
+
+### 9.40 0.6.1-alpha 发布（2026-11-02 15:2x）
+
+用户："现在 release，把 apk 和安卓编译的二进制也加进去，release 写基岩 1.21.51 版本支持和 python 测试更新，加上修复的几个 bug"。
+
+- **tag**：`v0.6.1-alpha`（附注 tag，对象 `0ce14ee`，指向 `5a0c11b`）。
+  踩坑：`git push -c http.version=HTTP/1.1 origin <tag>` 把 `-c` 放错位置，参数被当成 `git push` 的选项；
+  同一轮 GitHub Release 创建时又自动生成了一把**轻量 tag**（指向 `5a0c11b`）。之后强制推附注 tag 覆盖：
+  `git -c http.version=HTTP/1.1 push --force origin refs/tags/v0.6.1-alpha` → 远端 `0ce14ee` + `^{}5a0c11b`。
+- **Release**：<https://github.com/xanax2112/MCHPRS_IO/releases/tag/v0.6.1-alpha>（prerelease=true，因为版本号带 alpha）。
+- **附件**：
+  | 文件 | 大小 | 说明 |
+  | --- | --- | --- |
+  | `mchprs-0.6.1-alpha-aarch64` | 12,743,256 B | Android / Termux aarch64 原生二进制 |
+  | `MCHPRS-0.6.1-alpha-609.apk` | 5,098,128 B | Android 独立应用（内含同一份二进制） |
+- **Release 文案要点**：基岩 1.21.51（协议 766）直连；Python 测试工具（correctness / timing / pipeline）；
+  APK 内置文档与 python 自动释放；修复项（facet 崩溃、日志收口与英文化、core 异常日志恢复 warn、
+  监听地址跟随 bind_address、BUG-003 /stop 误报、rom/ram/io 版本号跟随）；已知限制（第 48 条重连 5~10 秒、版本不做协商）。
+- 发布脚本 `~/dsh/scratch/mkrelease.py`：从 `~/.git-credentials` 读 token，走 GitHub REST 建 release 并上传附件；
+  token 不进命令行、不进日志。
