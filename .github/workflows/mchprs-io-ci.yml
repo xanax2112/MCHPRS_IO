@@ -2,6 +2,8 @@ name: MCHPRS_IO CI
 
 # 上游自带的 build.yml / ci.yml 盯的是 `master` 分支（本仓库是 `main`），一直不会触发；
 # 这个文件是 MCHPRS_IO 自己的流水线，只跑我们维护的路径。
+# APK 不在 CI 里构建：真包必须嵌入 aarch64 二进制，由本地（手机 Termux）
+# 的 app/build.sh 打包，成品直接提交在 app/mchprs.apk。
 
 on:
   push:
@@ -55,46 +57,4 @@ jobs:
         with:
           name: mchprs-x86_64-linux
           path: target/release/mchprs
-          if-no-files-found: error
-
-  apk:
-    name: Build (Android APK 界面壳)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: 定位 Android SDK
-        run: |
-          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
-          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
-            echo "runner 上没有 Android SDK" >&2
-            exit 1
-          fi
-          echo "ANDROID_SDK=$SDK" >> "$GITHUB_ENV"
-          echo "platforms:"; ls "$SDK/platforms"
-          echo "build-tools:"; ls "$SDK/build-tools"
-
-      - name: 打包 APK（不含原生二进制，只验证 Java/资源/脚本可编译）
-        env:
-          # runner 上没有我们的 keystore，放到临时目录让 build.sh 现生成一把
-          KEYSTORE: ${{ runner.temp }}/dsh.keystore
-        run: |
-          set -euo pipefail
-          PLATFORM=$(ls -d "$ANDROID_SDK"/platforms/* | sort -V | tail -1)
-          BUILD_TOOLS=$(ls -d "$ANDROID_SDK"/build-tools/* | sort -V | tail -1)
-          export PATH="$BUILD_TOOLS:$PATH"
-          export ANDROID_JAR="$PLATFORM/android.jar"
-          echo "使用 $ANDROID_JAR"
-          cd app
-          NO_BINARY=1 bash build.sh
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: MCHPRS-ui-preview-apk
-          path: app/ui-preview.apk
           if-no-files-found: error
