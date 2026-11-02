@@ -1053,7 +1053,11 @@ node crates/network/generators/gen_creative.js <creative_items.json> <block_pale
   默认值仍是本机习惯路径），脚本本来就 `cd` 到自己目录，因此 `cd app && bash build.sh` 即可就地出包；
   缺 `android.jar` 或二进制时给出明确错误而不是晦涩失败。实测 `NO_BINARY=1 bash build.sh` 产出 85 KB 的 `ui-preview.apk`。
   构建中间产物 `app/out/`、预览包 `app/ui-preview.apk` 已加入 `.gitignore`。
-- 已知问题随工程自带：**BUG-003** —— 控制台执行 `/stop` 后服务器正常退出，但界面误报"启动失败：服务器进程已退出"（`MchprsService` 退出时状态不是 `STOPPING`），尚未修。
+- **用户验收通过（2026-11-02）**："app 侧我验收完成了" —— `apk-backlog.md` 里 20 条待办已按此打勾
+  （`FEAT-011` / `FEAT-012` 为已取消项，标注为"验收确认"）。
+- 已知问题随工程自带：**BUG-003** —— 控制台执行 `/stop` 后界面曾误报"启动失败"。
+  0.6.1-alpha 验收时未复现，但代码上 `/stop` 经 `sendCommand()` 直写 stdin、不设 `ST_STOPPING`，
+  推演仍可能出现；复现时按此定位。
 
 ### 2.12 文档（J）
 

@@ -90,9 +90,11 @@ python3 gen_icons.py /storage/emulated/0/termux/MCHPRS_IO/MCHPRS.png res
 
 ## 已知问题
 
-- **BUG-003**：在控制台执行 `/stop` 后服务器正常退出，但界面误报
-  「启动失败：服务器进程已退出」。原因是进程退出时状态不是 `STOPPING`。
-  尚未修复。
+- **BUG-003（0.6.1-alpha 验收未复现，代码路径仍存疑）**：在控制台执行 `/stop` 后服务器正常退出，
+  但界面曾误报「启动失败：服务器进程已退出」。代码上 `/stop` 走 `sendCommand()` 直写 stdin，
+  不经过 `setState(ST_STOPPING)`，所以按推演仍可能出现；复现时从这里定位。
+
+> **验收状态（2026-11-02）**：用户已完成 app 侧验收，界面与控制台功能通过。
 
 ## 更多
 
