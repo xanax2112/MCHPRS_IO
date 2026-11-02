@@ -409,7 +409,7 @@ impl MinecraftServer {
         // 同名 Java + Bedrock 同时在线会撞同一个 UUID，直接拒绝后连的这个。
         if self.online_players.contains_key(&uuid) || self.bedrock_players.contains_key(&uuid) {
             warn!(
-                "拒绝 Bedrock 玩家 {username}：同名玩家已在线（UUID {:032x}）",
+                "rejected Bedrock player {username}: a player with the same name is already online (UUID {:032x})",
                 uuid
             );
             link.handle.close_connection();
@@ -443,8 +443,8 @@ impl MinecraftServer {
         if Player::save_exists(uuid) {
             // `do_login` 已经按默认出生点把客户端传送过一次，这里纠正到存档位置。
             player.teleport(player.pos.clone());
-            info!(
-                "Bedrock 玩家 {} 使用存档位置 ({:.2}, {:.2}, {:.2})；存档字段 flying={} fly_speed={:.2} walk_speed={:.2} gamemode={:?} on_ground={}",
+            debug!(
+                "Bedrock player {} entered at the saved position ({:.2}, {:.2}, {:.2}); saved state flying={} fly_speed={:.2} walk_speed={:.2} gamemode={:?} on_ground={}",
                 player.username,
                 player.pos.x,
                 player.pos.y,
@@ -461,8 +461,8 @@ impl MinecraftServer {
                 y: position.1,
                 z: position.2,
             };
-            info!(
-                "Bedrock 玩家 {} 首次进服，使用默认出生点 ({:.2}, {:.2}, {:.2})",
+            debug!(
+                "Bedrock player {} joined for the first time, using the default spawn point ({:.2}, {:.2}, {:.2})",
                 player.username, player.pos.x, player.pos.y, player.pos.z
             );
         }
