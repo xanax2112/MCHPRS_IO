@@ -80,6 +80,9 @@ jobs:
           echo "build-tools:"; ls "$SDK/build-tools"
 
       - name: 打包 APK（不含原生二进制，只验证 Java/资源/脚本可编译）
+        env:
+          # runner 上没有我们的 keystore，放到临时目录让 build.sh 现生成一把
+          KEYSTORE: ${{ runner.temp }}/dsh.keystore
         run: |
           set -euo pipefail
           PLATFORM=$(ls -d "$ANDROID_SDK"/platforms/* | sort -V | tail -1)

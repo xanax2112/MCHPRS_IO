@@ -79,9 +79,15 @@ unzip -l "$OUT/unsigned.apk" | tail -9
 
 echo "[7/7] 签名"
 if [ ! -f "$KS" ]; then
-    keytool -genkeypair -keystore "$KS" -alias dsh -keyalg RSA -keysize 2048 \
-        -validity 10000 -storepass android -keypass android \
-        -dname "CN=DSH,OU=Dev,O=DSH,C=CN" >/dev/null 2>&1
+    mkdir -p "$(dirname "$KS")"
+    if ! keytool -genkeypair -keystore "$KS" -alias dsh -keyalg RSA -keysize 2048 \
+         -validity 10000 -storepass android -keypass android \
+         -dname "CN=DSH,OU=Dev,O=DSH,C=CN" > "$OUT/keytool.log" 2>&1; then
+        echo "生成签名密钥失败（$KS）：" >&2
+        cat "$OUT/keytool.log" >&2
+        exit 2
+    fi
+    echo "  已生成新的签名密钥：$KS"
 fi
 if [ "$NO_BINARY" = "1" ]; then
     APK_OUT=ui-preview.apk
