@@ -53,10 +53,10 @@
 | Termux 通道 | SSH 端口 8022，`tx '<命令>'` 直连；sshd 不随重启自启 |
 | 仓库 | Termux 侧 `~/mchprs/source/MCHPRS_IO`，git 分支 `main`，远程 `https://github.com/xanax2112/MCHPRS_IO.git` |
 | 上游对照副本 | `~/mchprs/source/MCHPRS`（只读，基线 `master` @ `d492e43`） |
-| 线上二进制 | `~/mchprs/mchprs`，**0.6.1-alpha**（12,742,872 字节，sha256 `2478f7fdb4311093dff645608e4f84f9c6797415dedd5a278a4f433adef27b47`，2026-11-02 08:24 本机构建）；旧版备份：`~/.ssset/backup/mchprs-0.6.1-alpha-pre-bindfix`（12,705,720 字节，sha256 `5d9a82db…`）、`~/.ssset/backup/mchprs-0.6.0-alpha-20261101`（12,841,800 字节）与 `~/dsh/scratch/mchprs-0.5.4-alpha-pre-coordfix`（8,570,096 字节） |
+| 线上二进制 | `~/mchprs/mchprs`，**0.6.1-alpha**（12,743,256 字节，sha256 `d85c9e6cc5f2374ba018e94e71386ed762595cf0e97bc67f96ac02caa7aecf2b`，2026-11-02 08:39 本机构建）；旧版备份：`~/.ssset/backup/mchprs-0.6.1-alpha-pre-cnfix`（12,742,872 字节，sha256 `2478f7fd…`）、`~/.ssset/backup/mchprs-0.6.1-alpha-pre-bindfix`（12,705,720 字节，sha256 `5d9a82db…`）、`~/.ssset/backup/mchprs-0.6.0-alpha-20261101`（12,841,800 字节）与 `~/dsh/scratch/mchprs-0.5.4-alpha-pre-coordfix`（8,570,096 字节） |
 | 服务器运行目录 | `~/mchprs/source/MCHPRS_IO/run/`（`Config.toml`、`io.txt`、`logs/`、`world/`）；启动方式：`cd run && ../target/release/mchprs`（原 `/storage/emulated/0/termux/MCHPRS_IO/` 已随仓库重解压删除） |
 | 归档目录 | `/storage/emulated/0/termux/old/`（2026-10-28 起）：`backup-2026-10-28/`（旧版本二进制、改动前源码、台账快照）、`scratch-2026-10-28/`（构建日志与临时脚本）、`drafts-2026-10-28/`（旧 rom 草稿） |
-| 最近提交 | `76dc64a`（第 54/53 条代码改动，2026-11-02 08:3x）；其前依次为台账提交 `6a68264`/`84bfd10`/`f9043be`/`5a881ee`/`c87af94` 与 `1333d8e`（0.6.1-alpha）；其上依次是 `348de7d`（第 50 条）、`8ec69dd`（第 49 条）、`536e09c`（第 47 条）、`5023240`（第 46 条），再往前是远端的 `a3e7d5f`（/coord 步长修复）与 `2586cce` |
+| 最近提交 | `80c2803`（server.rs 3 处中文日志补漏，2026-11-02 08:4x）；其前 `f8afd55`（台账）与 `76dc64a`（第 54/53 条代码改动）；其前依次为台账提交 `6a68264`/`84bfd10`/`f9043be`/`5a881ee`/`c87af94` 与 `1333d8e`（0.6.1-alpha）；其上依次是 `348de7d`（第 50 条）、`8ec69dd`（第 49 条）、`536e09c`（第 47 条）、`5023240`（第 46 条），再往前是远端的 `a3e7d5f`（/coord 步长修复）与 `2586cce` |
 | 构建 | `cargo build --release`，aarch64 Termux；`/tmp` 不可写，日志写 `~/dsh/scratch/`。**只改源码时约 2 分钟**（只重编 `mchprs_core` 与根包）；**改 `Cargo.toml` 的版本号时约 8 分钟**——15 个 crate 全是 `version.workspace = true`，版本参与 Cargo 指纹，等于全量冷编（2026-10-29 实测：2 个 crate = 2m06s，13 个 crate = 7m42s）；release 开着 `lto = "fat"`，最后链接阶段最贵 |
 
 ---
@@ -2748,6 +2748,17 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
 - **已知限制（累积）**：§9.33 的重连 5~10 秒；日志英文、注释中文；`[C4]` 等明细日志要开 `debug.rs::VERBOSE` 才看得到。
 
 **至此基岩版从接入到平台无关化全部收口；后续由接手方（termux 侧）长期维护。**
+- **二次审计补漏（2026-11-02 08:3x）**：用户真机又看到 `Bedrock 玩家 liuyitong1 首次进服，使用默认出生点 …`
+  （中文 + `INFO`）。复查发现 §9.35 的英文化只覆盖 `crates/network/src/bedrock/**` 与 vendor 的 `nbt_net.rs`，
+  `crates/core/src/server.rs` 漏了 3 处：
+  | 位置 | 原文 | 处理 |
+  | --- | --- | --- |
+  | `server.rs:412` `warn!` | 拒绝 Bedrock 玩家：同名玩家已在线 | 改英文，**保留 `warn!`**（真异常） |
+  | `server.rs:447` `info!` | Bedrock 玩家 {} 使用存档位置… | 改英文 + 降 `debug!` |
+  | `server.rs:465` `info!` | Bedrock 玩家 {} 首次进服，使用默认出生点… | 改英文 + 降 `debug!` |
+  全仓库重扫（脚本扫"含 CJK 且回溯 6 行内有 tracing 宏"、排除 target/.git/vendor）结果 **0 处**。
+  提交 `80c2803`；二进制 12,743,256 字节，sha256 `d85c9e6c…`（旧版备份 `mchprs-0.6.1-alpha-pre-cnfix`）。
+  **教训**：上一次用单行 grep 审计漏掉多行格式串，这次改用"回溯找宏 + 检查引号内 CJK"才扫干净。
 
 ---
 
