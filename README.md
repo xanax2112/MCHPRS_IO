@@ -6,18 +6,32 @@ MCHPRS_IO is a fork of [MCHPRS](https://github.com/MCHPR/MCHPRS). It removes two
 
 To lift them it adds built-in **ROM and RAM**, an **`io.txt`** file that declares block IO coordinates in a small HDL-like syntax, and a plain-text **automation protocol** for external programs.
 
-> A quick-start demo is planned but **not implemented yet**.
+> No ready-made demo world ships with this repo yet — the quick start below gets you from zero to a running server in a few minutes.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Quick start
 
+### 1. What you need
+
+| | |
+| --- | --- |
+| Build | a Rust toolchain (`rustup`, stable). `cargo build --release` is the only build step |
+| Play | Minecraft **Java Edition 1.20.4** (protocol 765) |
+| Automate (optional) | Python 3.8+ for the test scripts in [`python/`](python/README.md) |
+
+### 2. Build and start
+
 ```bash
 cargo build --release
-./target/release/mchprs
+
+# run the server in its own directory: everything it reads/writes is
+# relative to the working directory, so keep it out of the source tree
+mkdir -p ~/mchprs-server && cd ~/mchprs-server
+~/MCHPRS_IO/target/release/mchprs
 ```
 
-Working directory layout — everything is relative to it:
+The first start creates everything with defaults:
 
 ```text
 .
@@ -28,11 +42,79 @@ Working directory layout — everything is relative to it:
 └── world/           save data
 ```
 
-Connect a Minecraft 1.20.4 client to `bind_address` (default `0.0.0.0:25565`), build on plot `p0,0` (512×512), then run `/redpiler compile`.
+`Config.toml` is the only file you normally need to touch — `bind_address`, `io_port` and
+`view_distance` are the three that matter most on a first run.
 
-- The plot ticks **with or without players** and never unloads; there is only this one plot.
-- Circuits are **never compiled automatically**.
-- The automation port `io_port` (default 25585) listens on **127.0.0.1 only** and is unauthenticated.
+### 3. Join and build something
+
+1. Connect a **1.20.4** client to `<host>:25565` (the `bind_address` from `Config.toml`, default `0.0.0.0:25565`).
+2. You spawn on plot **`p0,0`** — a single 512×512 plot. It ticks with or without players and never unloads.
+3. Build your circuit (levers, buttons, lamps, note blocks…). `/setblock`, worldedit and `//schem` all work.
+4. Compile it with **`/redpiler compile`**. Circuits are **never** compiled automatically — nothing ticks
+   through the compiler until you ask, and the plot keeps ticking redstone either way.
+
+### 4. Declare the block IO (`io.txt`)
+
+`io.txt` tells the automation protocol which blocks are inputs and which are outputs:
+
+```toml
+input switches = [
+origin = 0
+clk = 0
+width = 2
+10, 64, 10
+12, 64, 10
+]
+
+output lamps = [
+origin = 0
+clk = 0
+width = 2
+20, 64, 10, +2x, 2
+]
+```
+
+`/io reload` re-reads the file without restarting. Full syntax and validation rules:
+[docs/file-formats.md](docs/file-formats.md).
+
+### 5. Drive it from outside
+
+The automation port (`io_port`, default `25585`) listens on **loopback only** and has no authentication.
+One message per line, upper-case verbs only:
+
+```text
+HELLO MCHPRS_IO 0.6.1-alpha <tick>     ← sent by the server on connect
+INPUT switches 1                       → OK INPUT switches <tick>
+POUT lamps                             → OUTPUT lamps <tick> 0a
+TICK NOW                               → NOW <tick>
+```
+
+Full reference: **[docs/protocol.md](docs/protocol.md)**.
+
+### 6. Verify a circuit automatically (optional)
+
+[`python/`](python/README.md) contains three scripts that speak the automation protocol and compare
+your circuit against a truth table you write as a one-line Python function:
+
+| Script | What it checks |
+| --- | --- |
+| `correctness.py` | results only — ignores tick timing and glitches |
+| `timing.py` | exactly one `OUTPUT` per input, arriving `delay` ticks later |
+| `pipeline.py` | pipelined inputs (needs `/tick seq`) keep a fixed interval and never stall |
+
+```bash
+cd python
+python3 correctness.py      # edit the config block at the top of the file first
+```
+
+### 7. Troubleshooting
+
+| Symptom | Cause |
+| --- | --- |
+| `HELLO` arrives without `<tick>` | the circuit is not compiled — run `/redpiler compile` |
+| the circuit is right but results are all wrong | the plot is frozen (`/tick seq`, `rtps 0`); unfreeze or use normal mode |
+| the automation client disconnects | more than 1 MiB of unread output is queued, or a line exceeded 64 KiB |
+| first `cargo build --release` takes 10+ minutes | `lto = "fat"` is enabled; later builds only rebuild the crates you touched |
 
 ## Configuration
 
@@ -138,6 +220,7 @@ The same commands work from the server console; commands needing a player are re
 - [docs/file-formats.md](docs/file-formats.md) — `io.txt` and memory file reference ([中文](docs/file-formats_zh.md))
 - [docs/protocol.md](docs/protocol.md) — automation protocol ([中文](docs/protocol_zh.md))
 - [docs/Redpiler.md](docs/Redpiler.md), [docs/RIL.md](docs/RIL.md), [docs/Adding_a_block.md](docs/Adding_a_block.md) — compiler internals
+- [python/README.md](python/README.md) — protocol test scripts (`correctness` / `timing` / `pipeline`)
 - [BACKLOG.md](BACKLOG.md) — project ledger and design decisions
 
 ## Derivative notice

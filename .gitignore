@@ -4,3 +4,6 @@
 /test_proxy
 /generators
 /.direnv
+# Python 测试工具的缓存
+python/**/__pycache__/
+python/**/*.pyc

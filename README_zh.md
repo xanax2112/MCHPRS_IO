@@ -6,33 +6,112 @@ MCHPRS_IO 是 [MCHPRS](https://github.com/MCHPR/MCHPRS) 的一个分支，用来
 
 为此它内置了 **ROM 与 RAM**、用**接近 HDL 的语法**声明方块 IO 坐标的 **`io.txt`**，以及一套纯文本的**自动化协议**，让外部程序直接驱动并观察电路。
 
-> 配套的快速开始演示**尚未实现**。
+> 仓库里暂不附带演示世界 —— 下面的快速开始几分钟就能从零跑到能进服。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## 快速开始
 
+### 1. 需要什么
+
+| | |
+| --- | --- |
+| 构建 | Rust 工具链（`rustup` stable）。`cargo build --release` 是唯一的构建步骤 |
+| 游玩 | Minecraft **Java 版 1.20.4**（协议 765） |
+| 自动化（可选） | Python 3.8+，跑 [`python/`](python/README.md) 里的测试脚本 |
+
+### 2. 构建与启动
+
 ```bash
 cargo build --release
-./target/release/mchprs
+
+# 在独立目录里跑：服务端读写的一切都相对工作目录，
+# 放在源码目录里会把 git 工作区弄脏
+mkdir -p ~/mchprs-server && cd ~/mchprs-server
+~/MCHPRS_IO/target/release/mchprs
 ```
 
-所有路径都相对工作目录：
+首次启动会自动生成默认文件：
 
 ```text
 .
-├── Config.toml      缺失时自动生成
-├── io.txt           IO 组声明（可选）
+├── Config.toml      缺失时用默认值生成
+├── io.txt           IO 组定义（可选）
 ├── memory/          *.rom.txt 与 *.ram.txt（可选）
 ├── logs/            自动创建
 └── world/           存档
 ```
 
-用 Minecraft 1.20.4 客户端连 `bind_address`（默认 `0.0.0.0:25565`），在地皮 `p0,0`（512×512）上搭电路，然后 `/redpiler compile`。
+日常基本只需要改 `Config.toml`，头一次跑最要紧的是 `bind_address`、`io_port`、`view_distance` 三项。
 
-- 地皮**有没有玩家都照常 tick**，永不卸载；全服只有这一块地皮。
-- 电路**从不自动编译**。
-- 自动化端口 `io_port`（默认 25585）**只监听 127.0.0.1**，且不做鉴权。
+### 3. 进服与搭电路
+
+1. 用 **1.20.4** 客户端连 `<主机>:25565`（`Config.toml` 的 `bind_address`，默认 `0.0.0.0:25565`）。
+2. 出生在一块 **512×512** 的地皮 **`p0,0`** 上。它有没有玩家都在 tick，而且永远不会 unloading。
+3. 搭电路（拉杆、按钮、红石灯、音符盒……）。`/setblock`、worldedit、`//schem` 都可用。
+4. 用 **`/redpiler compile`** 编译。电路**永远不会**自动编译 —— 不主动编译就不进编译器，
+   但红石本身照常 tick。
+
+### 4. 声明方块 IO（`io.txt`）
+
+`io.txt` 告诉自动化协议哪些方块是输入、哪些是输出：
+
+```toml
+input switches = [
+origin = 0
+clk = 0
+width = 2
+10, 64, 10
+12, 64, 10
+]
+
+output lamps = [
+origin = 0
+clk = 0
+width = 2
+20, 64, 10, +2x, 2
+]
+```
+
+`/io reload` 可以不重启直接重读。完整语法与校验规则见
+[docs/file-formats_zh.md](docs/file-formats_zh.md)。
+
+### 5. 从外部驱动
+
+自动化端口（`io_port`，默认 `25585`）**只监听回环**，且没有鉴权。一行一条报文，动词全大写：
+
+```text
+HELLO MCHPRS_IO 0.6.1-alpha <tick>     ← 连上后服务端先发
+INPUT switches 1                       → OK INPUT switches <tick>
+POUT lamps                             → OUTPUT lamps <tick> 0a
+TICK NOW                               → NOW <tick>
+```
+
+完整参考：**[docs/protocol_zh.md](docs/protocol_zh.md)**。
+
+### 6. 自动验证电路（可选）
+
+[`python/`](python/README.md) 里有三个脚本，直接走自动化协议，用你写的一行 Python 函数当"标准答案"验电路：
+
+| 脚本 | 判什么 |
+| --- | --- |
+| `correctness.py` | 只判结果对不对，不看 tick、不抓毛刺 |
+| `timing.py` | 每条输入只允许一条 `OUTPUT`，且必须晚 `delay` 个 tick 到 |
+| `pipeline.py` | 流水输入（需 `/tick seq`）间隔恒定、不阻塞 |
+
+```bash
+cd python
+python3 correctness.py      # 先改文件顶部的配置区
+```
+
+### 7. 常见问题
+
+| 现象 | 原因 |
+| --- | --- |
+| `HELLO` 里没有 `<tick>` | 电路没编译 —— 执行 `/redpiler compile` |
+| 电路看着没错，结果却全错 | plot 被冻结了（`/tick seq`、`rtps 0`）；解除冻结或回普通模式 |
+| 自动化客户端被断开 | 未读输出积压超过 1 MiB，或单行超过 64 KiB |
+| 首次 `cargo build --release` 要 10 分钟以上 | 开了 `lto = "fat"`；之后只重编改动过的 crate |
 
 ## 配置
 
@@ -138,6 +217,7 @@ RADV <x>                      → OK RADV <x> <tick>
 - [docs/file-formats_zh.md](docs/file-formats_zh.md) —— `io.txt` 与存储器文件参考（[English](docs/file-formats.md)）
 - [docs/protocol_zh.md](docs/protocol_zh.md) —— 自动化协议（[English](docs/protocol.md)）
 - [docs/Redpiler.md](docs/Redpiler.md)、[docs/RIL.md](docs/RIL.md)、[docs/Adding_a_block.md](docs/Adding_a_block.md) —— 编译器内部（英文）
+- [python/README.md](python/README.md) —— 协议测试脚本（`correctness` / `timing` / `pipeline`）
 - [BACKLOG.md](BACKLOG.md) —— 项目台账与设计决策
 
 ## 衍生版声明

@@ -1024,6 +1024,18 @@ node crates/network/generators/gen_creative.js <creative_items.json> <block_pale
 - **验收标准**：客户端渲染距离设 4 / 6 / 8 / 12 各进一次，进服后四周无空洞；
   沿 plot 边缘走一圈不掉块；关掉再进，同一位置不再出现新空洞。
 
+### 2.13 Python 测试工具（2026-11-02）
+
+| 编号 | 条目 | 状态 |
+| --- | --- | --- |
+| —（独立线，编号 `PY-nnn`） | `python/` 测试工具：`correctness.py` / `timing.py` / `pipeline.py` + `core/`（协议客户端、runner、WaveDrom 时序图） | ✅ 已并入仓库（2026-11-02） |
+
+- 用户 2026-11-02："把 `/storage/emulated/0/termux/MCHPRS_IO/python` 复制到项目文件夹里" —— 已复制到仓库根目录 `python/`。
+- **它有自己的台账** `python/PYTHON-BACKLOG.md`（编号 `PY-001` 起），只记 Python 侧；主台账不重复记它的需求细节，
+  两边冲突时各以各自台账为准（`PYTHON-BACKLOG` 原文）。
+- 原约定"不进 git"已按本次指示改为纳入版本管理（在 `PYTHON-BACKLOG.md` §0 就地更正）。
+- README（中英）新增"快速开始"完整章节，并在文档索引里加了 `python/README.md` 链接。
+
 ### 2.12 文档（J）
 
 配套事实（只读代码取证，供写码时用）：
