@@ -2775,7 +2775,7 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
   （同名冲突、plot 未运行）应出现且仅出现一行 `[!!]` 级提示。
 - **关联**：§9.36（降级决定与代价）、§9.34（日志收口总原则）。
 
-### 9.39 第 54 条：基岩监听地址写死 `0.0.0.0`，`config.toml` 里的 bind_address 不生效（📝 已定待写码，2026-11-02 00:1x）
+### 9.39 第 54 条：基岩监听地址写死 `0.0.0.0` + 基岩会话路径 `println!` 绕过 tracing（📝 已定待写码，2026-11-02 08:1x）
 
 > 用户真机日志（2026-11-01 23:54:51）：
 > `INFO mchprs_core::server: Bedrock listener on udp 0.0.0.0:19132 (view distance 8 chunks)`
@@ -2812,5 +2812,31 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
   - `bind_address = "192.168.0.103:25565"` 时，`ss -lun` 里 19132 只出现在 `192.168.0.103` 上，日志默认**不出现**该行；
   - `RUST_LOG=debug` 启动，打印的是 `Bedrock listener on udp 192.168.0.103:19132 ...`（真实地址）；
   - `bind_address = "127.0.0.1:25565"` 时基岩也只在回环上，不再对局域网开放。
-- **顺带记录（不单列 bug）**：`bedrock/session.rs:2531` 监听线程建运行时时失败用的是 `println!`，不是 `tracing`，
-  与 §9.34/§9.35 的口径不一致（本条不要求一并改，写码时顺手可提）。
+- **范围扩展：绕开 tracing 的 `println!` / `log()` 一并收口（用户 2026-11-02 08:0x 裁决"并进第 54 条"）**。
+  起因：用户看到 `[A3] LISTEN udp 0.0.0.0:19132 protocol=766 version=1.21.50` 并追问"这句是不是也没了"——
+  它是 `println!`，不受 `RUST_LOG` 控制，第 54 条原来只改 `server.rs` 的 `info!` 时它**照旧打印**。
+  继续审计发现整条基岩会话路径都绕过 `tracing`（自 10-29 会话层入库 `93a8fd9` 起一直如此），
+  所以 §9.34/§9.35 的"正常游玩静默"实际只覆盖 tracing 那一层。
+
+  | 位置 | 内容 | 频率 | 处理 |
+  | --- | --- | --- | --- |
+  | `bedrock/session.rs:216` `log()`（**48 个调用点**） | `[B1]…[B4]` 登录链逐包步进 | **每次进服几十行** | 改为 `debug!`，行格式保持不变 |
+  | `bedrock/session.rs:1447` | `[A3] LISTEN udp …` | 启动 1 次 | 改为 `debug!`（与第 54 条主改动同一意图） |
+  | `bedrock/session.rs:1461` | `[A3] t=… ACCEPT peer …` | **每次连接 1 次** | 改为 `debug!` |
+  | `bedrock/session.rs:1468` | `[B4] login chain complete` | 每次连接 1 次 | 改为 `debug!` |
+  | `bedrock/session.rs:1472` | `[!!] failed: {e}` | 登录失败 | 改走 `error!`（保留可见，但纳入统一过滤） |
+  | `bedrock/session.rs:2542 / 2547` | `[!!] Bedrock listener exited` / 线程起不来 | 异常 | 改走 `error!` |
+  | `bedrock/chunk.rs:365` | `[CHUNK] … block pairs` | 已由 `debug_chunk` 开关控制 | 不动，仅记录 |
+
+  **实施约束**：
+  1. `#[cfg(test)]` 里的 `[SELFTEST]` / `[HEX]` 打印**一律不碰**（测试用 `--nocapture` 靠它们取证）；
+  2. 可见性分级沿用 §9.36 的口径：玩家进/退服、指令、`[!!]` 错误保持可见；其余全部 `debug!`；
+  3. 换宏时不改文案内容与参数顺序，只换输出通道；`log()` 保留函数壳（48 个调用点不逐个改签名）；
+  4. 收口后**正常游玩（进服/挖放/聊天/退出）在默认 `INFO` 下应为零输出**，`RUST_LOG=debug` 才见上面这些行。
+- **验收标准（在原有三条之外追加）**：
+  - 默认启动 + 一次完整游玩（进服、走两圈、挖放方块、聊天、退出）全程 console **无任何输出**；
+  - `RUST_LOG=debug` 启动，能看到 `[A3] LISTEN udp <真实IP>:19132 …` 与 `[B1]…[B4]` 登录链；
+  - `cargo test -p mchprs_network --lib` 的 86 条全过（确认 `[SELFTEST]` 打印未被误改）。
+
+- **顺带记录（不单列 bug）**：`bedrock/session.rs:2531` 监听线程建运行时失败用的是 `println!`，不是 `tracing`，
+  与 §9.34/§9.35 的口径不一致 —— 已并入上面的范围扩展，改为 `error!`。
