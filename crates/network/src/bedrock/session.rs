@@ -214,8 +214,9 @@ fn wall_clock() -> f64 {
         .unwrap_or(0.0)
 }
 
+/// 登录链逐包步进（BUG-032 第 54 条：改走 `tracing`，默认 `INFO` 下不再刷屏）。
 fn log(step: &str, start: Instant, dir: &str, msg: &str) {
-    println!(
+    tracing::debug!(
         "[{step}] t={:.3} {:>8.3} {dir} {msg}",
         wall_clock(),
         start.elapsed().as_secs_f64()
@@ -1444,7 +1445,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
         .bind()
         .await?;
 
-    println!(
+    tracing::debug!(
         "[A3] LISTEN udp {addr} protocol={} version={}",
         Protocol::PROTOCOL_VERSION,
         Protocol::GAME_VERSION
@@ -1458,18 +1459,18 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
             let mut conn = conn.into_ver::<Protocol>();
             // 每条连接一个自己的实体运行时 id（BUG-032 第 22 条）：以前全写死 1。
             let runtime_id = next_runtime_id();
-            println!(
+            tracing::debug!(
                 "[A3] t={:.3} ACCEPT peer runtime_id={runtime_id} addr={}",
                 wall_clock(),
                 conn.get_socket_addr()
             );
             let session_info = match do_login(&mut conn, start, &source, runtime_id).await {
                 Ok(info) => {
-                    println!("[B4] login chain complete, waiting for later phases");
+                    tracing::debug!("[B4] login chain complete, waiting for later phases");
                     Some(info)
                 }
                 Err(e) => {
-                    println!("[!!] failed: {e}");
+                    tracing::error!("[!!] failed: {e}");
                     None
                 }
             };
@@ -1519,7 +1520,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     })
                     .is_err()
                 {
-                    println!("[!!] cannot register Bedrock player: server channel closed");
+                    tracing::error!("[!!] cannot register Bedrock player: server channel closed");
                 }
             }
 
@@ -1617,7 +1618,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     }
                 };
                 if should_close {
-                    println!("[C3] server requested disconnect (or handle released); closing Bedrock client");
+                    tracing::debug!("[C3] server requested disconnect (or handle released); closing Bedrock client");
                     break;
                 }
 
@@ -1632,7 +1633,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     crate::bedrock_verbose!("[R4] sent {} chat lines", packets.len());
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to send chat: {e}");
+                        tracing::error!("[!!] failed to send chat: {e}");
                         break;
                     }
                 }
@@ -1680,7 +1681,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     sidebar_texts = sidebar.lines.iter().map(|l| l.text.clone()).collect();
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to send scoreboard: {e}");
+                        tracing::error!("[!!] failed to send scoreboard: {e}");
                         break;
                     }
                     crate::bedrock_verbose!(
@@ -1705,7 +1706,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         .collect();
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to send block updates: {e}");
+                        tracing::error!("[!!] failed to send block updates: {e}");
                         break;
                     }
                 }
@@ -1718,7 +1719,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     crate::bedrock_verbose!("[R2] abilities updated: flying={flying} fly_speed={fly_speed}");
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to send abilities: {e}");
+                        tracing::error!("[!!] failed to send abilities: {e}");
                         break;
                     }
                 }
@@ -1741,7 +1742,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     );
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to send position: {e}");
+                        tracing::error!("[!!] failed to send position: {e}");
                         break;
                     }
                     last_pos = bedrock_pos;
@@ -1872,7 +1873,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         let count = packets.len();
                         crate::bedrock::debug::dump_out(&packets);
                         if let Err(e) = conn.send(&packets).await {
-                            println!("[!!] failed to sync players: {e}");
+                            tracing::error!("[!!] failed to sync players: {e}");
                             break;
                         }
                         crate::bedrock_verbose!("[R6] player sync: {count} packets ({} players online)",
@@ -1912,7 +1913,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     }
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to send chunk stream: {e}");
+                        tracing::error!("[!!] failed to send chunk stream: {e}");
                         break;
                     }
                     crate::bedrock_verbose!(
@@ -1928,10 +1929,10 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         crate::bedrock::commands::soft_enum_update(&name, values),
                     ))];
                     if let Err(e) = conn.send(&packet).await {
-                        println!("[!!] failed to send soft enum: {e}");
+                        tracing::error!("[!!] failed to send soft enum: {e}");
                         break;
                     }
-                    println!("[B4] soft enum {name} = {count} entries");
+                    tracing::debug!("[B4] soft enum {name} = {count} entries");
                 }
 
                 // 挥手动效（A3）：一次事件包。目标不在本地实体表里就忽略
@@ -1950,7 +1951,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                         crate::bedrock_verbose!("[R8] sent {} swings", packets.len());
                         crate::bedrock::debug::dump_out(&packets);
                         if let Err(e) = conn.send(&packets).await {
-                            println!("[!!] failed to send swing: {e}");
+                            tracing::error!("[!!] failed to send swing: {e}");
                             break;
                         }
                     }
@@ -1961,10 +1962,10 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     let packets = vec![Protocol::SetPlayerGameTypePacket(Box::new(
                         crate::bedrock::protocol::set_game_mode(mode),
                     ))];
-                    println!("[R9] game mode -> {mode:?}");
+                    tracing::debug!("[R9] game mode -> {mode:?}");
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to send game mode: {e}");
+                        tracing::error!("[!!] failed to send game mode: {e}");
                         break;
                     }
                 }
@@ -1991,7 +1992,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     );
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to send OpenSign: {e}");
+                        tracing::error!("[!!] failed to send OpenSign: {e}");
                         break;
                     }
                 }
@@ -2026,7 +2027,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     }
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to send sign: {e}");
+                        tracing::error!("[!!] failed to send sign: {e}");
                         break;
                     }
                 }
@@ -2081,7 +2082,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     );
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to send inventory: {e}");
+                        tracing::error!("[!!] failed to send inventory: {e}");
                         break;
                     }
                 }
@@ -2449,7 +2450,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     // 以前这里是裸 `Err(_) => break`：客户端一断开，服务端只留一行
                     // "left the game"，完全看不出是解码失败还是对面主动断的（BUG-032 第 29 条）。
                     Err(e) => {
-                        println!("[!!] failed to receive packet, disconnecting: {e}");
+                        tracing::error!("[!!] failed to receive packet, disconnecting: {e}");
                         break;
                     }
                 }
@@ -2472,7 +2473,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     );
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to send inventory: {e}");
+                        tracing::error!("[!!] failed to send inventory: {e}");
                         break;
                     }
                 }
@@ -2484,7 +2485,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                     ))];
                     crate::bedrock::debug::dump_out(&packets);
                     if let Err(e) = conn.send(&packets).await {
-                        println!("[!!] failed to acknowledge container close: {e}");
+                        tracing::error!("[!!] failed to acknowledge container close: {e}");
                         break;
                     }
                 }
@@ -2528,7 +2529,7 @@ pub fn spawn_mchprs_listener(
             {
                 Ok(runtime) => runtime,
                 Err(err) => {
-                    println!("[!!] Bedrock listener thread cannot create a tokio runtime: {err}");
+                    tracing::error!("[!!] Bedrock listener thread cannot create a tokio runtime: {err}");
                     return;
                 }
             };
@@ -2538,12 +2539,12 @@ pub fn spawn_mchprs_listener(
                     chunk_radius,
                 };
                 if let Err(err) = serve(addr, source).await {
-                    println!("[!!] Bedrock listener exited: {err}");
+                    tracing::error!("[!!] Bedrock listener exited: {err}");
                 }
             });
         });
     if let Err(err) = spawn_result {
-        println!("[!!] failed to spawn Bedrock listener thread: {err}");
+        tracing::error!("[!!] failed to spawn Bedrock listener thread: {err}");
     }
 }
 

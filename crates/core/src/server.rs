@@ -247,15 +247,13 @@ impl MinecraftServer {
         // 不能和 Java 玩家看到的不一样（第 16/26 条）。
         if CONFIG.bedrock > 0 {
             let chunk_radius = CONFIG.view_distance.clamp(1, 32) as i32;
+            let bedrock_addr = bedrock_bind_addr(&CONFIG.bind_address, CONFIG.bedrock);
             mchprs_network::bedrock::session::spawn_mchprs_listener(
-                format!("0.0.0.0:{}", CONFIG.bedrock),
+                bedrock_addr.clone(),
                 bedrock_tx,
                 chunk_radius,
             );
-            info!(
-                "Bedrock listener on udp 0.0.0.0:{} (view distance {chunk_radius} chunks)",
-                CONFIG.bedrock
-            );
+            debug!("Bedrock listener on udp {bedrock_addr} (view distance {chunk_radius} chunks)");
         }
 
         // Load the spawn area plot on server start
@@ -425,7 +423,7 @@ impl MinecraftServer {
             .iter()
             .any(|plot| plot.plot_x == 0 && plot.plot_z == 0)
         {
-            debug!("Bedrock player {username} wants to enter plot (0,0), but that plot is not running; disconnecting");
+            warn!("Bedrock player {username} wants to enter plot (0,0), but that plot is not running; disconnecting");
             link.handle.close_connection();
             return;
         }
@@ -480,7 +478,7 @@ impl MinecraftServer {
             .is_err()
         {
             // 走到这里说明服务端正在退出（接收端已 drop）：把身份表清掉，别留下永久失效的名字。
-            debug!("Bedrock player could not deliver PlayerJoined (server channel closed); rolled back identity table");
+            warn!("Bedrock player could not deliver PlayerJoined (server channel closed); rolled back identity table");
             self.bedrock_players.remove(&uuid);
         }
     }
@@ -494,7 +492,7 @@ impl MinecraftServer {
 
         // 同名 Bedrock 玩家已在线时，拒绝这次 Java 登录（同一个 UUID 不能同时在线）。
         if self.bedrock_players.contains_key(&uuid) {
-            debug!("rejected Java player {username}: a Bedrock player with the same name is online");
+            warn!("rejected Java player {username}: a Bedrock player with the same name is online");
             client.close_connection();
             return;
         }
@@ -836,7 +834,7 @@ impl MinecraftServer {
                                 });
                         }
                         None => {
-                            debug!("Bedrock client requested a world snapshot, but spawn plot (0,0) is not running");
+                            warn!("Bedrock client requested a world snapshot, but spawn plot (0,0) is not running");
                         }
                     }
                 }
@@ -1098,4 +1096,54 @@ pub fn get_version_string() -> String {
         env!("CARGO_PKG_VERSION"),
         env!("GIT_HASH")
     )
+}
+
+/// 基岩监听地址（BUG-032 第 54 条，方案 B）。
+///
+/// IP 取自 Java 的 `bind_address`，端口仍用 `CONFIG.bedrock`：用户把 `bind_address`
+/// 配成 `127.0.0.1:25565` 想让服务只开本机时，基岩 UDP 也不再对整个局域网开放。
+/// `bind_address` 里拿不到 IP（没有 `:` 或 IP 为空）时回落到 `0.0.0.0`，与旧行为一致。
+fn bedrock_bind_addr(bind_address: &str, port: i64) -> String {
+    let host = match bind_address.rsplit_once(':') {
+        Some((host, _)) if !host.is_empty() => host,
+        _ => "0.0.0.0",
+    };
+    if host.contains(':') {
+        // IPv6 字面量要加方括号，`[::1]:19132`
+        format!("[{}]:{}", host.trim_start_matches('[').trim_end_matches(']'), port)
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+#[cfg(test)]
+mod bedrock_bind_tests {
+    use super::bedrock_bind_addr;
+
+    #[test]
+    fn ipv4_takes_ip_from_bind_address() {
+        assert_eq!(bedrock_bind_addr("0.0.0.0:25565", 19132), "0.0.0.0:19132");
+        assert_eq!(bedrock_bind_addr("127.0.0.1:25565", 19132), "127.0.0.1:19132");
+        assert_eq!(
+            bedrock_bind_addr("192.168.0.103:25565", 19132),
+            "192.168.0.103:19132"
+        );
+    }
+
+    #[test]
+    fn ipv6_is_bracketed() {
+        assert_eq!(bedrock_bind_addr("[::1]:25565", 19132), "[::1]:19132");
+        assert_eq!(
+            bedrock_bind_addr("[2001:db8::1]:25565", 19132),
+            "[2001:db8::1]:19132"
+        );
+        // 不带方括号的写法也能救回来
+        assert_eq!(bedrock_bind_addr("::1:25565", 19132), "[::1]:19132");
+    }
+
+    #[test]
+    fn missing_ip_falls_back_to_wildcard() {
+        assert_eq!(bedrock_bind_addr("25565", 19132), "0.0.0.0:19132");
+        assert_eq!(bedrock_bind_addr(":25565", 19132), "0.0.0.0:19132");
+    }
 }
