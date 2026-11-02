@@ -1,0 +1,97 @@
+name: MCHPRS_IO CI
+
+# 上游自带的 build.yml / ci.yml 盯的是 `master` 分支（本仓库是 `main`），一直不会触发；
+# 这个文件是 MCHPRS_IO 自己的流水线，只跑我们维护的路径。
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 网络层单测（含基岩协议 / NBT）
+        run: cargo test -p mchprs_network --lib
+
+      - name: 核心层单测（含 server / plot）
+        run: cargo test -p mchprs_core --lib
+
+  build:
+    name: Build (x86_64 Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --release
+        run: cargo build --release
+
+      - name: 冒烟：二进制能打印版本后退出
+        run: ./target/release/mchprs --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mchprs-x86_64-linux
+          path: target/release/mchprs
+          if-no-files-found: error
+
+  apk:
+    name: Build (Android APK 界面壳)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 定位 Android SDK
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            echo "runner 上没有 Android SDK" >&2
+            exit 1
+          fi
+          echo "ANDROID_SDK=$SDK" >> "$GITHUB_ENV"
+          echo "platforms:"; ls "$SDK/platforms"
+          echo "build-tools:"; ls "$SDK/build-tools"
+
+      - name: 打包 APK（不含原生二进制，只验证 Java/资源/脚本可编译）
+        run: |
+          set -euo pipefail
+          PLATFORM=$(ls -d "$ANDROID_SDK"/platforms/* | sort -V | tail -1)
+          BUILD_TOOLS=$(ls -d "$ANDROID_SDK"/build-tools/* | sort -V | tail -1)
+          export PATH="$BUILD_TOOLS:$PATH"
+          export ANDROID_JAR="$PLATFORM/android.jar"
+          echo "使用 $ANDROID_JAR"
+          cd app
+          NO_BINARY=1 bash build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MCHPRS-ui-preview-apk
+          path: app/ui-preview.apk
+          if-no-files-found: error
