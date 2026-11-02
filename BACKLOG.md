@@ -53,10 +53,10 @@
 | Termux 通道 | SSH 端口 8022，`tx '<命令>'` 直连；sshd 不随重启自启 |
 | 仓库 | Termux 侧 `~/mchprs/source/MCHPRS_IO`，git 分支 `main`，远程 `https://github.com/xanax2112/MCHPRS_IO.git` |
 | 上游对照副本 | `~/mchprs/source/MCHPRS`（只读，基线 `master` @ `d492e43`） |
-| 线上二进制 | `~/mchprs/mchprs`，**0.6.1-alpha**（12,705,720 字节，sha256 `5d9a82db78443b0c8f2694e11b73a032655671435e765e2033b5ed3a713a8aa7`，2026-11-01 23:51 本机构建；同版本较早一份 `cd0088e3…` 已被覆盖）；旧版备份：`~/.ssset/backup/mchprs-0.6.0-alpha-20261101`（0.6.0-alpha 实验构建，12,841,800 字节）与 `~/dsh/scratch/mchprs-0.5.4-alpha-pre-coordfix`（0.5.4 + /coord 修复，8,570,096 字节） |
+| 线上二进制 | `~/mchprs/mchprs`，**0.6.1-alpha**（12,742,872 字节，sha256 `2478f7fdb4311093dff645608e4f84f9c6797415dedd5a278a4f433adef27b47`，2026-11-02 08:24 本机构建）；旧版备份：`~/.ssset/backup/mchprs-0.6.1-alpha-pre-bindfix`（12,705,720 字节，sha256 `5d9a82db…`）、`~/.ssset/backup/mchprs-0.6.0-alpha-20261101`（12,841,800 字节）与 `~/dsh/scratch/mchprs-0.5.4-alpha-pre-coordfix`（8,570,096 字节） |
 | 服务器运行目录 | `~/mchprs/source/MCHPRS_IO/run/`（`Config.toml`、`io.txt`、`logs/`、`world/`）；启动方式：`cd run && ../target/release/mchprs`（原 `/storage/emulated/0/termux/MCHPRS_IO/` 已随仓库重解压删除） |
 | 归档目录 | `/storage/emulated/0/termux/old/`（2026-10-28 起）：`backup-2026-10-28/`（旧版本二进制、改动前源码、台账快照）、`scratch-2026-10-28/`（构建日志与临时脚本）、`drafts-2026-10-28/`（旧 rom 草稿） |
-| 最近提交 | `1333d8e`（0.6.1-alpha，已推送 `main`，2026-11-01 23:2x）；其上依次是 `348de7d`（第 50 条）、`8ec69dd`（第 49 条）、`536e09c`（第 47 条）、`5023240`（第 46 条），再往前是远端的 `a3e7d5f`（/coord 步长修复）与 `2586cce` |
+| 最近提交 | `76dc64a`（第 54/53 条代码改动，2026-11-02 08:3x）；其前依次为台账提交 `6a68264`/`84bfd10`/`f9043be`/`5a881ee`/`c87af94` 与 `1333d8e`（0.6.1-alpha）；其上依次是 `348de7d`（第 50 条）、`8ec69dd`（第 49 条）、`536e09c`（第 47 条）、`5023240`（第 46 条），再往前是远端的 `a3e7d5f`（/coord 步长修复）与 `2586cce` |
 | 构建 | `cargo build --release`，aarch64 Termux；`/tmp` 不可写，日志写 `~/dsh/scratch/`。**只改源码时约 2 分钟**（只重编 `mchprs_core` 与根包）；**改 `Cargo.toml` 的版本号时约 8 分钟**——15 个 crate 全是 `version.workspace = true`，版本参与 Cargo 指纹，等于全量冷编（2026-10-29 实测：2 个 crate = 2m06s，13 个 crate = 7m42s）；release 开着 `lto = "fat"`，最后链接阶段最贵 |
 
 ---
@@ -2787,7 +2787,7 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
   已有 ROM/RAM 文件下次保存时由 `render()` 自动重写首行。
 - **验收**：编译 + 三个测试集全过；二进制替换（见 §1）。提交 `6011370`。
 
-### 9.38 第 53 条：core 侧 4 条异常日志被降为 debug，默认看不见（📋 待做，2026-11-01 23:5x）
+### 9.38 第 53 条：core 侧 4 条异常日志被降为 debug，默认看不见（✅ 已完成，2026-11-02 08:3x）
 
 > 用户 2026-11-01："在台账上登记 bug" → 选择登记 §9.36 留下的这个隐患。**只记录，未授权改码。**
 
@@ -2811,8 +2811,11 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
 - **验收标准（无论选哪种）**：正常游玩（进服 / 挖放方块 / 聊天 / 退出）日志仍应为空；异常路径
   （同名冲突、plot 未运行）应出现且仅出现一行 `[!!]` 级提示。
 - **关联**：§9.36（降级决定与代价）、§9.34（日志收口总原则）。
+- **已完成（2026-11-02 08:3x，用户选方案 A）**：`server.rs` 那 4 条全部恢复 `warn!`
+  （428 进 plot 时 plot 没跑 / 483 `PlayerJoined` 投递失败 / 497 同名 Bedrock 在线拒绝 Java / 839 请求快照但出生点没跑），
+  代码在提交 `76dc64a`。正常游玩仍然静默 —— 这 4 条只在异常路径触发，冒烟测试（启动→关闭）`INFO` 全程零输出。
 
-### 9.39 第 54 条：基岩监听地址写死 `0.0.0.0` + 基岩会话路径 `println!` 绕过 tracing（📝 已定待写码，2026-11-02 08:1x）
+### 9.39 第 54 条：基岩监听地址写死 `0.0.0.0` + 基岩会话路径 `println!` 绕过 tracing（✅ 已完成，2026-11-02 08:3x）
 
 > 用户真机日志（2026-11-01 23:54:51）：
 > `INFO mchprs_core::server: Bedrock listener on udp 0.0.0.0:19132 (view distance 8 chunks)`
@@ -2836,7 +2839,7 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
      Java 确实只开本机，但基岩 UDP 19132 **仍然对整个局域网（乃至公网，若有端口映射）开放**；
   3. 多网卡 / 多 IP 的机器无法指定出口地址。
 - **用户裁决（2026-11-02 00:1x）**：**方案 B**（IP 取 `bind_address` 的，端口仍用 `bedrock`），
-  并且**这条启动日志降为 `debug!`**（用户原话"日志不打印"；默认 `INFO` 下不再出现，排障时 `RUST_LOG=debug` 可看）。
+  并且**这条启动日志降为 `debug!`**（用户原话"日志不打印"；默认 `INFO` 下不再出现，排障时 `MCHPRS_LOG=debug` 可看）。
 - **实施规格（写码时照此执行，不得自行发挥）**：
   1. `crates/core/src/server.rs:250` 不再写字面量 `0.0.0.0`：从 `CONFIG.bind_address` 取出 IP 部分，
      与 `CONFIG.bedrock` 拼成 `{ip}:{port}` 传给 `spawn_mchprs_listener`；
@@ -2877,6 +2880,27 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
 
 - **顺带记录（不单列 bug）**：`bedrock/session.rs:2531` 监听线程建运行时失败用的是 `println!`，不是 `tracing`，
   与 §9.34/§9.35 的口径不一致 —— 已并入上面的范围扩展，改为 `error!`。
+
+- **已完成（2026-11-02 08:3x，提交 `76dc64a`）**：
+  - `crates/core/src/server.rs`：新增 `bedrock_bind_addr(bind_address, port)` —— 从 `CONFIG.bind_address`
+    取 IP（兼容 `[::1]:25565` 与不带括号的 `::1:25565`），与 `CONFIG.bedrock` 拼成监听地址；
+    拿不到 IP 时回落 `0.0.0.0`；`0.0.0.0` 字面量不再出现在调用处；日志 `info!` → `debug!` 且打印**实际地址**。
+  - `crates/network/src/bedrock/session.rs`：`log()` 内部改 `tracing::debug!`（**48 个调用点零改动**）；
+    运行时 `println!` 共 **21 处**收进 tracing（`[!!]` 类走 `error!`，`[A3]`/`[B4]`/`[R9]`/`[C3]` 等走 `debug!`）；
+    `#[cfg(test)]` 的测试与 `[SELFTEST]` 打印**一处未动**。
+- **真机验证（`~/dsh/scratch/smoke55`，RakNet 未连接 ping 0x01→0x1c）**：
+  | `bind_address` | ping `127.0.0.1:19132` | ping 局域网 `10.40.253.249:19132` | 结论 |
+  | --- | --- | --- | --- |
+  | `127.0.0.1:25651` | 有回包 | **超时无回包** | 基岩只在回环上，B 方案生效 |
+  | `0.0.0.0:25651` | 有回包 | 有回包 | 默认行为未被改坏 |
+  - `MCHPRS_LOG=debug` 时打印 `Bedrock listener on udp 127.0.0.1:19132 (view distance 8 chunks)`；
+    默认 `INFO` 下该行不出现（用户要求的"日志不打印"达成）。
+- **测试与构建**：`cargo test -p mchprs_network --lib` **86 通过**；`cargo test -p mchprs_core --lib` **4 通过**
+  （其中 3 条是新增的 `bedrock_bind_tests`：IPv4 取 IP / IPv6 加方括号 / 缺 IP 回落通配）；
+  `cargo build --release` **7m33s**；二进制 **12,742,872 字节**，sha256 `2478f7fd…`，已替换 `~/mchprs/mchprs`
+  （旧版备份 `~/.ssset/backup/mchprs-0.6.1-alpha-pre-bindfix`）。
+- **日志开关更正**：实际环境变量是 **`MCHPRS_LOG`**（`src/main.rs:26`，`with_env_var("MCHPRS_LOG")`），
+  不是 `RUST_LOG`；本条早先写的 `RUST_LOG=debug` 有误，以 `MCHPRS_LOG=debug` 为准。
 
 - **用户裁决（2026-11-02 08:2x）**："不修了，先记录" —— 本条**只归档，不排期、不动代码**。
   下面这份诊断方案保留给以后（真要修时不用重新查一遍）：
