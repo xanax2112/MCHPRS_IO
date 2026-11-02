@@ -218,6 +218,7 @@ RADV <x>                      → OK RADV <x> <tick>
 - [docs/protocol_zh.md](docs/protocol_zh.md) —— 自动化协议（[English](docs/protocol.md)）
 - [docs/Redpiler.md](docs/Redpiler.md)、[docs/RIL.md](docs/RIL.md)、[docs/Adding_a_block.md](docs/Adding_a_block.md) —— 编译器内部（英文）
 - [python/README.md](python/README.md) —— 协议测试脚本（`correctness` / `timing` / `pipeline`）
+- [app/README.md](app/README.md) —— 把服务端打包成独立 Android APK 的工程
 - [BACKLOG.md](BACKLOG.md) —— 项目台账与设计决策
 
 ## 衍生版声明

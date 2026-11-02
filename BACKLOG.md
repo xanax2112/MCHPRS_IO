@@ -1036,6 +1036,21 @@ node crates/network/generators/gen_creative.js <creative_items.json> <block_pale
 - 原约定"不进 git"已按本次指示改为纳入版本管理（在 `PYTHON-BACKLOG.md` §0 就地更正）。
 - README（中英）新增"快速开始"完整章节，并在文档索引里加了 `python/README.md` 链接。
 
+### 2.14 Android APK 工程（2026-11-02）
+
+| 编号 | 条目 | 状态 |
+| --- | --- | --- |
+| —（自有台账） | `app/`：把 `mchprs` 打包成独立 Android APK（包名 `com.dsh.mchprs`，0.6.1-alpha / versionCode 607） | ✅ 已并入仓库（2026-11-02） |
+
+- 用户 2026-11-02 指示把 `/storage/emulated/0/termux/app` 收进仓库；按其选择"复制进仓库，提交除密钥外全部"处理：
+  - **进仓库**：Java 源码（`src/com/dsh/mchprs/` 5 个类）、`res/`（en / zh-rCN 字符串与图标）、
+    `AndroidManifest.xml`、`build.sh`、`pack_apk.py`、`patch_elf.py`、`gen_icons.py`、`README.md`、
+    成品 `mchprs.apk`（4.8 MB，内含未压缩的 aarch64 原生二进制）。
+  - **不进仓库**：`dsh.keystore`（签名密钥，已加进 `.gitignore`；公开仓库不放私钥）、
+    `src/com/dsh/mchprs/*.java.bak`（编辑器备份，无价值）。
+- 该工程有自己的开发台账（Termux 侧 `~/dsh/apk-backlog.md`），主台账不重复记其需求细节。
+- 已知问题随工程自带：**BUG-003** —— 控制台执行 `/stop` 后服务器正常退出，但界面误报"启动失败：服务器进程已退出"（`MchprsService` 退出时状态不是 `STOPPING`），尚未修。
+
 ### 2.12 文档（J）
 
 配套事实（只读代码取证，供写码时用）：

@@ -221,6 +221,7 @@ The same commands work from the server console; commands needing a player are re
 - [docs/protocol.md](docs/protocol.md) — automation protocol ([中文](docs/protocol_zh.md))
 - [docs/Redpiler.md](docs/Redpiler.md), [docs/RIL.md](docs/RIL.md), [docs/Adding_a_block.md](docs/Adding_a_block.md) — compiler internals
 - [python/README.md](python/README.md) — protocol test scripts (`correctness` / `timing` / `pipeline`)
+- [app/README.md](app/README.md) — standalone Android APK that bundles the server
 - [BACKLOG.md](BACKLOG.md) — project ledger and design decisions
 
 ## Derivative notice

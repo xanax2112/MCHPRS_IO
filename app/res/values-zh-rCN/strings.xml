@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 简体中文 -->
+<resources>
+    <string name="state_starting">启动中…</string>
+    <string name="state_ready">运行中，已就绪</string>
+    <string name="state_failed">启动失败：%1$s\n（详情见 logs/app.log）</string>
+    <string name="state_stopping">正在保存并关闭…</string>
+    <string name="state_idle">已停止</string>
+
+    <string name="btn_start">启动服务器</string>
+    <string name="btn_cancel">取消启动</string>
+    <string name="btn_stop">停止服务器</string>
+    <string name="btn_restart">重新启动</string>
+    <string name="btn_stopping">正在关闭…</string>
+    <string name="btn_clear">清屏</string>
+
+    <string name="toast_failed">启动失败：%1$s</string>
+    <string name="err_workdir_missing">工作目录不存在 %1$s</string>
+    <string name="err_workdir_create">无法创建工作目录（无存储权限或路径非法）</string>
+    <string name="err_service_start">无法启动服务：%1$s</string>
+    <string name="err_stop_request">无法发送停止请求：%1$s</string>
+    <string name="err_storage_denied">存储权限被拒绝</string>
+
+    <string name="settings_title">设置</string>
+    <string name="row_language">Language</string>
+    <string name="row_workdir">工作目录</string>
+    <string name="row_about">关于</string>
+    <string name="row_binary">mchprs 二进制</string>
+    <string name="row_hints">后台运行提示</string>
+
+    <string name="desc_workdir_exists">%1$s（已存在）</string>
+    <string name="desc_workdir_missing">%1$s（不存在，启动时会自动创建）</string>
+    <string name="desc_about">MCHPRS_IO %1$s\nminSdk 24 / targetSdk 28</string>
+    <string name="desc_binary_yes">已内置</string>
+    <string name="desc_binary_no">未内置（界面预览壳）</string>
+    <string name="desc_hints">切到后台后系统会限制 CPU，游戏内可能卡住、无法与世界交互。\n① 最近任务里锁定本应用卡片\n② 设置 → 电池 → 后台耗电管理 → 允许后台高耗电\n③ 必要时把小窗放在屏幕上</string>
+
+    <string name="lang_en">English</string>
+    <string name="lang_zh">简体中文</string>
+
+    <string name="noti_channel">MCHPRS_IO 服务器</string>
+    <string name="noti_preparing">准备中…</string>
+    <string name="noti_starting">启动中…</string>
+    <string name="noti_running">运行中</string>
+    <string name="noti_failed">启动失败</string>
+    <string name="noti_stopping">正在保存并关闭…</string>
+    <string name="noti_stopped">已停止</string>
+    <string name="noti_stop_action">停止</string>
+    <string name="noti_workdir_missing">工作目录不存在</string>
+    <string name="err_bin_missing">找不到可执行文件 libmchprs.so</string>
+    <string name="err_process_create">无法创建进程：%1$s</string>
+    <string name="pick_ok">工作目录已设为：%1$s</string>
+    <string name="pick_failed_parse">无法从这个 URI 解析出真实路径：%1$s</string>
+    <string name="pick_failed_missing">路径不存在：%1$s</string>
+    <string name="pick_failed_nowrite">没有写入权限：%1$s</string>
+    <string name="pick_no_picker">系统没有可用的选择器：%1$s</string>
+    <string name="about_title">关于</string>
+    <string name="about_tagline">mchprs 服务端的安卓前端，独立运行，无需 Termux</string>
+    <string name="about_version">版本</string>
+    <string name="about_binary">mchprs 二进制</string>
+    <string name="about_platform">平台</string>
+    <string name="about_workdir">工作目录</string>
+    <string name="about_thanks">致谢名单</string>
+    <string name="about_follow">关注我们</string>
+    <string name="about_desc_version">版本:%1$s</string>
+    <string name="about_project">关于项目</string>
+    <string name="desc_upstream">上游项目，MCHPRS_IO的根基</string>
+    <string name="desc_geyser">为基岩版支持提供参考</string>
+    <string name="desc_bedrock_rs">为基岩版支持提供代码实现</string>
+    <string name="desc_developer">开发者</string>
+    <string name="desc_testing">测试及宣传</string>
+    <string name="open_link_failed">无法打开链接：%1$s</string>
+    <string name="cmd_hint">输入指令</string>
+    <string name="cmd_not_running">服务器未运行</string>
+    <string name="cmd_send_failed">指令发送失败</string>
+</resources>

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 默认语言：英文 -->
+<resources>
+    <string name="state_starting">Starting…</string>
+    <string name="state_ready">Running, ready</string>
+    <string name="state_failed">Failed: %1$s\n(see logs/app.log)</string>
+    <string name="state_stopping">Saving and shutting down…</string>
+    <string name="state_idle">Stopped</string>
+
+    <string name="btn_start">Start server</string>
+    <string name="btn_cancel">Cancel start</string>
+    <string name="btn_stop">Stop server</string>
+    <string name="btn_restart">Restart</string>
+    <string name="btn_stopping">Closing…</string>
+    <string name="btn_clear">Clear</string>
+
+    <string name="toast_failed">Start failed: %1$s</string>
+    <string name="err_workdir_missing">Working dir not found: %1$s</string>
+    <string name="err_workdir_create">Cannot create working dir (no permission or invalid path)</string>
+    <string name="err_service_start">Cannot start service: %1$s</string>
+    <string name="err_stop_request">Cannot send stop request: %1$s</string>
+    <string name="err_storage_denied">Storage permission denied</string>
+
+    <string name="settings_title">Settings</string>
+    <string name="row_language">Language</string>
+    <string name="row_workdir">Working directory</string>
+    <string name="row_about">About</string>
+    <string name="row_binary">mchprs binary</string>
+    <string name="row_hints">Background tips</string>
+
+    <string name="desc_workdir_exists">%1$s (exists)</string>
+    <string name="desc_workdir_missing">%1$s (missing, will be created on start)</string>
+    <string name="desc_about">MCHPRS_IO %1$s\nminSdk 24 / targetSdk 28</string>
+    <string name="desc_binary_yes">Embedded</string>
+    <string name="desc_binary_no">Not embedded (UI preview build)</string>
+    <string name="desc_hints">When backgrounded the system limits CPU, so the game may lag or disconnect.\n① Lock this app card in Recents\n② Settings → Battery → Background power management → Allow\n③ Keep it in a floating window if needed</string>
+
+    <string name="lang_en">English</string>
+    <string name="lang_zh">简体中文</string>
+
+    <string name="noti_channel">MCHPRS_IO Server</string>
+    <string name="noti_preparing">Preparing…</string>
+    <string name="noti_starting">Starting…</string>
+    <string name="noti_running">Running</string>
+    <string name="noti_failed">Start failed</string>
+    <string name="noti_stopping">Saving and shutting down…</string>
+    <string name="noti_stopped">Stopped</string>
+    <string name="noti_stop_action">Stop</string>
+    <string name="noti_workdir_missing">Working dir missing</string>
+    <string name="err_bin_missing">libmchprs.so not found</string>
+    <string name="err_process_create">Cannot create process: %1$s</string>
+    <string name="pick_ok">Working dir set: %1$s</string>
+    <string name="pick_failed_parse">Cannot resolve a real path from this URI: %1$s</string>
+    <string name="pick_failed_missing">Path does not exist: %1$s</string>
+    <string name="pick_failed_nowrite">No write permission: %1$s</string>
+    <string name="pick_no_picker">No system picker available: %1$s</string>
+    <string name="about_title">About</string>
+    <string name="about_tagline">Android front-end for the mchprs server, runs standalone, no Termux required</string>
+    <string name="about_version">Version</string>
+    <string name="about_binary">mchprs binary</string>
+    <string name="about_platform">Platform</string>
+    <string name="about_workdir">Working directory</string>
+    <string name="about_thanks">Thanks</string>
+    <string name="about_follow">Follow us</string>
+    <string name="about_desc_version">Version: %1$s</string>
+    <string name="about_project">About the project</string>
+    <string name="desc_upstream">Upstream project, the foundation of MCHPRS_IO</string>
+    <string name="desc_geyser">Reference for Bedrock edition support</string>
+    <string name="desc_bedrock_rs">Code implementation for Bedrock edition support</string>
+    <string name="desc_developer">Developer</string>
+    <string name="desc_testing">Testing and promotion</string>
+    <string name="open_link_failed">Cannot open link: %1$s</string>
+    <string name="cmd_hint">Command</string>
+    <string name="cmd_not_running">Server is not running</string>
+    <string name="cmd_send_failed">Failed to send command</string>
+</resources>

@@ -7,3 +7,6 @@
 # Python 测试工具的缓存
 python/**/__pycache__/
 python/**/*.pyc
+
+# APK 签名密钥不进仓库（公开仓库不放私钥）
+app/dsh.keystore
