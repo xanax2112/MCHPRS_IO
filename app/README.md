@@ -45,18 +45,28 @@ app/
 
 ## 重新构建
 
-构建依赖 `aapt2`、`javac`、`d8`、`apksigner`、`python3`，都在 Termux 里。
-**本目录只是归档快照，不能就地构建**（脚本里写的是 `~/dsh/scratch/apkbuild` 的路径）。
-线上构建目录：`~/dsh/scratch/apkbuild`。
+**可以就地构建**：脚本会先 `cd` 到自己所在目录，产物落在 `app/` 下。
+
+依赖：`aapt2`、`javac`、`d8`、`apksigner`、`python3`，外加三样外部文件，
+路径都能用环境变量覆盖（默认值是本机习惯路径）：
+
+| 变量 | 默认 | 用途 |
+| --- | --- | --- |
+| `ANDROID_JAR` | `~/dsh/scratch/pf35/android-35/android.jar` | 编译用的 `android.jar`，**必需** |
+| `MCHPRS_BIN` | `~/mchprs/mchprs` | 要打包进 APK 的 aarch64 二进制 |
+| `KEYSTORE` | `~/dsh/scratch/apkbuild/dsh.keystore` | 签名密钥；不存在会自动生成一把新的 |
 
 ```sh
-cd ~/dsh/scratch/apkbuild
-bash build.sh              # 完整包（含原生二进制）→ mchprs.apk
-NO_BINARY=1 bash build.sh  # 只打界面壳 → ui-preview.apk，用于快速看 UI
+cd app
+bash build.sh                          # 完整包（含原生二进制）→ mchprs.apk
+NO_BINARY=1 bash build.sh              # 只打界面壳 → ui-preview.apk，快速看 UI
+
+# 换二进制 / 换 key / 换 android.jar
+MCHPRS_BIN=~/mchprs/source/MCHPRS_IO/target/release/mchprs \
+KEYSTORE=~/my.keystore ANDROID_JAR=/path/android.jar bash build.sh
 ```
 
-构建前把 `~/mchprs/mchprs` 换成想打包的二进制（来自 `~/mchprs/source/MCHPRS_IO`
-的 `cargo build --release`）。
+二进制来自主项目的 `cargo build --release`（见仓库根目录的 README）。
 
 **版本号规则**：每次出新包把 `AndroidManifest.xml` 里的 `versionCode` 加 1，
 否则覆盖安装可能被系统拒绝；`versionName` 跟随实际版本，不必每次改。

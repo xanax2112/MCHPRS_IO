@@ -1049,6 +1049,10 @@ node crates/network/generators/gen_creative.js <creative_items.json> <block_pale
   - **不进仓库**：`dsh.keystore`（签名密钥，已加进 `.gitignore`；公开仓库不放私钥）、
     `src/com/dsh/mchprs/*.java.bak`（编辑器备份，无价值）。
 - 该工程有自己的开发台账（Termux 侧 `~/dsh/apk-backlog.md`），主台账不重复记其需求细节。
+- **仓库内可直接构建（2026-11-02）**：`app/build.sh` 里三个外部依赖改成环境变量（`ANDROID_JAR` / `MCHPRS_BIN` / `KEYSTORE`，
+  默认值仍是本机习惯路径），脚本本来就 `cd` 到自己目录，因此 `cd app && bash build.sh` 即可就地出包；
+  缺 `android.jar` 或二进制时给出明确错误而不是晦涩失败。实测 `NO_BINARY=1 bash build.sh` 产出 85 KB 的 `ui-preview.apk`。
+  构建中间产物 `app/out/`、预览包 `app/ui-preview.apk` 已加入 `.gitignore`。
 - 已知问题随工程自带：**BUG-003** —— 控制台执行 `/stop` 后服务器正常退出，但界面误报"启动失败：服务器进程已退出"（`MchprsService` 退出时状态不是 `STOPPING`），尚未修。
 
 ### 2.12 文档（J）

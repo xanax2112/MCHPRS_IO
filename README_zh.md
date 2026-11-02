@@ -10,6 +10,19 @@ MCHPRS_IO 是 [MCHPRS](https://github.com/MCHPR/MCHPRS) 的一个分支，用来
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+## 仓库结构
+
+| 路径 | 是什么 |
+| --- | --- |
+| `crates/`、`src/` | Rust 服务端本体 |
+| `docs/` | 协议、文件格式、编译器内部文档 |
+| `vendor/` | vendored 的基岩版协议代码（`bedrock-rs`，协议 766） |
+| `python/` | 自动化协议测试脚本 —— [`python/README.md`](python/README.md) |
+| `app/` | 把服务端打包成独立 Android APK —— [`app/README.md`](app/README.md) |
+| `run/` | 示例运行目录（`Config.toml`、`io.txt`、`memory/`、`world/`） |
+| `tests/` | 集成测试，`cargo test` 运行 |
+| `BACKLOG.md` | 项目台账：设计决策、未结项、已知问题 |
+
 ## 快速开始
 
 ### 1. 需要什么

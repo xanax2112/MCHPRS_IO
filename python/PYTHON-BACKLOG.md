@@ -40,8 +40,8 @@
 
 | 项 | 值 |
 | --- | --- |
-| 工作目录 | `/storage/emulated/0/termux/MCHPRS_IO/python/` |
-| 服务器运行目录 | `/storage/emulated/0/termux/MCHPRS_IO/`（`Config.toml`、`io.txt`、`logs/`、`world/`） |
+| 工作目录 | 仓库内 `MCHPRS_IO/python/`（原 `/storage/emulated/0/termux/MCHPRS_IO/python/` 已并入仓库） |
+| 服务器运行目录 | 本机 `~/mchprs/source/MCHPRS_IO/run/`，或仓库内 `run/`（`Config.toml`、`io.txt`、`logs/`、`world/`） |
 | 协议端点 | `127.0.0.1:25585`（普通模式：`rtps > 0`，`INPUT` 后等 `OUTPUT` 推送） |
 | 当前 `io.txt` | `input xor_in` = 16 位（两段 8 位点），`output xor_out` = 8 位；两组均 `clk = 0` |
 | 位序 | 列表第一个坐标是最高位；16 位 hex 4 位、8 位 hex 2 位；脚本侧 hex 长度严格 |

@@ -2,9 +2,16 @@
 set -eo pipefail
 cd "$(dirname "$0")"
 
-AJ="$HOME/dsh/scratch/pf35/android-35/android.jar"
+# 三个外部依赖都能用环境变量覆盖，默认值只是本机习惯路径
+AJ="${ANDROID_JAR:-$HOME/dsh/scratch/pf35/android-35/android.jar}"
+KS="${KEYSTORE:-$HOME/dsh/scratch/apkbuild/dsh.keystore}"
+MCHPRS_BIN="${MCHPRS_BIN:-$HOME/mchprs/mchprs}"
 OUT=out
-KS="$HOME/dsh/scratch/apkbuild/dsh.keystore"
+
+if [ ! -f "$AJ" ]; then
+    echo "缺少 android.jar：用 ANDROID_JAR=<路径> 指定（或装 android-sdk 后用 platforms/android-35/android.jar）" >&2
+    exit 2
+fi
 
 # NO_BINARY=1 时跳过内置 mchprs，只打界面壳（用于快速预览 UI）
 NO_BINARY="${NO_BINARY:-0}"
@@ -15,7 +22,11 @@ mkdir -p "$OUT/classes" "$OUT/dex" "$OUT/lib/arm64-v8a"
 if [ "$NO_BINARY" = "1" ]; then
     echo "  NO_BINARY=1，跳过嵌入 mchprs"
 else
-    python3 patch_elf.py "$HOME/mchprs/mchprs" "$OUT/lib/arm64-v8a/libmchprs.so"
+    if [ ! -x "$MCHPRS_BIN" ]; then
+        echo "缺少 mchprs 二进制：用 MCHPRS_BIN=<路径> 指定（先 cargo build --release）" >&2
+        exit 2
+    fi
+    python3 patch_elf.py "$MCHPRS_BIN" "$OUT/lib/arm64-v8a/libmchprs.so"
     chmod 755 "$OUT/lib/arm64-v8a/libmchprs.so"
     readelf -d "$OUT/lib/arm64-v8a/libmchprs.so" | grep NEEDED
 fi

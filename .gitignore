@@ -10,3 +10,8 @@ python/**/*.pyc
 
 # APK 签名密钥不进仓库（公开仓库不放私钥）
 app/dsh.keystore
+
+# APK 构建中间产物与界面预览包
+app/out/
+app/ui-preview.apk
+app/*.idsig

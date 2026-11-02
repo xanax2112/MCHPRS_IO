@@ -10,6 +10,19 @@ To lift them it adds built-in **ROM and RAM**, an **`io.txt`** file that declare
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+## Repository layout
+
+| Path | What it is |
+| --- | --- |
+| `crates/`, `src/` | the Rust server |
+| `docs/` | protocol, file-format and compiler internals |
+| `vendor/` | vendored Bedrock protocol code (`bedrock-rs`, protocol 766) |
+| `python/` | protocol test scripts — [`python/README.md`](python/README.md) |
+| `app/` | packaging the server into a standalone Android APK — [`app/README.md`](app/README.md) |
+| `run/` | an example working directory (`Config.toml`, `io.txt`, `memory/`, `world/`) |
+| `tests/` | integration tests, run with `cargo test` |
+| `BACKLOG.md` | the project ledger: design decisions, open items, known issues |
+
 ## Quick start
 
 ### 1. What you need
