@@ -32,10 +32,12 @@ CONFIG = {
     # 加法器延迟 4 tick
     "delay": 4,
 
-    # 输入间隔 3 tick
-    "interval": 3,
+    # 输入间隔必须 > delay，否则下一个输入会在"该读上一个结果"的那个 tick
+    # 被应用，采到的是新输入的中间态（实测 interval=3 会零星失败）。
+    "interval": 2,
 
-    "batch": 128,
+    # 组数。吞吐测试用 2000 起步；想看时序细节可以调小到 128。
+    "batch": 2000,
 
     # 覆盖范围："random" 随机 | "full" 从 start_value 递增 | "specified" 指定
     "coverage": "random",

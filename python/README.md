@@ -6,7 +6,8 @@
 python/
 ├── correctness.py   无时序正确性：只验证结果对不对
 ├── timing.py        时序精确：验证延迟与毛刺
-├── pipeline.py      流水时序精确：验证连续输入的间隔
+├── pipeline.py      流水时序精确 + 吞吐：验证间隔并报告 组/s、tick/s
+├── bench_batch.py   批量吞吐 + 逐条正确性（独立小脚本，同上要求 /tick seq）
 └── core/            内部实现，不用打开
 ```
 
@@ -59,7 +60,7 @@ def test(x):
 | `delay` | 元件延迟（tick），`timing`/`pipeline` 用 | 4 |
 | `glitch_wait` | 收到第一条后再等多久查第二条（秒） | 0.005 |
 | `interval` | 流水输入间隔（tick，≥2） | 3 |
-| `batch` | 流水每批多少个数据 | 128 |
+| `batch` | 流水每批多少个数据（同时决定吞吐样本量） | 2000 |
 | `wait_seconds` | `correctness` 每组等待（秒） | 0.005 |
 | `drain_seconds` | `correctness` 查前读空管道的时长（秒） | 0.002 |
 

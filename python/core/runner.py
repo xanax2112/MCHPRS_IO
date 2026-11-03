@@ -400,26 +400,48 @@ def run_pipeline(cfg):
 
         vectors = list(_pipeline_vectors(cfg, batch))
         batch = len(vectors)
-        in_ticks = []
+        # 一次性把所有预约发出去再收 OK。逐条等 OK 会把灌数据变成 N 次往返，
+        # 2000 组就要好几秒，而一次全发是 2 万条/秒量级（PY-005 实测）。
+        digits = (in_bits + 3) // 4
+        outgoing = []
         for i, value in enumerate(vectors):
-            try:
-                in_ticks.append(client.input(cfg["PIN"], value, in_bits,
-                                             offset=1 + i * interval))
-            except ProtocolError as err:
-                if "mode" in str(err):
-                    print("当前不是 /tick seq 模式：先在游戏或终端执行 /tick seq")
-                    return 2
-                print("协议错误：%s" % err)
+            outgoing.append("INPUT %s %d %0*x"
+                            % (cfg["PIN"], 1 + i * interval, digits, value))
+        client.send("\n".join(outgoing))
+
+        in_ticks = []
+        try:
+            for _ in range(len(outgoing)):
+                line = client.expect("OK INPUT", timeout)
+                in_ticks.append(int(line.split()[-1]))
+        except ProtocolError as err:
+            if "mode" in str(err):
+                print("当前不是 /tick seq 模式：先在游戏或终端执行 /tick seq")
                 return 2
+            print("协议错误：%s" % err)
+            return 2
 
         total_ticks = (batch - 1) * interval + delay + 2
         print("已预约 %d 个输入，间隔 %dt，推进 %d tick" % (batch, interval, total_ticks))
+
+        # 吞吐只算 RADV 这一段：从发出 RADV 到全部 tick 推完并收齐输出，
+        # 不含上面灌预约的时间和下面补收的时间（PY-005 的测法）。
+        advance_start = time.monotonic()
         try:
             outs = client.radv_collect(total_ticks, cfg["POUT"], timeout)
+        except (TimeoutError, ProtocolError) as err:
+            print("RADV 失败：%s" % err)
+            return 2
+        advance_elapsed = time.monotonic() - advance_start
+        try:
             outs += client.collect_outputs(cfg["POUT"], cfg.get("collect_seconds", 0.5))
         except (TimeoutError, ProtocolError) as err:
             print("RADV 失败：%s" % err)
             return 2
+
+        if advance_elapsed > 0:
+            print("RADV 段耗时 %.3fs：%.0f 组/s，%.0f tick/s"
+                  % (advance_elapsed, batch / advance_elapsed, total_ticks / advance_elapsed))
 
         by_tick = {}
         for t, v in outs:
