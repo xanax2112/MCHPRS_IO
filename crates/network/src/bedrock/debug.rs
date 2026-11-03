@@ -18,7 +18,7 @@ pub const PACKET_HEX: bool = false;
 
 /// 明细日志：`[--]` / `[S3]` / `[R5]` / `[A2]` / `[R7]` / `[R8]` / `[R10]` 这批逐事件日志
 /// （登录取证、方块交互、物品事务、告示牌… 量很大，平时关）。
-pub const VERBOSE: bool = false;
+pub const VERBOSE: bool = crate::bedrock_api::VERBOSE;
 
 /// hex 打印上限（字节）。
 const HEX_LIMIT: usize = 160;

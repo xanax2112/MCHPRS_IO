@@ -43,5 +43,11 @@ fn main() {
         );
     }
 
+    // 插座 / 插头（BEDROCK.md 第 55 条）：默认构建没有基岩版，这里不执行任何东西；
+    // `--features bedrock` 时把协议栈注册进 `mchprs_network::bedrock_api`，
+    // 之后 core 通过 `bedrock_api::stack()` 就能用到它。
+    #[cfg(feature = "bedrock")]
+    mchprs_network::bedrock::stack::install();
+
     MinecraftServer::run();
 }

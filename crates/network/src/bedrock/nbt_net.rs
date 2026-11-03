@@ -6,14 +6,14 @@
 //! `cargo test -p mchprs_network --lib` 根本不会编译它；测试必须在这里跑。
 
 pub(crate) use bedrock::protocol::nbt_net::{
-    MAX_DEPTH, NbtCompound, read_compound_stream, read_root_compound, write_compound_bytes,
+    NbtCompound, read_root_compound,
     write_compound_stream,
 };
 
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_DEPTH, NbtCompound, read_compound_stream, read_root_compound, write_compound_bytes,
+        NbtCompound, read_root_compound,
         write_compound_stream,
     };
     use bedrock::protocol::v662::packets::{

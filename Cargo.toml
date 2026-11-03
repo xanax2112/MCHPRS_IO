@@ -39,8 +39,17 @@ opt-level = 1
 # This seems to speed up Redpiler compile times
 lto = "fat"
 
+[features]
+default = []
+# 基岩版（Bedrock）协议栈。**默认关闭**，要带上它构建：
+#   cargo build --release --features bedrock
+# 发布物（APK / 服务器二进制）必须显式开启，否则打出来的是纯 Java 版。
+bedrock = ["mchprs_network/bedrock"]
+
 [dependencies]
 mchprs_core = { path = "./crates/core" }
+# 只在 `--features bedrock` 时需要：用来把插头装进插座（见 src/main.rs）。
+mchprs_network = { path = "./crates/network", optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing-appender = { workspace = true }
 tracing = { workspace = true }

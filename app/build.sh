@@ -23,7 +23,7 @@ if [ "$NO_BINARY" = "1" ]; then
     echo "  NO_BINARY=1，跳过嵌入 mchprs"
 else
     if [ ! -x "$MCHPRS_BIN" ]; then
-        echo "缺少 mchprs 二进制：用 MCHPRS_BIN=<路径> 指定（先 cargo build --release）" >&2
+        echo "缺少 mchprs 二进制：用 MCHPRS_BIN=<路径> 指定（先 cargo build --release --features bedrock）" >&2
         exit 2
     fi
     python3 patch_elf.py "$MCHPRS_BIN" "$OUT/lib/arm64-v8a/libmchprs.so"

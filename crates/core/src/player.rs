@@ -137,7 +137,7 @@ impl std::fmt::Display for PlayerPos {
 /// 位置、权限、命令、计分板都复用已有逻辑；尚不支持的功能（Java 包）在 Bedrock 后端是 no-op。
 pub enum PlayerBackend {
     Java(PlayerConn),
-    Bedrock(mchprs_network::bedrock::bridge::BedrockPlayerLink),
+    Bedrock(mchprs_network::bedrock_api::BedrockPlayerLink),
 }
 
 impl PlayerBackend {
@@ -179,10 +179,10 @@ impl PlayerBackend {
     ///
     /// 出站方向是**语义化**的：core 不构造 Bedrock 包，只把"要显示什么"交给会话线程
     /// （见 BEDROCK.md「入站转义 / 出站语义化」）。
-    pub fn send_sidebar(&self, sidebar: &mchprs_network::bedrock::bridge::BedrockSidebar) {
+    pub fn send_sidebar(&self, sidebar: &mchprs_network::bedrock_api::BedrockSidebar) {
         if let Self::Bedrock(link) = self {
             link.handle
-                .send(mchprs_network::bedrock::bridge::BedrockCommand::Sidebar(
+                .send(mchprs_network::bedrock_api::BedrockCommand::Sidebar(
                     sidebar.clone(),
                 ));
         }
@@ -192,7 +192,7 @@ impl PlayerBackend {
     pub fn send_chat(&self, text: &str) {
         if let Self::Bedrock(link) = self {
             link.handle
-                .send(mchprs_network::bedrock::bridge::BedrockCommand::Chat {
+                .send(mchprs_network::bedrock_api::BedrockCommand::Chat {
                     text: text.to_string(),
                 });
         }
@@ -205,7 +205,7 @@ impl PlayerBackend {
     /// 全量列表，会话线程自己 diff（生成/移动/销毁）。
     pub fn send_players(
         &self,
-        players: Vec<mchprs_network::bedrock::bridge::BedrockPlayerInfo>,
+        players: Vec<mchprs_network::bedrock_api::BedrockPlayerInfo>,
     ) {
         if let Self::Bedrock(link) = self {
             link.handle.send_players(players);
@@ -216,7 +216,7 @@ impl PlayerBackend {
     ///
     /// Java 后端不用：区块由 `CChunkData` 那套自己发。Bedrock 侧由 `plot` 按每 tick
     /// 的预算生成，这里只把"发什么"投给会话线程。
-    pub fn send_chunks(&self, batch: mchprs_network::bedrock::bridge::BedrockChunkBatch) {
+    pub fn send_chunks(&self, batch: mchprs_network::bedrock_api::BedrockChunkBatch) {
         if let Self::Bedrock(link) = self {
             link.handle.send_chunks(batch);
         }
@@ -302,17 +302,17 @@ impl PlayerBackend {
         if let Self::Bedrock(link) = self {
             link.handle.send_game_mode(match mode {
                 Gamemode::Creative => {
-                    mchprs_network::bedrock::bridge::BedrockGameMode::Creative
+                    mchprs_network::bedrock_api::BedrockGameMode::Creative
                 }
                 Gamemode::Spectator => {
-                    mchprs_network::bedrock::bridge::BedrockGameMode::Spectator
+                    mchprs_network::bedrock_api::BedrockGameMode::Spectator
                 }
             });
         }
     }
 
     /// 推一块告示牌的文字（BUG-032 A2）。`sign` 用 MCHPRS 坐标。
-    pub fn send_sign(&self, sign: mchprs_network::bedrock::bridge::BedrockSign) {
+    pub fn send_sign(&self, sign: mchprs_network::bedrock_api::BedrockSign) {
         if let Self::Bedrock(link) = self {
             link.handle.send_sign(sign);
         }
@@ -345,7 +345,7 @@ impl PlayerBackend {
     /// Java 后端不用管：Java 客户端登录时自己收 `CSetContainerContent`。
     pub fn send_inventory(
         &self,
-        snapshot: mchprs_network::bedrock::bridge::BedrockInventorySnapshot,
+        snapshot: mchprs_network::bedrock_api::BedrockInventorySnapshot,
     ) {
         if let Self::Bedrock(link) = self {
             link.handle.send_inventory(snapshot);
@@ -375,11 +375,11 @@ impl PlayerBackend {
     ///
     /// Bedrock 的背包在创造模式下是客户端权威，服务端不维护完整背包；会话线程只在
     /// "要读手里物品"（放方块/交互）之前把那一格同步过来，见
-    /// `mchprs_network::bedrock::bridge::BedrockInventoryUpdate`。
+    /// `mchprs_network::bedrock_api::BedrockInventoryUpdate`。
     /// **顺序要求**：调用方必须先排空它、再处理 `receive_packets()` 的包。
     pub fn take_inventory_updates(
         &mut self,
-    ) -> Vec<mchprs_network::bedrock::bridge::BedrockInventoryUpdate> {
+    ) -> Vec<mchprs_network::bedrock_api::BedrockInventoryUpdate> {
         match self {
             Self::Java(_) => Vec::new(),
             Self::Bedrock(link) => {
@@ -926,7 +926,7 @@ pub trait PacketSender {
     fn send_packet(&self, data: &PacketEncoder);
 
     /// 推一份 Bedrock 侧边栏（R3）。默认空实现：Java 后端走自己的计分包。
-    fn send_bedrock_sidebar(&self, _sidebar: &mchprs_network::bedrock::bridge::BedrockSidebar) {}
+    fn send_bedrock_sidebar(&self, _sidebar: &mchprs_network::bedrock_api::BedrockSidebar) {}
 
     /// Sends the `ChatMessage` packet containing the raw json data.
     /// Position 1: system message (chat box)
@@ -985,7 +985,7 @@ impl PacketSender for Player {
     }
 
     /// Bedrock 玩家的右侧计分板走语义化推送；Java 玩家继续用 `CUpdateScore`。
-    fn send_bedrock_sidebar(&self, sidebar: &mchprs_network::bedrock::bridge::BedrockSidebar) {
+    fn send_bedrock_sidebar(&self, sidebar: &mchprs_network::bedrock_api::BedrockSidebar) {
         self.client.send_sidebar(sidebar);
     }
 }

@@ -2112,15 +2112,20 @@ impl Plot {
         &self,
         chunk_radius: i32,
         spawn: Option<(f64, f64, f64)>,
-    ) -> mchprs_network::bedrock::bridge::PlotSnapshot {
+    ) -> mchprs_network::bedrock_api::PlotSnapshot {
         /// Java `PlayerData::default()` 的位置。
         const SPAWN: (i32, i32, i32) = (128, 128, 128);
         // 登录时**只同步生成一小圈**（BUG-032 第 19 条：一次性 289 区块要卡 tick
         // 205~260ms）。其余由 `stream_bedrock_chunks()` 每 tick 按预算补。
-        let chunk_radius = chunk_radius.clamp(
-            1,
-            mchprs_network::bedrock::chunk::INITIAL_RADIUS_CHUNKS,
-        );
+        let Some(encoder) = mchprs_network::bedrock_api::chunk_encoder() else {
+            // 没插插头时不存在 Bedrock 玩家，这个函数不可达；返回空快照兜底。
+            return mchprs_network::bedrock_api::PlotSnapshot {
+                spawn: (0.0, 0.0, 0.0),
+                chunks: Vec::new(),
+                chunk_radius: 0,
+            };
+        };
+        let chunk_radius = chunk_radius.clamp(1, encoder.initial_radius_chunks());
 
         // 有存档就按存档位置出发生成区块；否则用默认出生点。
         // 关键：登录时的第一条 MovePlayer 必须直接落在**玩家真实位置**，
@@ -2144,7 +2149,7 @@ impl Plot {
                 let chunk_z = center_z + dz;
                 let signs = self.bedrock_signs_in_chunk((chunk_x, chunk_z));
                 sign_count += signs.len();
-                if !signs.is_empty() && mchprs_network::bedrock::debug::VERBOSE {
+                if !signs.is_empty() && mchprs_network::bedrock_api::VERBOSE {
                     println!(
                         "[R7] 快照区块 ({chunk_x}, {chunk_z}) 带 {} 块牌子：{:?}",
                         signs.len(),
@@ -2154,8 +2159,8 @@ impl Plot {
                             .collect::<Vec<_>>()
                     );
                 }
-                let payload = mchprs_network::bedrock::chunk::build_chunk_from_world_with_signs(
-                    |x, y, z| self.world.get_block_raw(BlockPos::new(x, y, z)),
+                let payload = encoder.encode(
+                    &mut |x, y, z| self.world.get_block_raw(BlockPos::new(x, y, z)),
                     chunk_x,
                     chunk_z,
                     1, // minecraft:plains
@@ -2165,7 +2170,7 @@ impl Plot {
                     // 只有后来流送到的远处区块才有字 —— 真机现象就是"重进后字没了"。
                     &signs,
                 );
-                if !signs.is_empty() && mchprs_network::bedrock::debug::VERBOSE {
+                if !signs.is_empty() && mchprs_network::bedrock_api::VERBOSE {
                     // 诊断：负载末尾 48 字节（方块实体 NBT 就在最后），能直接看出
                     // "牌子 NBT 到底有没有写进区块负载"。
                     let tail = &payload[payload.len().saturating_sub(48)..];
@@ -2188,17 +2193,17 @@ impl Plot {
             sign_count,
             started.elapsed()
         );
-        mchprs_network::bedrock::bridge::PlotSnapshot {
+        mchprs_network::bedrock_api::PlotSnapshot {
             spawn: match spawn {
                 // 存档位置是玩家的真实坐标，不要再 +0.5（那会让玩家出生时轻微偏移）。
                 Some((x, y, z)) => (
                     x as f32,
-                    (y - mchprs_network::bedrock::chunk::Y_OFFSET as f64) as f32,
+                    (y - mchprs_network::bedrock_api::y_offset() as f64) as f32,
                     z as f32,
                 ),
                 None => (
                     SPAWN.0 as f32 + 0.5,
-                    (SPAWN.1 - mchprs_network::bedrock::chunk::Y_OFFSET) as f32,
+                    (SPAWN.1 - mchprs_network::bedrock_api::y_offset()) as f32,
                     SPAWN.2 as f32 + 0.5,
                 ),
             },
@@ -2263,10 +2268,10 @@ impl Plot {
         if !self.players.iter().any(|p| p.client.is_bedrock()) {
             return;
         }
-        let snapshot: Vec<mchprs_network::bedrock::bridge::BedrockPlayerInfo> = self
+        let snapshot: Vec<mchprs_network::bedrock_api::BedrockPlayerInfo> = self
             .players
             .iter()
-            .map(|p| mchprs_network::bedrock::bridge::BedrockPlayerInfo {
+            .map(|p| mchprs_network::bedrock_api::BedrockPlayerInfo {
                 uuid: p.uuid,
                 username: p.username.clone(),
                 // MCHPRS（Java）坐标；`y - 64` 由网络层做。
@@ -2311,7 +2316,7 @@ impl Plot {
         }
         // A2：这一块区块里的告示牌，随负载一起发（否则进 plot 时全是空白牌子）。
         let signs = self.bedrock_signs_in_chunk(chunk);
-        if !signs.is_empty() && mchprs_network::bedrock::debug::VERBOSE {
+        if !signs.is_empty() && mchprs_network::bedrock_api::VERBOSE {
             println!(
                 "[R7] 区块 ({}, {}) 负载带 {} 块牌子：{:?}",
                 chunk.0,
@@ -2323,8 +2328,12 @@ impl Plot {
                     .collect::<Vec<_>>()
             );
         }
-        let payload = mchprs_network::bedrock::chunk::build_chunk_from_world_with_signs(
-            |x, y, z| self.world.get_block_raw(BlockPos::new(x, y, z)),
+        let Some(encoder) = mchprs_network::bedrock_api::chunk_encoder() else {
+            // 没插插头时不存在 Bedrock 玩家，这里不可达。
+            return Vec::new();
+        };
+        let payload = encoder.encode(
+            &mut |x, y, z| self.world.get_block_raw(BlockPos::new(x, y, z)),
             chunk.0,
             chunk.1,
             1, // minecraft:plains
@@ -2341,7 +2350,7 @@ impl Plot {
     fn bedrock_signs_in_chunk(
         &self,
         chunk: (i32, i32),
-    ) -> Vec<mchprs_network::bedrock::bridge::BedrockSign> {
+    ) -> Vec<mchprs_network::bedrock_api::BedrockSign> {
         let mut out = Vec::new();
         let chunk_index = self.world.get_chunk_index_for_chunk(chunk.0, chunk.1);
         let Some(chunk_ref) = self.world.chunks.get(chunk_index) else {
@@ -2354,7 +2363,7 @@ impl Plot {
             // 局部坐标 → 世界坐标（局部是 `x & 0xF` / `z & 0xF`）。
             let x = chunk.0 * 16 + pos.x;
             let z = chunk.1 * 16 + pos.z;
-            out.push(mchprs_network::bedrock::bridge::BedrockSign {
+            out.push(mchprs_network::bedrock_api::BedrockSign {
                 x,
                 y: pos.y,
                 z,
@@ -2376,7 +2385,7 @@ impl Plot {
         };
         self.bedrock_chunk_dirty
             .insert((pos.x.div_euclid(16), pos.z.div_euclid(16)));
-        let update = mchprs_network::bedrock::bridge::BedrockSign {
+        let update = mchprs_network::bedrock_api::BedrockSign {
             x: pos.x,
             y: pos.y,
             z: pos.z,
@@ -2386,8 +2395,8 @@ impl Plot {
         // 诊断（BUG-032 第 43 条真机第二轮）：真机上"字不显示"，必须看清
         // ①方块映射到哪个 Bedrock 运行时 id（是不是牌子）②发下去的文字到底是什么。
         let java_state = self.world.get_block_raw(pos);
-        let bedrock_runtime = mchprs_network::bedrock::bedrock_block_state(java_state);
-        if mchprs_network::bedrock::debug::VERBOSE {
+        let bedrock_runtime = mchprs_network::bedrock_api::block_state(java_state);
+        if mchprs_network::bedrock_api::VERBOSE {
             println!(
                 "[R7] 告示牌 ({}, {}, {}) java_state={java_state} bedrock_runtime={bedrock_runtime} 正面={:?} 反面={:?}",
                 pos.x, pos.y, pos.z, update.front, update.back
@@ -2418,7 +2427,10 @@ impl Plot {
     ///   （重发会让客户端重建区块，表现为"放一个方块整片区块闪一下"）；
     /// - publisher 半径只在"真的发满了更大一圈"时增长（第 27 条的教训）。
     fn stream_bedrock_chunks(&mut self) {
-        use mchprs_network::bedrock::chunk as netchunk;
+        let Some(encoder) = mchprs_network::bedrock_api::chunk_encoder() else {
+            // 没插插头：不存在 Bedrock 玩家，整轮流送都不用跑。
+            return;
+        };
         // 整轮流送的耗时（第 19 条的验收指标：单 tick 不应超过 20ms）。
         let timeline = Instant::now();
 
@@ -2442,7 +2454,7 @@ impl Plot {
         }
 
         let radius = self.bedrock_view_radius();
-        let initial = netchunk::INITIAL_RADIUS_CHUNKS;
+        let initial = encoder.initial_radius_chunks();
         let window = ((radius * 2 + 1) * (radius * 2 + 1)) as usize;
 
         for (idx, uuid, pos) in players {
@@ -2483,10 +2495,10 @@ impl Plot {
                 stream.sent.retain(|(cx, cz)| {
                     (cx - center.0).abs() <= radius && (cz - center.1).abs() <= radius
                 });
-                stream.pending = netchunk::pending_chunks(center, radius, &stream.sent).into();
+                stream.pending = encoder.pending_chunks(center, radius, &stream.sent).into();
                 publisher = Some((
                     pos.0.floor() as i32,
-                    (pos.1 - mchprs_network::bedrock::chunk::Y_OFFSET as f64) as i32,
+                    (pos.1 - mchprs_network::bedrock_api::y_offset() as f64) as i32,
                     pos.2.floor() as i32,
                     radius_blocks(stream.published_radius),
                 ));
@@ -2501,13 +2513,13 @@ impl Plot {
 
             // 4) 队列空了但窗口还没铺满 → 重新排一份（由近到远）。
             if stream.pending.is_empty() && stream.sent.len() < window {
-                stream.pending = netchunk::pending_chunks(center, radius, &stream.sent).into();
+                stream.pending = encoder.pending_chunks(center, radius, &stream.sent).into();
             }
 
             // 5) 按预算生成并装批。
             let started = Instant::now();
-            let budget = Duration::from_millis(netchunk::STREAM_BUDGET_MS);
-            while batch.len() < netchunk::STREAM_BUDGET_CHUNKS && started.elapsed() < budget {
+            let budget = Duration::from_millis(encoder.stream_budget_ms());
+            while batch.len() < encoder.stream_budget_chunks() && started.elapsed() < budget {
                 let Some(chunk) = stream.pending.pop_front() else {
                     break;
                 };
@@ -2515,13 +2527,13 @@ impl Plot {
                     continue;
                 }
                 let payload = self.bedrock_chunk_payload(chunk);
-                batch.push((chunk.0, chunk.1, payload, netchunk::BEDROCK_SECTION_COUNT as u32));
+                batch.push((chunk.0, chunk.1, payload, encoder.section_count() as u32));
                 stream.sent.insert(chunk);
             }
 
             // 6) 覆盖情况**只用于日志**：publisher 半径恒为视距（见字段注释），
             //    不能再"随发随长" —— 那样先发的区块会被客户端丢掉且不会补发。
-            let covered = netchunk::covered_radius(center, radius, &stream.sent);
+            let covered = encoder.covered_radius(center, radius, &stream.sent);
 
             let sending = !batch.is_empty();
             if sending || publisher.is_some() {
@@ -2534,8 +2546,8 @@ impl Plot {
                             stream.sent.len(),
                             covered,
                             stream.started.elapsed(),
-                            netchunk::STREAM_BUDGET_CHUNKS,
-                            netchunk::STREAM_BUDGET_MS
+                            encoder.stream_budget_chunks(),
+                            encoder.stream_budget_ms()
                         );
                     }
                     debug!(
@@ -2549,7 +2561,7 @@ impl Plot {
                 self.bedrock_streams.insert(uuid, stream);
                 self.players[idx]
                     .client
-                    .send_chunks(mchprs_network::bedrock::bridge::BedrockChunkBatch {
+                    .send_chunks(mchprs_network::bedrock_api::BedrockChunkBatch {
                         chunks: batch,
                         publisher,
                     });
@@ -2936,7 +2948,7 @@ impl Plot {
 /// Bedrock 的 `INVENTORY` 容器是 `0..=8` 快捷栏 + `9..=35` 主背包，顺序与 Java 相同。
 fn bedrock_inventory_snapshot(
     player: &Player,
-) -> mchprs_network::bedrock::bridge::BedrockInventorySnapshot {
+) -> mchprs_network::bedrock_api::BedrockInventorySnapshot {
     let item = |slot: usize| {
         player
             .inventory
@@ -2952,7 +2964,7 @@ fn bedrock_inventory_snapshot(
         main.push(item(slot)); // 主背包
     }
     let armor: Vec<Option<(u32, u8)>> = (5..9).map(item).collect();
-    mchprs_network::bedrock::bridge::BedrockInventorySnapshot {
+    mchprs_network::bedrock_api::BedrockInventorySnapshot {
         main,
         armor,
         offhand: item(45),

@@ -1,19 +1,33 @@
-//! Bedrock 端点与 MCHPRS 服务端之间的**最小只读桥**。
+//! 基岩版（Bedrock）**插座**：接口与数据类型，不含任何协议编码。
 //!
-//! 线程拓扑（见 `BEDROCK.md` BUG-032「最小只读通路方案」）：
+//! 这个文件是"插座"——基岩版的整个协议栈（`crate::bedrock`，约 12,500 行）是"插头"：
 //!
 //! ```text
-//! Bedrock 监听线程  --BedrockEvent-->  服务端线程  --PrivMessage-->  plot 线程
-//! Bedrock 监听线程  <--PlotSnapshot--  服务端线程  <--回传通道------  plot 线程
+//! crates/network/src/bedrock_api.rs   <- 插座（本文件，常驻，只在 std 上）
+//! crates/network/src/bedrock/         <- 插头（`#[cfg(feature = "bedrock")]`，整个文件夹可删）
 //! ```
 //!
-//! 这一版**只传世界快照**：不下发方块更新、不接收方块修改、不执行命令。
-//! 后续的方块更新广播 / 交互回灌会在这条桥上加消息，但不会改它的方向语义。
+//! 规则：
+//! - 插座**不引用** `crate::bedrock::*` 的任何东西；删掉插头文件夹，本文件照样编译。
+//! - core 只依赖插座：`mchprs_network::bedrock_api::*`。
+//! - 没有插头时 `stack()` 返回 `None`，服务端就是一台纯 Java 服务器（UDP 19132 不监听）。
+//!
+//! 为什么句柄里是闭包而不是 tokio 的 channel：会话线程用 tokio 的 unbounded channel
+//! 收指令（要和 `conn.recv()` 一起 `select!`），但插座不能依赖 tokio，否则
+//! `--no-default-features` 时还是得把 tokio 编进来。所以插头把 sender 包成三个闭包塞进来。
+//!
+//! 背景与验收记录见仓库根目录 `BEDROCK.md` 的 `BUG-032`（第 55 条：插座 / 插头）。
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::Arc;
-use tokio::sync::mpsc as tokio_mpsc;
+use std::collections::HashSet;
+use std::sync::{mpsc, Arc, OnceLock};
+
+/// Bedrock 的"空气"运行时方块状态 id。
+pub const AIR_STATE: i32 = 11996;
+
+/// 明细日志总开关（原 `crate::bedrock::debug::VERBOSE`，现在插座里也要能读）。
+///
+/// **平时 `false`；排查时改 `true` 再重新编译。**
+pub const VERBOSE: bool = false;
 
 /// 服务端线程 / plot 线程发给某个 Bedrock 会话的指令。
 ///
@@ -199,34 +213,41 @@ pub struct BedrockSidebar {
 /// 有了它，Bedrock 客户端就能作为 `PlayerBackend::Bedrock` 进入 MCHPRS 的玩家体系，
 /// 复用位置、权限、命令、计分板等已有逻辑（见 BEDROCK.md「玩家化」）。
 ///
-/// 指令通道用 **tokio 的 unbounded** 而不是 `std::sync::mpsc`：会话线程要把它和
-/// `conn.recv()` 一起 `tokio::select!`，而 `std::sync::mpsc::Receiver::recv()` 是阻塞调用、
-/// 不是 future。`UnboundedSender::send` 仍然是同步的，所以 core（同步 tick 循环）这边不受影响。
+/// 三个闭包由插头提供（见文件头的说明）：`send_fn` 投递指令、`alive_fn` 查存活、
+/// `close_fn` 断开。插座自己不关心指令怎么送到会话线程。
 #[derive(Clone)]
 pub struct BedrockHandle {
-    commands: tokio_mpsc::UnboundedSender<BedrockCommand>,
-    alive: Arc<AtomicBool>,
+    send_fn: Arc<dyn Fn(BedrockCommand) + Send + Sync>,
+    alive_fn: Arc<dyn Fn() -> bool + Send + Sync>,
+    close_fn: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl BedrockHandle {
-    pub fn new(commands: tokio_mpsc::UnboundedSender<BedrockCommand>, alive: Arc<AtomicBool>) -> Self {
-        Self { commands, alive }
+    pub fn new(
+        send_fn: Arc<dyn Fn(BedrockCommand) + Send + Sync>,
+        alive_fn: Arc<dyn Fn() -> bool + Send + Sync>,
+        close_fn: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Self {
+            send_fn,
+            alive_fn,
+            close_fn,
+        }
     }
 
     /// 会话是否还活着。会话线程断开时会把标记置为 `false`。
     pub fn alive(&self) -> bool {
-        self.alive.load(Ordering::Relaxed)
+        (self.alive_fn)()
     }
 
-    /// 给这个会话投递一条指令（目前只有断开）。
+    /// 给这个会话投递一条指令。
     pub fn send(&self, command: BedrockCommand) {
-        let _ = self.commands.send(command);
+        (self.send_fn)(command);
     }
 
     /// 与 Java 的 `PlayerConn::close_connection` 语义对齐。
     pub fn close_connection(&self) {
-        self.alive.store(false, Ordering::Relaxed);
-        let _ = self.commands.send(BedrockCommand::Disconnect);
+        (self.close_fn)();
     }
 
     /// 投递一批方块变化（BUG-032 第 3 条）。空批次直接丢掉，不发无意义的消息。
@@ -234,28 +255,24 @@ impl BedrockHandle {
         if changes.is_empty() {
             return;
         }
-        let _ = self
-            .commands
-            .send(BedrockCommand::BlockUpdates(changes.to_vec()));
+        self.send(BedrockCommand::BlockUpdates(changes.to_vec()));
     }
 
     /// 投递能力值（飞行状态 + 飞行速度）变化。
     pub fn send_abilities(&self, flying: bool, fly_speed: f32) {
-        let _ = self
-            .commands
-            .send(BedrockCommand::Abilities { flying, fly_speed });
+        self.send(BedrockCommand::Abilities { flying, fly_speed });
     }
 
     /// 投递服务端强制定位（MCHPRS 坐标）。
     pub fn send_teleport(&self, x: f64, y: f64, z: f64) {
-        let _ = self.commands.send(BedrockCommand::Teleport { x, y, z });
+        self.send(BedrockCommand::Teleport { x, y, z });
     }
 
     /// 投递"线上其它玩家"的最新快照（BUG-032 第 22 条完整版）。
     ///
     /// 空列表也要投递：它表达的是"现在别人都不在了"，会话线程据此销毁残留实体。
     pub fn send_players(&self, players: Vec<BedrockPlayerInfo>) {
-        let _ = self.commands.send(BedrockCommand::Players(players));
+        self.send(BedrockCommand::Players(players));
     }
 
     /// 投递一批区块（BUG-032 第 26 条增量区块 + 第 19 条）。
@@ -263,12 +280,12 @@ impl BedrockHandle {
         if batch.chunks.is_empty() && batch.publisher.is_none() {
             return;
         }
-        let _ = self.commands.send(BedrockCommand::Chunks(batch));
+        self.send(BedrockCommand::Chunks(batch));
     }
 
     /// 投递软枚举取值（BUG-032 B4 动态补全）。
     pub fn send_soft_enum(&self, name: &str, values: Vec<String>) {
-        let _ = self.commands.send(BedrockCommand::SoftEnum {
+        self.send(BedrockCommand::SoftEnum {
             name: name.to_string(),
             values,
         });
@@ -276,29 +293,27 @@ impl BedrockHandle {
 
     /// 通知"某个玩家挥了手"（BUG-032 A3）。
     pub fn send_swing(&self, uuid: u128) {
-        let _ = self.commands.send(BedrockCommand::Swing { uuid });
+        self.send(BedrockCommand::Swing { uuid });
     }
 
     /// 投递游戏模式变化（BUG-032 A5）。
     pub fn send_game_mode(&self, mode: BedrockGameMode) {
-        let _ = self.commands.send(BedrockCommand::GameMode(mode));
+        self.send(BedrockCommand::GameMode(mode));
     }
 
     /// 投递一块告示牌的文字（BUG-032 A2）。
     pub fn send_sign(&self, sign: BedrockSign) {
-        let _ = self.commands.send(BedrockCommand::Sign(sign));
+        self.send(BedrockCommand::Sign(sign));
     }
 
     /// 让客户端弹出告示牌编辑框（BUG-032 第 43 条）。`(x, y, z)` 是 MCHPRS 坐标。
     pub fn send_open_sign(&self, x: i32, y: i32, z: i32, front: bool) {
-        let _ = self
-            .commands
-            .send(BedrockCommand::OpenSign { x, y, z, front });
+        self.send(BedrockCommand::OpenSign { x, y, z, front });
     }
 
     /// 投递一份背包（BUG-036）。
     pub fn send_inventory(&self, snapshot: BedrockInventorySnapshot) {
-        let _ = self.commands.send(BedrockCommand::Inventory(snapshot));
+        self.send(BedrockCommand::Inventory(snapshot));
     }
 }
 
@@ -385,4 +400,110 @@ pub enum BedrockEvent {
         position: (f64, f64, f64),
         link: BedrockPlayerLink,
     },
+}
+
+/// 一份基岩版协议栈（插头）必须实现的全部能力。
+///
+/// core 只通过这个 trait 与基岩版打交道：不编基岩版时没人调用 [`install`]，
+/// [`stack`] 返回 `None`，服务端就是一台纯 Java 服务器。
+pub trait BedrockStack: Send + Sync {
+    /// 启动 UDP 监听线程。`events` 是入站通道（快照请求 / 玩家注册）。
+    ///
+    /// `view_radius` 是视距（区块），由 core 从 `CONFIG.view_distance` 取来 ——
+    /// 插座不读 core 的配置，所以只能从这里传进去（BUG-032 第 16 条）。
+    fn spawn(&self, addr: String, events: mpsc::Sender<BedrockEvent>, view_radius: i32);
+
+    /// 区块负载编码器。
+    ///
+    /// core 的 plot 是**主动生成**区块负载的（plot 线程单线程独占世界，
+    /// 不适合让协议线程跨线程来读方块），所以"谁编码"必须做成可替换的。
+    fn chunk_encoder(&self) -> Arc<dyn ChunkEncoder>;
+
+    /// MCHPRS(Java) 方块状态 id → Bedrock 运行时状态 id。
+    fn block_state(&self, java_state: u32) -> i32;
+
+    /// Bedrock 物品 id → MCHPRS 物品 id（不认识返回 `None`）。
+    fn java_item_id(&self, bedrock_item_id: i32) -> Option<u32>;
+
+    /// MCHPRS 物品 id → Bedrock 物品 id（没有对应物返回 `None`）。
+    fn bedrock_item_id(&self, java_item_id: u32) -> Option<i32>;
+}
+
+/// 区块负载编码器：插座只声明"要什么"，具体字节由插头写。
+pub trait ChunkEncoder: Send + Sync {
+    /// MCHPRS 的 y 从 0 开始，Bedrock 主世界从 -64 开始，两者相差 64。
+    fn y_offset(&self) -> i32;
+
+    /// 登录时**同步**生成的区块半径（区块数）。其余由流送每 tick 补。
+    fn initial_radius_chunks(&self) -> i32;
+
+    /// 生成一个区块的 Bedrock 负载。
+    ///
+    /// `get_block` 由 plot 提供（`FnMut(x, y, z) -> java_state`），
+    /// 坐标是 **MCHPRS 坐标**；`signs` 是该区块里要一起写进负载的告示牌（BUG-032 第 43 条）。
+    fn encode(
+        &self,
+        get_block: &mut dyn FnMut(i32, i32, i32) -> u32,
+        chunk_x: i32,
+        chunk_z: i32,
+        biome_id: i32,
+        signs: &[BedrockSign],
+    ) -> Vec<u8>;
+
+    /// 方形窗口里**还没发过**的区块，由近到远排序（`have` 是已发过的集合）。
+    ///
+    /// 放在插座里而不是 core：这是基岩版客户端的流送策略，换实现时可以整套换掉，
+    /// 但排队规则本身不涉及协议字节，所以不需要新开一个 trait。
+    fn pending_chunks(
+        &self,
+        center: (i32, i32),
+        radius: i32,
+        have: &HashSet<(i32, i32)>,
+    ) -> Vec<(i32, i32)>;
+
+    /// 已经**连续发满**的方形半径（用于决定 publisher 半径涨不涨，第 27 条）。
+    fn covered_radius(&self, center: (i32, i32), radius: i32, have: &HashSet<(i32, i32)>) -> i32;
+
+    /// 每 tick 最多流送几个区块。
+    fn stream_budget_chunks(&self) -> usize;
+
+    /// 每 tick 流送的时间上限（毫秒）。
+    fn stream_budget_ms(&self) -> u64;
+
+    /// 一个区块的纵深子区块数量（Bedrock 负载里的段数）。
+    fn section_count(&self) -> i32;
+}
+
+static STACK: OnceLock<Arc<dyn BedrockStack>> = OnceLock::new();
+
+/// 由根二进制在启动时调用一次（**只有启用 `bedrock` feature 时才会被调用**）。
+pub fn install(stack: Arc<dyn BedrockStack>) {
+    let _ = STACK.set(stack);
+}
+
+/// 当前安装的协议栈；没插插头时是 `None`。
+pub fn stack() -> Option<&'static Arc<dyn BedrockStack>> {
+    STACK.get()
+}
+
+/// 取区块编码器；没插插头时是 `None`。
+pub fn chunk_encoder() -> Option<Arc<dyn ChunkEncoder>> {
+    STACK.get().map(|stack| stack.chunk_encoder())
+}
+
+/// 方块状态换算。没插插头时返回空气 —— 那种情况下不存在 Bedrock 玩家，调用点都不可达。
+pub fn block_state(java_state: u32) -> i32 {
+    STACK
+        .get()
+        .map_or(AIR_STATE, |stack| stack.block_state(java_state))
+}
+
+/// y 偏移。没插插头时返回默认的 64（同上，调用点不可达）。
+pub fn y_offset() -> i32 {
+    chunk_encoder().map_or(64, |encoder| encoder.y_offset())
+}
+
+/// 登录时同步生成的区块半径。没插插头时返回默认的 2（同上，调用点不可达）。
+pub fn initial_radius_chunks() -> i32 {
+    chunk_encoder().map_or(2, |encoder| encoder.initial_radius_chunks())
 }

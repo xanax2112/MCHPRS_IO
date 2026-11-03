@@ -117,7 +117,7 @@ pub enum PrivMessage {
     /// `chunk_radius` 来自 `CONFIG.view_distance`：plot 按它决定快照覆盖多大，
     /// 必须和发给客户端的 `ChunkRadiusUpdated` 一致（BUG-032 第 16/26 条）。
     BedrockSnapshot {
-        reply: Sender<mchprs_network::bedrock::bridge::PlotSnapshot>,
+        reply: Sender<mchprs_network::bedrock_api::PlotSnapshot>,
         chunk_radius: i32,
         /// 出生点（**MCHPRS/Java 坐标**）：有存档就用存档位置，否则 None（用默认出生点）。
         /// 登录时直接出生在这里，避免"先出生再传送"（BUG-032 第 31 条）。
@@ -160,12 +160,12 @@ pub struct MinecraftServer {
     running_plots: Vec<PlotListEntry>,
     automation: Option<AutomationServer>,
     /// Events coming from the Bedrock listener thread (BEDROCK.md).
-    bedrock_events: Receiver<mchprs_network::bedrock::bridge::BedrockEvent>,
+    bedrock_events: Receiver<mchprs_network::bedrock_api::BedrockEvent>,
     /// Bedrock 玩家身份表：uuid → 会话句柄。
     ///
     /// 用途：拒绝"同名 Java + Bedrock 同时在线"（两者 UUID 相同，会互相打架），
     /// 以及在需要时（超时/重复登录）主动断开对应的 Bedrock 会话。
-    bedrock_players: FxHashMap<u128, mchprs_network::bedrock::bridge::BedrockHandle>,
+    bedrock_players: FxHashMap<u128, mchprs_network::bedrock_api::BedrockHandle>,
 }
 
 impl MinecraftServer {
@@ -242,18 +242,30 @@ impl MinecraftServer {
             bedrock_players: FxHashMap::default(),
         };
 
-        // 基岩版监听：`bedrock = 0` 表示关闭（BEDROCK.md）。
+        // 基岩版监听：`bedrock = 0` 表示关闭。没插插头（没带 `--features bedrock`，
+        // 整个 `crates/network/src/bedrock/` 都被跳过）时 `stack()` 是 `None`：
+        // 服务端照常运行（纯 Java），但只要用户配了端口就 `warn!` 提醒
+        //（BEDROCK.md 第 55 条）。
         // 视距用 `CONFIG.view_distance`，与 Java 侧 `CLogin` 同源：Bedrock 的世界大小
         // 不能和 Java 玩家看到的不一样（第 16/26 条）。
         if CONFIG.bedrock > 0 {
-            let chunk_radius = CONFIG.view_distance.clamp(1, 32) as i32;
-            let bedrock_addr = bedrock_bind_addr(&CONFIG.bind_address, CONFIG.bedrock);
-            mchprs_network::bedrock::session::spawn_mchprs_listener(
-                bedrock_addr.clone(),
-                bedrock_tx,
-                chunk_radius,
-            );
-            debug!("Bedrock listener on udp {bedrock_addr} (view distance {chunk_radius} chunks)");
+            match mchprs_network::bedrock_api::stack() {
+                Some(stack) => {
+                    let chunk_radius = CONFIG.view_distance.clamp(1, 32) as i32;
+                    let bedrock_addr = bedrock_bind_addr(&CONFIG.bind_address, CONFIG.bedrock);
+                    stack.spawn(bedrock_addr.clone(), bedrock_tx, chunk_radius);
+                    debug!(
+                        "Bedrock listener on udp {bedrock_addr} (view distance {chunk_radius} chunks)"
+                    );
+                }
+                // 用户配了端口、这个构建却没有基岩版：必须让他看见，不能静默
+                // （否则现象就是"我明明设了 19132，客户端连不上，日志什么都没有"）。
+                None => warn!(
+                    "bedrock = {} is set in Config.toml, but this build has no Bedrock stack; \
+                     rebuild with --features bedrock to enable it",
+                    CONFIG.bedrock
+                ),
+            }
         }
 
         // Load the spawn area plot on server start
@@ -401,7 +413,7 @@ impl MinecraftServer {
         &mut self,
         username: String,
         position: (f64, f64, f64),
-        link: mchprs_network::bedrock::bridge::BedrockPlayerLink,
+        link: mchprs_network::bedrock_api::BedrockPlayerLink,
     ) {
         // 与同名 Java 离线玩家共用身份：权限、存档都一致（符合"与 Java 版一致"）。
         let uuid = Player::generate_offline_uuid(&username);
@@ -810,7 +822,7 @@ impl MinecraftServer {
         // 见 BEDROCK.md「最小只读通路」。
         while let Ok(event) = self.bedrock_events.try_recv() {
             match event {
-                mchprs_network::bedrock::bridge::BedrockEvent::SnapshotRequest {
+                mchprs_network::bedrock_api::BedrockEvent::SnapshotRequest {
                     reply,
                     chunk_radius,
                     username,
@@ -838,7 +850,7 @@ impl MinecraftServer {
                         }
                     }
                 }
-                mchprs_network::bedrock::bridge::BedrockEvent::RegisterPlayer {
+                mchprs_network::bedrock_api::BedrockEvent::RegisterPlayer {
                     username,
                     position,
                     link,

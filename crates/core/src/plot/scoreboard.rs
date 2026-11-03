@@ -1,5 +1,5 @@
 use crate::player::{PacketSender, Player};
-use mchprs_network::bedrock::bridge::{BedrockSidebar, BedrockSidebarLine};
+use mchprs_network::bedrock_api::{BedrockSidebar, BedrockSidebarLine};
 use mchprs_network::packets::clientbound::{
     CDisplayObjective, CResetScore, CUpdateObjectives, CUpdateScore, ClientBoundPacket,
     ObjectiveNumberFormat,

@@ -29,7 +29,7 @@ use bedrock::protocol::v662::types::{
 use bedrock::protocol::v685::enums::ActorDataIDs;
 use uuid::Uuid;
 
-use super::bridge::BedrockPlayerInfo;
+use crate::bedrock_api::BedrockPlayerInfo;
 use super::chunk::Y_OFFSET;
 use super::protocol::{abilities_data, player_metadata_with_flags, Protocol};
 

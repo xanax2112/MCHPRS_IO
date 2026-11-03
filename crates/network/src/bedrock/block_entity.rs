@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use bedrock::protocol::v662::packets::BlockActorDataPacket;
 use bedrock::protocol::v662::types::NetworkBlockPosition;
 
-use super::bridge::BedrockSign;
+use crate::bedrock_api::BedrockSign;
 use super::chunk::Y_OFFSET;
 use super::protocol::Protocol;
 

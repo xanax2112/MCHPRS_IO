@@ -18,7 +18,7 @@ use bedrock::protocol::v662::packets::{
 };
 use bedrock::protocol::v662::types::ScoreboardId;
 
-use crate::bedrock::bridge::BedrockSidebar;
+use crate::bedrock_api::BedrockSidebar;
 use crate::bedrock::protocol::Protocol;
 
 /// Bedrock 侧 objective 的名字。
@@ -91,7 +91,7 @@ pub fn remove_scores_at(indices: &[usize]) -> SetScorePacket<Protocol> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bedrock::bridge::BedrockSidebarLine;
+    use crate::bedrock_api::BedrockSidebarLine;
     use bedrock::protocol::ProtoCodec;
 
     fn hex(pkt: &impl ProtoCodec) -> String {

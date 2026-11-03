@@ -13,7 +13,6 @@
 
 pub mod block_map;
 pub mod block_entity;
-pub mod bridge;
 pub mod chunk;
 pub mod commands;
 mod commands_gen;
@@ -28,6 +27,7 @@ mod nbt_net;
 pub mod protocol;
 pub mod scoreboard;
 pub mod session;
+pub mod stack;
 pub mod text;
 pub mod translate;
 

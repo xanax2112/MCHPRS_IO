@@ -9,7 +9,7 @@
 ## 1. 一句话现状
 
 Bedrock 1.21.51（协议 766）的**协议层 + 会话层**已并入本仓库：
-`cargo run -p mchprs_network --example bedrock_server` 可以起一个端点，
+`cargo run -p mchprs_network --example bedrock_server --features bedrock` 可以起一个端点，
 真机客户端能连上、看到方块、点方块有反应（2026-10-29 实机验证）。
 **尚未接入**：真实世界数据（现在下发的是最小测试世界）与红石事件回传。
 
@@ -66,7 +66,7 @@ Java 协议实现仍在 `crates/network/src/packets/`，Bedrock 与它**平级**
 ### 5.1 字节级（不需要客户端，CI 友好）
 
 ```sh
-cargo test -p mchprs_network bedrock
+cargo test -p mchprs_network bedrock --features bedrock
 ```
 
 两条测试把“最贵的知识”钉死成断言：
@@ -80,7 +80,7 @@ cargo test -p mchprs_network bedrock
 ### 5.2 真机（需要一个 Bedrock 1.21.51 客户端）
 
 ```sh
-cargo run -p mchprs_network --example bedrock_server
+cargo run -p mchprs_network --example bedrock_server --features bedrock
 ```
 
 然后在客户端里连 `<本机 IP>:19132`。预期：能进世界、能看到石头地面、点方块有反应；

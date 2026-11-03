@@ -140,8 +140,9 @@ PATCH-009 `available_commands.rs`（`EnumDataEntry` 字段改 pub）。
 
 ```powershell
 # 编译（先停服务端，否则 target\debug\mchprs.exe 被占用会失败）
-cargo build
-cargo test -p mchprs_network bedrock      # 基岩版单测，当前 69 条
+# 基岩版默认不编译（BEDROCK.md 第 55 条：插座 / 插头）
+cargo build --features bedrock
+cargo test -p mchprs_network bedrock --features bedrock   # 基岩版单测，当前 69 条
 cargo test --workspace
 
 # 运行（run/ 里有 Config.toml / io.txt / world / schems，被 .gitignore 忽略）

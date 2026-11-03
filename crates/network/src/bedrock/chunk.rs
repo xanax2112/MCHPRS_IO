@@ -307,7 +307,7 @@ pub fn build_chunk_from_world_with_signs<F>(
     chunk_x: i32,
     chunk_z: i32,
     biome_id: i32,
-    signs: &[crate::bedrock::bridge::BedrockSign],
+    signs: &[crate::bedrock_api::BedrockSign],
 ) -> Vec<u8>
 where
     F: FnMut(i32, i32, i32) -> u32,
@@ -520,7 +520,7 @@ mod tests {
     /// （不能因为加了牌子就挪动段/生物群系/边界字节的位置）。
     #[test]
     fn signs_are_appended_after_border_byte() {
-        use crate::bedrock::bridge::BedrockSign;
+        use crate::bedrock_api::BedrockSign;
         let plain = build_chunk_from_world(|_, _, _| 0, 0, 0, 1);
         let sign = BedrockSign {
             x: 5,

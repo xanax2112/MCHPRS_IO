@@ -29,14 +29,18 @@ MCHPRS_IO 是 [MCHPRS](https://github.com/MCHPR/MCHPRS) 的一个分支，用来
 
 | | |
 | --- | --- |
-| 构建 | Rust 工具链（`rustup` stable）。`cargo build --release` 是唯一的构建步骤 |
+| 构建 | Rust 工具链（`rustup` stable）。基岩版**默认不编译**：`cargo build --release --features bedrock`；只要纯 Java 服务器就去掉这个 feature |
 | 游玩 | Minecraft **Java 版 1.20.4**（协议 765） |
 | 自动化（可选） | Python 3.8+，跑 [`python/`](python/README.md) 里的测试脚本 |
 
 ### 2. 构建与启动
 
 ```bash
-cargo build --release
+# Java + 基岩版（正式构建用这个）
+cargo build --release --features bedrock
+
+# 只要 Java 版 —— 整个 `crates/network/src/bedrock/` 都不参与编译
+# cargo build --release
 
 # 在独立目录里跑：服务端读写的一切都相对工作目录，
 # 放在源码目录里会把 git 工作区弄脏
@@ -124,7 +128,7 @@ python3 correctness.py      # 先改文件顶部的配置区
 | `HELLO` 里没有 `<tick>` | 电路没编译 —— 执行 `/redpiler compile` |
 | 电路看着没错，结果却全错 | plot 被冻结了（`/tick seq`、`rtps 0`）；解除冻结或回普通模式 |
 | 自动化客户端被断开 | 未读输出积压超过 1 MiB，或单行超过 64 KiB |
-| 首次 `cargo build --release` 要 10 分钟以上 | 开了 `lto = "fat"`；之后只重编改动过的 crate |
+| 首次 `cargo build --release --features bedrock` 要 10 分钟以上 | 开了 `lto = "fat"`；之后只重编改动过的 crate。去掉 feature 会快很多 |
 
 ## 配置
 

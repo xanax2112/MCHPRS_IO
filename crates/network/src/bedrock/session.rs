@@ -48,7 +48,7 @@ use bedrock::protocol::v685::types::LevelSettings;
 use bedrock::protocol::{ProtoVersion, Unknown, V766};
 use std::time::Instant;
 
-use crate::bedrock::bridge::{BedrockCommand, BedrockEvent, BedrockHandle, PlotSnapshot};
+use crate::bedrock_api::{BedrockCommand, BedrockEvent, BedrockHandle, PlotSnapshot};
 use crate::bedrock::chunk as world;
 use crate::bedrock::items_gen;
 use std::sync::mpsc;
@@ -88,11 +88,7 @@ pub struct BedrockSessionInfo {
     pub position: (f64, f64, f64),
 }
 
-fn parse_nbt_compound(bytes: &[u8]) -> std::collections::HashMap<String, nbtx::Value> {
-    parse_nbt_compound_named(bytes, "NBT")
-}
-
-/// 与 [`parse_nbt_compound`] 相同，但失败日志里带上资源名。
+/// 与 [`parse_nbt_compound_named`] 相同，但失败日志里带上资源名。
 ///
 /// 解析函数本身不知道解的是哪张表，线上只看到"失败了"没法定位，
 /// 所以两个调用点各报一次名字（BUG-032 第 46 条质量门 §5.6）。
@@ -112,7 +108,6 @@ fn parse_nbt_compound_named(
 
 type Protocol = V766;
 const PROTOCOL: i32 = Protocol::PROTOCOL_VERSION as i32;
-const ADDR: &str = "0.0.0.0:19132";
 
 fn camera_preset(
     name: &str,
@@ -225,66 +220,6 @@ fn log(step: &str, start: Instant, dir: &str, msg: &str) {
 
 fn play_status(status: PlayStatus) -> Protocol {
     Protocol::PlayStatusPacket(Box::new(PlayStatusPacket { status }))
-}
-
-// ---- 实体标志位 ----
-// 位号不是从枚举序号数出来的，而是让 Geyser 自带的 v766 codec（Cloudburst）把它自己的
-// EntityFlag 逐个序列化，再解出置位位置得到的，见 tools/ProbeFlagBits.java?
-// FLAGS 用元数据 id 0，FLAGS_2 用 id 92，两者都是 Int64（var 编码）
-const FLAG_CAN_SHOW_NAME: u64 = 1 << 15;
-const FLAG_SILENT: u64 = 1 << 18;
-const FLAG_CAN_CLIMB: u64 = 1 << 20;
-const FLAG_BREATHING: u64 = 1 << 36;
-const FLAG_HAS_COLLISION: u64 = 1 << 49;
-const FLAG_HAS_GRAVITY: u64 = 1 << 50;
-const FLAG2_HIDDEN_WHEN_INVISIBLE: u64 = 1 << 26;
-
-/// Geyser `Entity.initializeMetadata()` + `SessionPlayerEntity.setAirSupply(getMaxAir())`
-/// 落到的元数据集合。其中 BREATHING 是 1.21 起的硬性要求：
-/// Geyser 源码注释原文——“Seemingly required to be sent as of Bedrock 1.21.
-/// Otherwise, bubbles will appear as empty"。不发就是空氧气条。
-fn player_metadata() -> Vec<DataItem<Protocol>> {
-    let flags = FLAG_CAN_SHOW_NAME
-        | FLAG_SILENT
-        | FLAG_CAN_CLIMB
-        | FLAG_BREATHING
-        | FLAG_HAS_COLLISION
-        | FLAG_HAS_GRAVITY;
-    let flags2 = FLAG2_HIDDEN_WHEN_INVISIBLE;
-    vec![
-        DataItem {
-            data_item_id: ActorDataIDs::Reserved038, // SCALE
-            data_item_type: DataItemType::Float(1.0),
-        },
-        DataItem {
-            data_item_id: ActorDataIDs::ColorIndex, // COLOR
-            data_item_type: DataItemType::Byte(0),
-        },
-        DataItem {
-            data_item_id: ActorDataIDs::AirSupplyMax,
-            data_item_type: DataItemType::Short(300),
-        },
-        DataItem {
-            data_item_id: ActorDataIDs::AirSupply,
-            data_item_type: DataItemType::Short(300),
-        },
-        DataItem {
-            data_item_id: ActorDataIDs::Reserved054, // HEIGHT
-            data_item_type: DataItemType::Float(1.8),
-        },
-        DataItem {
-            data_item_id: ActorDataIDs::Reserved053, // WIDTH
-            data_item_type: DataItemType::Float(0.6),
-        },
-        DataItem {
-            data_item_id: ActorDataIDs::Reserved0, // FLAGS
-            data_item_type: DataItemType::Int64(flags),
-        },
-        DataItem {
-            data_item_id: ActorDataIDs::Reserved092, // FLAGS_2
-            data_item_type: DataItemType::Int64(flags2),
-        },
-    ]
 }
 
 async fn recv_logged(
@@ -1202,205 +1137,6 @@ fn build_update_abilities(runtime_id: u64) -> UpdateAbilitiesPacket<Protocol> {
     crate::bedrock::protocol::update_abilities_for(false, runtime_id, 0.05)
 }
 
-fn selftest(mode: &str) {
-    use bedrock::protocol::ProtoCodec;
-
-    if mode == "nbt" {
-        let b = parse_nbt_compound(BIOME_DEFINITIONS_NBT);
-        let e = parse_nbt_compound(ENTITY_IDENTIFIERS_NBT);
-        println!("[SELFTEST] biomes={} entities={}", b.len(), e.len());
-        for (k, _) in b.iter().take(3) {
-            println!("  biome: {k}");
-        }
-        return;
-    }
-
-    if mode == "abilities" {
-        let pkt = build_update_abilities(crate::bedrock::protocol::PLAYER_RUNTIME_ID);
-        let mut buf = Vec::new();
-        match pkt.serialize(&mut buf) {
-            Ok(()) => {
-                std::fs::create_dir_all("logs").ok();
-                std::fs::write("logs/update_abilities.bin", &buf).ok();
-                println!("[SELFTEST] abilities {} bytes", buf.len());
-            }
-            Err(e) => println!("[SELFTEST] ERR abilities: {e}"),
-        }
-        return;
-    }
-
-    if mode == "7" {
-        println!("[SELFTEST] StartGame round trip");
-        let pkt = build_start_game(crate::bedrock::protocol::PLAYER_RUNTIME_ID);
-        let mut buf: Vec<u8> = Vec::new();
-        pkt.serialize(&mut buf).expect("serialize");
-        println!("[SELFTEST] serialized len={}", buf.len());
-        let mut cur = std::io::Cursor::new(&buf[..]);
-        match StartGamePacket::<Protocol>::deserialize(&mut cur) {
-            Ok(back) => {
-                let pos = cur.position() as usize;
-                println!(
-                    "[SELFTEST] deserialized OK, consumed {}/{} bytes, {} remaining",
-                    pos,
-                    buf.len(),
-                    buf.len() - pos
-                );
-                let mut buf2: Vec<u8> = Vec::new();
-                back.serialize(&mut buf2).expect("re-serialize");
-                println!("[SELFTEST] re-serialized len={} identical={}", buf2.len(), buf2 == buf);
-            }
-            Err(e) => println!("[SELFTEST] deserialize failed: {e}"),
-        }
-        return;
-    }
-    if mode == "9" {
-        let pkt = build_start_game(crate::bedrock::protocol::PLAYER_RUNTIME_ID);
-        let mut buf: Vec<u8> = Vec::new();
-        pkt.serialize(&mut buf).expect("serialize");
-        let path = std::env::args().nth(2).unwrap_or_else(|| String::from("/tmp/startgame.bin"));
-        std::fs::write(&path, &buf).expect("write");
-        println!("[SELFTEST] wrote {} bytes to {}", buf.len(), path);
-        return;
-    }
-    if mode == "meta" {
-        let pkt = SetActorDataPacket::<Protocol> {
-            target_runtime_id: ActorRuntimeID(1),
-            actor_data: player_metadata(),
-            synced_properties: PropertySyncData {
-                int_entries_list: vec![],
-                float_entries_list: vec![],
-            },
-            tick: 0,
-        };
-        let mut buf: Vec<u8> = Vec::new();
-        pkt.serialize(&mut buf).expect("serialize");
-        let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
-        println!("[SELFTEST] SetActorData len={}", buf.len());
-        println!("[HEX] {hex}");
-        return;
-    }
-    if mode == "spawn" {
-        // 与 refs/ProbeSpawnPackets.java 的输出逐条对拍（只比负载，不带包 id）
-        macro_rules! dump {
-            ($n:expr, $p:expr $(,)?) => {{
-                let mut b: Vec<u8> = Vec::new();
-                let _ = &$p;
-                $p.serialize(&mut b).expect("serialize");
-                let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
-                println!("[SELFTEST] {} ({}B): {hex}", $n, b.len());
-            }};
-        }
-
-        dump!(
-            "SetDifficulty(1)",
-            &SetDifficultyPacket { difficulty: 1 },
-        );
-        dump!(
-            "PlayerHotbar(0,0,true)",
-            &PlayerHotbarPacket::<Protocol> {
-                selected_slot: 0,
-                container_id: ContainerID::INVENTORY,
-                should_select_slot: true,
-            },
-        );
-        dump!(
-            "TrimData(empty)",
-            &TrimDataPacket {
-                trim_pattern_list: vec![],
-                trim_material_list: vec![],
-            },
-        );
-        dump!(
-            "UnlockedRecipes(INITIALLY_UNLOCKED, empty)",
-            &UnlockedRecipesPacket {
-                packet_type: 1,
-                unlocked_recipes_list: vec![],
-            },
-        );
-        dump!(
-            "CraftingData(empty, clean=true)",
-            &CraftingDataPacket::<Protocol> {
-                crafting_entries: vec![],
-                potion_mixes: vec![],
-                container_mixes: vec![],
-                material_reducers: vec![],
-                clear_recipes: true,
-            },
-        );
-        dump!(
-            "ItemComponent(empty)",
-            &ItemComponentPacket { items: vec![] },
-        );
-        dump!(
-            "CreativeContent(empty)",
-            &CreativeContentPacket::<Protocol> {
-                write_entries: vec![],
-            },
-        );
-        dump!(
-            "AvailableCommands(empty)",
-            &AvailableCommandsPacket::<Protocol> {
-                enum_values: vec![],
-                sub_command_values: vec![],
-                post_fixes: vec![],
-                enum_data: vec![],
-                chained_sub_command_data: vec![],
-                commands: vec![],
-                soft_enums: vec![],
-                constraints: vec![],
-            },
-        );
-        return;
-    }
-    if mode == "1" {
-        println!("[SELFTEST] serializing LevelSettings");
-        let s = build_level_settings();
-        let mut buf: Vec<u8> = Vec::new();
-        match s.serialize(&mut buf) {
-            Ok(()) => {
-                println!("[SELFTEST] OK LevelSettings len={}", buf.len());
-                let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
-                println!("[HEX] {hex}");
-            }
-            Err(e) => println!("[SELFTEST] ERR LevelSettings: {e}"),
-        }
-        return;
-    }
-    println!("[SELFTEST] 1/3 build StartGame");
-    let pkt = build_start_game(crate::bedrock::protocol::PLAYER_RUNTIME_ID);
-    println!("[SELFTEST] 2/3 serialize StartGame");
-    let mut buf: Vec<u8> = Vec::new();
-    match pkt.serialize(&mut buf) {
-        Ok(()) => println!("[SELFTEST] OK StartGame len={}", buf.len()),
-        Err(e) => println!("[SELFTEST] ERR StartGame: {e}"),
-    }
-
-    println!("[SELFTEST] 3/3 chunk data");
-    let d = world::build_payload(&world::ChunkSpec {
-        min_section: -4,
-        max_section: 19,
-        highest_non_empty: 4,
-        floor_section: 4,
-        stone_state: 2403,
-        air_state: 11996,
-        biome_id: 1,
-        block_version: 18163713,
-        mode: world::Mode::Runtime,
-    });
-    let sub_len = d.len();
-    // 平台无关：写到当前工作目录下的 logs/，不再写死 Android 路径
-    std::fs::create_dir_all("logs").ok();
-    std::fs::write("logs/chunk_payload.bin", &d).ok();
-    println!("[SELFTEST] wrote chunk payload of {} bytes", d.len());
-    println!(
-        "[SELFTEST] OK chunk sub={} total={} head={:02x?}",
-        sub_len,
-        d.len(),
-        &d[..16.min(d.len())]
-    );
-    println!("[SELFTEST] done, no crash");
-}
-
 /// 入站日志的汇总窗口：`PlayerAuthInput`/`MovePlayer` 每到此长度才打一条汇总。
 ///
 /// 逐包打日志会把一次 1 分钟的会话刷成几 MB（实测），排查时反而找不到关键行。
@@ -1490,7 +1226,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
             // 背包同步方向（BUG-032 R5）：Bedrock 客户端"手里拿的是什么"必须先于
             // "我要放这个方块"到达 plot，所以单独开一条通道（plot 每 tick 先排空它）。
             let (inventory_tx, inventory_rx) = mpsc::channel::<
-                crate::bedrock::bridge::BedrockInventoryUpdate,
+                crate::bedrock_api::BedrockInventoryUpdate,
             >();
             // 客户端自报的最新位置（Bedrock 坐标）。打开背包时要用它当容器坐标。
             // 初值取登录阶段定下的出生点；`do_login` 给的是 MCHPRS 坐标，这里换回 Bedrock。
@@ -1505,8 +1241,26 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                 })
                 .unwrap_or((0.0, 0.0, 0.0));
             if let (Some(info), WorldSource::Mchprs { events, .. }) = (session_info, &source) {
-                let handle = BedrockHandle::new(command_tx, alive.clone());
-                let link = crate::bedrock::bridge::BedrockPlayerLink {
+                // 插座里的句柄只收闭包（插座不依赖 tokio），这里把 tokio sender 包进去。
+                let handle = {
+                    let send_tx = command_tx.clone();
+                    let alive_send = alive.clone();
+                    let close_tx = command_tx.clone();
+                    let alive_close = alive.clone();
+                    BedrockHandle::new(
+                        std::sync::Arc::new(move |cmd: BedrockCommand| {
+                            let _ = send_tx.send(cmd);
+                        }),
+                        std::sync::Arc::new(move || {
+                            alive_send.load(std::sync::atomic::Ordering::Relaxed)
+                        }),
+                        std::sync::Arc::new(move || {
+                            alive_close.store(false, std::sync::atomic::Ordering::Relaxed);
+                            let _ = close_tx.send(BedrockCommand::Disconnect);
+                        }),
+                    )
+                };
+                let link = crate::bedrock_api::BedrockPlayerLink {
                     handle,
                     packets: inbound_rx,
                     inventory: inventory_rx,
@@ -1554,29 +1308,29 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                 //
                 // 指令分支**不能**在这里直接 `conn.send()`：`conn.recv()` 的 future 还活着，
                 // `conn` 被它借着。所以指令只搬进局部变量，等 select 结束后统一处理。
-                let mut sidebar_update: Option<crate::bedrock::bridge::BedrockSidebar> = None;
+                let mut sidebar_update: Option<crate::bedrock_api::BedrockSidebar> = None;
                 let mut chat_lines: Vec<String> = Vec::new();
                 // 方块更新/能力值：本轮 select 里攒起来，统一在 select 之后发（同一个借用原因）。
                 let mut block_updates: Vec<(i32, i32, i32, u32)> = Vec::new();
                 let mut abilities: Option<(bool, f32)> = None;
                 let mut teleport_to: Option<(f64, f64, f64)> = None;
-                let mut player_snapshot: Option<Vec<crate::bedrock::bridge::BedrockPlayerInfo>> =
+                let mut player_snapshot: Option<Vec<crate::bedrock_api::BedrockPlayerInfo>> =
                     None;
                 // 增量区块（BUG-032 第 26 条）：本轮 select 里收到的一批，select 之后统一发。
-                let mut chunk_batch: Option<crate::bedrock::bridge::BedrockChunkBatch> = None;
+                let mut chunk_batch: Option<crate::bedrock_api::BedrockChunkBatch> = None;
                 // 软枚举（B4 动态补全）：值变了就整份替换。
                 let mut soft_enum: Option<(String, Vec<String>)> = None;
                 // 挥手事件（A3）：一次可能收到多条（多人同时挥）。
                 let mut swings: Vec<u128> = Vec::new();
                 // 游戏模式变化（A5）。
-                let mut game_mode: Option<crate::bedrock::bridge::BedrockGameMode> = None;
+                let mut game_mode: Option<crate::bedrock_api::BedrockGameMode> = None;
                 // 告示牌文字（A2）。
-                let mut sign_updates: Vec<crate::bedrock::bridge::BedrockSign> = Vec::new();
+                let mut sign_updates: Vec<crate::bedrock_api::BedrockSign> = Vec::new();
                 // 让客户端弹告示牌编辑框（BUG-032 第 43 条）：`(x, y, z, front)`，MCHPRS 坐标。
                 let mut open_signs: Vec<(i32, i32, i32, bool)> = Vec::new();
                 // 背包回传（BUG-032 第 39 条）：进 plot 时发一次。
                 let mut inventory_snapshot: Option<
-                    crate::bedrock::bridge::BedrockInventorySnapshot,
+                    crate::bedrock_api::BedrockInventorySnapshot,
                 > = None;
                 let mut should_close = false;
                 let received = tokio::select! {
@@ -2040,7 +1794,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                 if let Some(snapshot) = inventory_snapshot {
                     use bedrock::protocol::v662::enums::ContainerID;
                     let selected_slot = snapshot.selected_slot.min(8);
-                    let mut packets: Vec<Protocol> = vec![
+                    let packets: Vec<Protocol> = vec![
                         Protocol::InventoryContentPacket(Box::new(
                             crate::bedrock::inventory::content_with(
                                 ContainerID::INVENTORY,
@@ -2211,7 +1965,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     // 放方块时才知道手里拿的是第几格。
                                     crate::bedrock_verbose!("[R5] << PlayerHotbar slot={}", h.selected_slot);
                                     let _ = inventory_tx.send(
-                                        crate::bedrock::bridge::BedrockInventoryUpdate::SelectedSlot(
+                                        crate::bedrock_api::BedrockInventoryUpdate::SelectedSlot(
                                             h.selected_slot,
                                         ),
                                     );
@@ -2240,12 +1994,12 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     crate::bedrock_verbose!("[R5] << MobEquipment slot={hotbar} bedrock_item={bedrock_item} → java={java_item:?}×{count}"
                                     );
                                     let _ = inventory_tx.send(
-                                        crate::bedrock::bridge::BedrockInventoryUpdate::SelectedSlot(
+                                        crate::bedrock_api::BedrockInventoryUpdate::SelectedSlot(
                                             hotbar,
                                         ),
                                     );
                                     let _ = inventory_tx.send(
-                                        crate::bedrock::bridge::BedrockInventoryUpdate::Slot {
+                                        crate::bedrock_api::BedrockInventoryUpdate::Slot {
                                             // Java 背包里快捷栏是 36..=44
                                             slot: 36 + hotbar,
                                             item: java_item.map(|id| (id, count)),
@@ -2270,7 +2024,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                                 crate::bedrock_verbose!("[R5] << drop item slot={slot} remaining={item:?}"
                                                 );
                                                 let _ = inventory_tx.send(
-                                                    crate::bedrock::bridge::BedrockInventoryUpdate::Slot {
+                                                    crate::bedrock_api::BedrockInventoryUpdate::Slot {
                                                         // Java 背包里快捷栏是 36..=44
                                                         slot: 36 + slot,
                                                         item,
@@ -2341,7 +2095,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     // 空手（id = 0）不算：那是右键交互（拉杆/按钮/开门），照旧走 SUseItemOn。
                                     if use_data.held_item.id != 0 && java_item_id.is_none() {
                                         let _ = inventory_tx.send(
-                                            crate::bedrock::bridge::BedrockInventoryUpdate::Correction {
+                                            crate::bedrock_api::BedrockInventoryUpdate::Correction {
                                                 x: use_data.block_position.x,
                                                 y: use_data.block_position.y as i32 + 64,
                                                 z: use_data.block_position.z,
@@ -2360,12 +2114,12 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                         .unwrap_or(1)
                                         .min(255) as u8;
                                     let _ = inventory_tx.send(
-                                        crate::bedrock::bridge::BedrockInventoryUpdate::SelectedSlot(
+                                        crate::bedrock_api::BedrockInventoryUpdate::SelectedSlot(
                                             hotbar_slot,
                                         ),
                                     );
                                     let _ = inventory_tx.send(
-                                        crate::bedrock::bridge::BedrockInventoryUpdate::Slot {
+                                        crate::bedrock_api::BedrockInventoryUpdate::Slot {
                                             // Java 背包里快捷栏是 36..=44
                                             slot: 36 + hotbar_slot,
                                             item: java_item_id.map(|id| (id, count)),
@@ -2550,7 +2304,12 @@ pub fn spawn_mchprs_listener(
 
 #[cfg(test)]
 mod nbt_resource_tests {
-    use super::{BIOME_DEFINITIONS_NBT, ENTITY_IDENTIFIERS_NBT, parse_nbt_compound};
+    use super::{BIOME_DEFINITIONS_NBT, ENTITY_IDENTIFIERS_NBT};
+
+    /// 测试专用的简写：库代码里不再保留这个包装（它只被本测试用）。
+    fn parse_nbt_compound(bytes: &[u8]) -> std::collections::HashMap<String, nbtx::Value> {
+        super::parse_nbt_compound_named(bytes, "nbt")
+    }
 
     /// BUG-032 第 46 条：两张 Geyser 资源都必须能被自写读取器**整字节**解析。
     ///

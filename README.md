@@ -29,14 +29,18 @@ To lift them it adds built-in **ROM and RAM**, an **`io.txt`** file that declare
 
 | | |
 | --- | --- |
-| Build | a Rust toolchain (`rustup`, stable). `cargo build --release` is the only build step |
+| Build | a Rust toolchain (`rustup`, stable). The Bedrock stack is **opt-in**: `cargo build --release --features bedrock` (omit the feature for a Java-only server) |
 | Play | Minecraft **Java Edition 1.20.4** (protocol 765) |
 | Automate (optional) | Python 3.8+ for the test scripts in [`python/`](python/README.md) |
 
 ### 2. Build and start
 
 ```bash
-cargo build --release
+# Java + Bedrock (default server build)
+cargo build --release --features bedrock
+
+# Java only — the whole `crates/network/src/bedrock/` tree is not compiled
+# cargo build --release
 
 # run the server in its own directory: everything it reads/writes is
 # relative to the working directory, so keep it out of the source tree
@@ -127,7 +131,7 @@ python3 correctness.py      # edit the config block at the top of the file first
 | `HELLO` arrives without `<tick>` | the circuit is not compiled — run `/redpiler compile` |
 | the circuit is right but results are all wrong | the plot is frozen (`/tick seq`, `rtps 0`); unfreeze or use normal mode |
 | the automation client disconnects | more than 1 MiB of unread output is queued, or a line exceeded 64 KiB |
-| first `cargo build --release` takes 10+ minutes | `lto = "fat"` is enabled; later builds only rebuild the crates you touched |
+| first `cargo build --release --features bedrock` takes 10+ minutes | `lto = "fat"` is enabled; later builds only rebuild the crates you touched. Without `--features bedrock` the build is considerably shorter |
 
 ## Configuration
 

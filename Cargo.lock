@@ -1600,6 +1600,7 @@ dependencies = [
  "clap",
  "mchprs_blocks",
  "mchprs_core",
+ "mchprs_network",
  "mchprs_redpiler",
  "mchprs_redstone",
  "mchprs_world",

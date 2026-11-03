@@ -1,4 +1,8 @@
 mod nbt_util;
+// 插座：基岩版的接口与数据类型，永远编译（见 bedrock_api.rs 文件头）。
+pub mod bedrock_api;
+// 插头：基岩版协议栈本体，`--features bedrock` 才编译；整个文件夹删掉也不影响默认构建。
+#[cfg(feature = "bedrock")]
 pub mod bedrock;
 pub mod packets;
 

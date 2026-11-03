@@ -26,12 +26,31 @@ bitvec = { workspace = true }
 # 基岩版（Bedrock）协议栈，见 BEDROCK.md。
 # 上游 bedrock-rs 以 vendored 副本引入（vendor/bedrock-rs），因为我们对它有 5 处本地补丁，
 # 细节见 docs/BEDROCK-SPIKE-STATUS.md 与 docs/bedrock-integration.md。
-bedrock = { path = "../../vendor/bedrock-rs/bedrock", default-features = false, features = [
+bedrock = { path = "../../vendor/bedrock-rs/bedrock", default-features = false, optional = true, features = [
     "network-tokio",
     "protocol-unknown",
     "protocol-v766",
 ] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+tokio = { workspace = true, optional = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "time",
+    "sync",
+] }
 # Bedrock 会话层需要：NBT 编解码（生物群系/实体标识表是 NBT 文件）、玩家 UUID
-nbtx = { git = "https://github.com/bedrock-crustaceans/nbtx" }
-uuid = { version = "1", features = ["v4"] }
+nbtx = { git = "https://github.com/bedrock-crustaceans/nbtx", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
+[features]
+default = []
+# 基岩版协议栈（插头）。**默认不编译**：
+#   cargo build                      -> 纯 Java 服务器，`crates/network/src/bedrock/` 整个不参与编译
+#   cargo build --features bedrock    -> 与原先行为完全一致，UDP 19132 生效
+# 插座 `bedrock_api` 永远编译；插头只在这个 feature 打开时才存在（BEDROCK.md 第 55 条）。
+bedrock = ["dep:bedrock", "dep:nbtx", "dep:uuid", "dep:tokio"]
+
+# 基岩版示例只在启用插头时编译（`cargo run --example bedrock_server --features bedrock`）。
+[[example]]
+name = "bedrock_server"
+required-features = ["bedrock"]

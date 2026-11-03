@@ -248,8 +248,8 @@ pub fn flags_actor_data(
 /// 取值照 Geyser `JavaGameEventTranslator`（CHANGE_GAMEMODE 分支）：
 /// 只发这一个包；Geyser 之后还会 `sendAdventureSettings()`，我们本来就在登录时
 /// 把能力值按创造模式发足了，这里不重复发（改模式不会改能力位）。
-pub fn set_game_mode(mode: crate::bedrock::bridge::BedrockGameMode) -> SetPlayerGameTypePacket<Protocol> {
-    use crate::bedrock::bridge::BedrockGameMode;
+pub fn set_game_mode(mode: crate::bedrock_api::BedrockGameMode) -> SetPlayerGameTypePacket<Protocol> {
+    use crate::bedrock_api::BedrockGameMode;
     SetPlayerGameTypePacket {
         player_game_type: match mode {
             BedrockGameMode::Creative => GameType::Creative,

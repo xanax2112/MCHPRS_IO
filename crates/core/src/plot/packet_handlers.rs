@@ -22,10 +22,10 @@ impl Plot {
         // （BUG-032 R5）。
         for update in self.players[player].client.take_inventory_updates() {
             match update {
-                mchprs_network::bedrock::bridge::BedrockInventoryUpdate::SelectedSlot(slot) => {
+                mchprs_network::bedrock_api::BedrockInventoryUpdate::SelectedSlot(slot) => {
                     self.players[player].selected_slot = slot.min(8);
                 }
-                mchprs_network::bedrock::bridge::BedrockInventoryUpdate::Slot { slot, item } => {
+                mchprs_network::bedrock_api::BedrockInventoryUpdate::Slot { slot, item } => {
                     let stack = item.map(|(id, count)| mchprs_blocks::items::ItemStack {
                         item_type: mchprs_blocks::items::Item::from_id(id),
                         count,
@@ -33,7 +33,7 @@ impl Plot {
                     });
                     self.players[player].set_inventory_slot(slot, stack);
                 }
-                mchprs_network::bedrock::bridge::BedrockInventoryUpdate::Correction { x, y, z } => {
+                mchprs_network::bedrock_api::BedrockInventoryUpdate::Correction { x, y, z } => {
                     // 客户端放了一个 MCHPRS **不认识**的物品（创造面板给的是全量原版物品）：
                     // 它已经乐观地在本地画上去了，这里把真实方块（连同周围 6 面）发回去。
                     // Java 侧走的是同一套 `send_block_corrections`（CBlockUpdate）；
