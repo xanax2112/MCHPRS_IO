@@ -9,13 +9,19 @@
 >
 > 协作规则见主台账 §0；五条铁律对本文件同样有效（目标先行、只记录不改码、写码与编译分离、
 > 中文汇报、确认语义优先于速度）。
+>
+> **归属按文件位置划分**（用户 2026-11-03 下达）：`crates/network/src/bedrock_api.rs`、
+> `crates/network/src/bedrock/**`、`vendor/bedrock-rs/**` 的问题记在本文件；
+> `crates/core`、根 `Cargo.toml`、`src/`、`app/`、`docs/`、CI 的问题记在主台账 `BACKLOG.md`。
+> 跨两侧的改动两边各记自己那部分，并互相引用。
 
 ## 1. 现状速览
 
 | 项 | 值 |
 | --- | --- |
 | 协议 | Bedrock **766**，客户端 **1.21.51**（客户端版本由用户侧固定，服务端不做协商） |
-| 代码 | `crates/network/src/bedrock/**` + `vendor/bedrock-rs`（协议生成码） |
+| 代码 | 插头 `crates/network/src/bedrock/**` + `vendor/bedrock-rs`（协议生成码）；插座 `crates/network/src/bedrock_api.rs`（常驻） |
+| 构建 | 基岩版**默认不编译**：`cargo build --release --features bedrock`；不带 feature 时插头整个文件夹不参与编译（第 55 条） |
 | 入口 | `crates/core/src/server.rs` → `spawn_mchprs_listener`（监听地址跟随 `bind_address` 的 IP，端口取 `bedrock`） |
 | 依赖约束 | 运行路径**不依赖 facet / nbtx 反射**（自写 varint-NBT 读写器） |
 | 日志 | 默认 `INFO` 静默；`MCHPRS_LOG=debug` 看明细 |
@@ -2101,3 +2107,68 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
   （旧版备份 `~/.ssset/backup/mchprs-0.6.1-alpha-pre-bindfix`）。
 - **日志开关更正**：实际环境变量是 **`MCHPRS_LOG`**（`src/main.rs:26`，`with_env_var("MCHPRS_LOG")`），
   不是 `RUST_LOG`；本条早先写的 `RUST_LOG=debug` 有误，以 `MCHPRS_LOG=debug` 为准。
+
+---
+
+### 9.41 第 55 条：插座 / 插头 —— 基岩版默认不编译（2026-11-03，✅ 已完成，提交 `42e02c9`）
+
+**用户目标**：插座（接口）留在 network 核心里，`crates/network/src/bedrock/` 整个文件夹可以不要；
+默认不编译基岩版，加参数才编。
+
+**用户裁决**：
+- 默认关闭：根 `Cargo.toml` 用 `default = []`，要基岩版必须显式 `--features bedrock`。
+- 未带基岩版编译而 `Config.toml` 里 `bedrock` 非 0 → **`warn!`**（我先设想"只对非默认端口警告"，
+  用户改为一律警告，避免"我配了端口却什么都没有"）。
+
+**结构**：
+
+```text
+crates/network/src/bedrock_api.rs    插座  509 行  常驻编译，只依赖 std
+crates/network/src/bedrock/          插头  20 个文件  #[cfg(feature = "bedrock")]
+crates/network/src/bedrock/stack.rs  装配  105 行    Stack 实现两个 trait
+src/main.rs                          install()（feature 打开时才编）
+```
+
+- 删除 `bedrock/bridge.rs`，内容整体搬进插座。
+- 插座内容：12 个数据类型（`BedrockCommand` / `BedrockEvent` / `PlotSnapshot` / `BedrockSidebar` /
+  `BedrockSign` / `BedrockPlayerInfo` / `BedrockChunkBatch` / `BedrockInventorySnapshot` /
+  `BedrockInventoryUpdate` / `BedrockGameMode` / `BedrockPlayerLink` / `BedrockHandle`）
+  + 2 个 trait + 全局注册（`install` / `stack` / `chunk_encoder` / `block_state` / `y_offset` / `initial_radius_chunks`）
+  + 常量 `AIR_STATE` / `VERBOSE`。
+- `BedrockHandle` 改成三个闭包（send / alive / close）：插座不依赖 tokio，默认构建连 tokio 都不编。
+- `trait BedrockStack`：`spawn` / `chunk_encoder` / `block_state` / `java_item_id` / `bedrock_item_id`。
+- `trait ChunkEncoder`：`encode` / `y_offset` / `initial_radius_chunks` / `pending_chunks` /
+  `covered_radius` / `stream_budget_chunks` / `stream_budget_ms` / `section_count`。
+  **区块流送的几何与预算也走插座**——不这么做的话，plot 里那几处 `netchunk::` 调用会让删文件夹编不过。
+
+**Cargo**：`crates/network` 里 `bedrock` / `nbtx` / `uuid` / `tokio` 全改 optional，
+`bedrock = ["dep:bedrock", "dep:nbtx", "dep:uuid", "dep:tokio"]`；根 `default = []`、
+`bedrock = ["mchprs_network/bedrock"]`，并加可选依赖 `mchprs_network`；`examples/bedrock_server.rs`
+加 `required-features`。
+
+**core 侧**（`crates/core`，记在主台账 §11「网络层」）：`server.rs` 改成 `match bedrock_api::stack()`；
+`plot/mod.rs` 三处改从 `chunk_encoder()` 取编码器；20 个符号路径换到 `bedrock_api::`；core 不再引用
+`bedrock::` 下任何实现模块。
+
+**顺带清理死代码**（spike 残留，10 条警告）：`selftest()`、`player_metadata()` + 7 个 `FLAG*` 常量、
+`parse_nbt_compound` 包装、`ADDR`、`nbt_net.rs` 3 个未用导入、一处多余 `mut`。`session.rs` 2581 → 2336 行。
+注意：测试模块 `nbt_resource_tests` 仍在用 `parse_nbt_compound`，已在测试模块内部补了本地包装。
+
+**验证（2026-11-03）**：
+
+| 场景 | 结果 |
+| --- | --- |
+| `cargo build --release`（纯 Java） | ✅ 8,681,832 字节；二进制里 `Bedrock listener` / `mchprs-bedrock` / `LevelChunk` / `Cloudburst` 字符串计数全为 0 |
+| `cargo build --release --features bedrock` | ✅ 4m43s，12,769,584 字节（比旧版 +26 KB） |
+| `crates/network/src/bedrock/` 整个移走后强制重编 | ✅ 2m06s，EXIT=0，8,681,832 字节，之后已移回、`git status` 干净 |
+
+**踩到的坑（写给以后）**：
+1. 根 `Cargo.toml` 的 path 依赖**键必须等于包名**：写 `mchprs-network` 会报
+   `no matching package named mchprs-network`，要写 `mchprs_network`（或用 `package = "..."` 改名）。
+2. 移走文件夹后第一次 `cargo build` 只用 0.41s——那是 Cargo 复用了同一 feature 集合之前编好的产物，
+   **不能当验证**；必须 `touch crates/network/src/lib.rs` 强制重编。
+3. 用 Python 脚本写 Rust 源码时，字符串里的 `\` 续行会被 Python 吃掉，日志文案会出现一长串空格；
+   要用 `\\`。
+
+**以后构建必须带 `--features bedrock`**（CI、两份 README、`app/build.sh` 提示、
+`docs/BEDROCK-AGENT-NOTES.md`、`docs/bedrock-integration.md` 已同步改）。
