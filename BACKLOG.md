@@ -433,6 +433,107 @@ width = 8
 - `✚` **自动化桥**（`automation.rs`）：纯文本 TCP，端口 `io_port`（默认 25585，只绑 `127.0.0.1`）；报文 `HELLO` / `INPUT` / `POUT` / `OUTPUT` / `READ` / `TICK` / `NOW` / `RADV`；版本串 `MCHPRS_IO 0.5.2-alpha`；规格见 `docs/protocol.md`。
 - `✚` `Message` 扩展：`IoResponse`、`IoDataPortOutput`、`SeqModeChanged`、`ConsoleCommand`、`AutomationRequest`、`AutomationDisconnect`。
 
+### 9.1 自动化协议下沉到 plot 线程（📝 已定待写码，2026-11-04）
+
+目标：消灭「主循环窗口 + 两跳 mpsc」的往返延迟，并让全速批测的输出能边跑边推。
+
+**两种模式（行为不变）**
+
+- **时序精确模式**：`/tick seq` 进入，条件不动——`rtps 0`、单脚本独占、`io_mode = exact`。`INPUT` 按 tick 单调递增预约，再发 `RADV N` 全速跑。
+- **普通模式**：不接受预约，带 `offset` 的 `INPUT` 仍返回 `ERR mode`；不带 `offset` 的 `INPUT` 下一 tick 生效。
+
+**改动**
+
+- `✚` `AutomationServer` 由 `server.rs` 绑定 `io_port` 后整体移交 p0,0 的 plot 线程；accept、读 socket、解析、执行、编码、写回全在该线程完成，主线程不再引用 automation。
+- `✎` 主循环 `sleep(2ms)` → **`sleep(5ms)`**。
+- `✚` **flush 策略**（由 plot 自己控制，不依赖主循环）：
+  - `RADV` 同步跑批期间：每 **5 ms** 冲一次输出。
+  - 其余时刻：不等，产生一条就写一条。
+  - `io_mode = performance`：每 **5 ms** 采样一次并推送（不再按批末尾采样；`tick seq` 与普通模式一致）。
+- `✚` **poll 周期 200 µs**：plot 在 tick 循环里按墙钟时间片非阻塞读 socket，保证普通模式往返延迟不回退。
+- `✚` **调度开销收敛**：用计数器驱动，每 64 个 tick 才取一次 `Instant::now()`——全速下每 tick 取表约 20~25 ns，270 万 tick/s 会吃掉约 5% CPU；无 automation 连接时直接跳过 poll（否则每秒 5000 次空问）。收敛后整套调度（时间检查 + poll）在 0.1% 以下。
+- `✎` **反压**：单连接 `MAX_PENDING` 1 MB → **16 MB**，另设全局 **32 MB** 上限，超限断连；`/tick seq` 只接受一个脚本。
+- `✎` **预约错误**：坏条目跳过并继续处理后面的；错误码带信息（`ERR order <tick>`、`ERR hex <tick>`）；单批最多回 10 条详细错误 + 一条汇总 `ERR skipped <n>`，避免错误风暴灌爆 socket。
+- `✖` 删除 `Message::IoResponse`、`Message::IoDataPortOutput`、`AutomationAction::Route`、`AutomationAction::Disconnect`、`PrivMessage::AutomationRequest`、`PrivMessage::AutomationDisconnect`。
+- `✎` `/tick seq` 改为主线程发 `PrivMessage` 通知 plot，不再直接调用 `automation.set_seq_mode`。
+- `✎` `READ x,y,z` 收窄：只认 p0,0 范围，范围外 `ERR nocompile`。
+- `✎` `RADV` 保持**同步**（跑完才回 `OK RADV`），脚本须边读 `OUTPUT` 边等 `OK`；输出保证先于 `OK` 到达（同一条 mpsc，顺序不变）。
+
+**不做**：输出合并与抽样（电路特性变化太快，由脚本少发预约解决）。
+
+**实施注意（改码时必须处理）**
+
+- `✚` 节点 id 缓存在 `clear_io_state()`（`mod.rs:1813`）里一并失效；`poll` / `write` 发现缓存为空就重新解析，解析失败标 `active = false`，不得拿旧 id 读。
+- `✚` 预约队头 `tick < now` 时丢弃并回 `ERR stale <tick>`，否则后面的条目会被永久堵住。
+- `✚` `pending` 建连时预留容量（约 256 KB），增长按 1 MB 步进，避免 16 MB 反复翻倍拷贝。
+- `✚` `io_port` 仍在主线程 bind，失败则禁用 automation 且不 panic；成功才移交 plot。
+- `✚` 重新编译后连接保留但绑定被清（`clear_io_state`），需主动推送 `ERR reset` 让脚本重新 `POUT`。
+- `✚` `READ x,y,z` 收窄属于行为变更，写进 `docs/protocol.md`。
+- `✚` 主循环 5 ms 把玩家包刷新降到 200 Hz（有意取舍）。
+- `✚` 清理 `server.rs` 中 `IoResponse` / `IoDataPortOutput` / `SeqModeChanged` 与 `AutomationAction::Route` / `Disconnect` 的残留分支。
+
+预期：往返由约 12.5 ms 降到「1 tick + loopback」；655360 tick 的批测输出按 5 ms 分批发，脚本持续读取即可，不会撞断连。
+
+### 9.2 IO 采样与写入：去掉每 tick 的分配与哈希查找（📝 已定待写码，2026-11-04）
+
+实测基线（64 位、无时钟、绑了 `POUT` 的输出组，每 tick）：
+
+| 动作 | 成本 |
+| --- | --- |
+| `Vec::with_capacity` 堆分配 | 40~80 ns |
+| 64 次 `query_io` → `pos_map` 的 `FxHashMap` 查找 | 500~750 ns |
+| `prev_bits != bits`（memcmp 64 字节） | 5~10 ns |
+| `bits.clone()` 分配 + 拷贝 | 50~100 ns |
+| 合计 | 0.65~1.0 µs |
+
+- `✚` **缓冲复用**：`IoGroup` 增 `scratch: Vec<bool>`，新增 `read_into(&mut scratch)`；`poll` 用 `prev_bits != scratch` 判定，命中后 `std::mem::swap(&mut prev_bits, &mut scratch)`。每 tick 零分配、零拷贝。约省 15%。
+- `✚` **节点索引缓存**：绑定时把每个坐标的 `NodeId` 解析一次存进 `IoGroup`，之后 `poll` / `write` 直接下标取值，不再每个点查一次 `pos_map`。省 60~70%，是三条里的大头。
+  - 需要后端新增按 `NodeId` 取 `powered` / `output_power` 与按 `NodeId` 写入的接口；模拟量的 `query_wire_power` 同样要覆盖。
+  - 写入路径（`IoGroup::write` 的 `try_set_powered` / `try_set_wire_power`）有同样的每点哈希查找，一并改成用缓存 id。
+- `✖` **只在变化时克隆**：被缓冲复用的 `swap` 覆盖，不单独实现（单做能省 50~100 ns，但做了缓冲复用就白做）。
+- `✎` **采样节奏**：`performance` 模式原本在每批末尾调一次 `sample_io_groups`，改为按墙钟**每 5 ms** 一次（与 flush 同拍，`RADV` 期间也照此）；`exact` 模式保持每 tick 采样。三件事共用一个时间片：poll 200 µs、采样 5 ms（仅 `performance`）、flush 5 ms。
+- `✚` **`run_memories` 同源优化**（`mod.rs:1500`）：`MemoryState::sample` 每 tick 走 `query_io` / `query_wire_power` / `try_set_*`，与 `IoGroup` 是同一套按坐标查哈希的写法。同样缓存 `NodeId` 并复用缓冲，避免每 tick 每点一次哈希查找（16 位地址的 ROM 每 tick 约 30~60 次查询）。
+
+收益：每 tick 由 0.65~1.0 µs 降到 0.15~0.25 µs，约 -75%。
+
+适用性：`rtps 1000` 时采样只占约 0.1% CPU，做不做无差别；跑全速（`unlimited`）时采样成本是红石模拟本身的 2~3 倍，必须做。用户 2026-11-04 决定三条都做。
+
+风险：
+
+- **节点 id 只在一次编译内有效**。重新编译、`/redpiler reset`、`crash_save` 重载之后必须重新解析；坐标已不存在时要把该组标成 `active = false`，绝不能拿旧 id 去读，否则是静默错数据。
+- `poll` 里 `swap` 之后 `scratch` 持有的是旧的 `prev_bits`，后续不得再当本 tick 的值使用。
+- 输出若每 tick 都变，省下的时间会被 `encode_hex` + `Message` 分配（0.5~1 µs）吃回一半，收益只在“输出很少变”时体现。
+
+### 9.3 预约表：单调化 + 上限 65536（📝 已定待写码，2026-11-04）
+
+- `✎` **上限**：`MAX_RESERVATIONS` 由 255 提到 **65536**（用户 2026-11-04 定）。每条约 170 字节（64 位组：结构体 56 + 组名堆约 32 + `bits` 堆约 80），65536 条约 **11 MB**。30 万条以上才需要驻留组名 + 位打包（可降到约 24 字节/条），本次不做。
+- `✚` **单调约束**：预约必须按 tick 单调不减发送，违反返回新错误码 `ERR order`。理由：单调后表天然有序，出队是游标 O(1)，查重只需从尾部扫当前 tick 的那几条——替掉现在每 tick 全表 `retain` 加每条 `clone` 的写法（655360 tick × 65536 条约 2×10^10 次遍历）。
+- `✎` **结构**：`reservations: Vec<Reservation>` 改为 `VecDeque<Reservation>` 加 `last_tick: u32`。
+  - `reserve_input`：`tick < last_tick` 拒绝；`tick == last_tick` 从尾部往前扫同 tick 条目，同组覆盖（保住“后到覆盖”语义）；否则 `push_back`。
+  - `apply_reservations`：`while front.tick == now { pop_front(); group.write(...) }`。
+  - `VecDeque` 出队不自动缩容，需在清空或长期低水位时 `shrink_to_fit`，否则峰值决定常驻内存。
+
+插入摊还 O(1)，应用 O(k)（k 为该 tick 的条目数）。配合流式灌入时表里始终保持一个批次（65536 条 / 11 MB）。
+
+`✎` **`offset` 扩成 `u32`（用户 2026-11-04 定）**：`RequestKind::Input { offset: Option<u32> }`。解析保持**十进制**不变（现在就是 `args[0].parse::<u32>()`，随后才压成 `u16`），改动只是去掉 `offset > u16::MAX` 的 `ERR range` 判断与 `as u16` 转换；`mod.rs` 侧 `u32::from(offset.unwrap_or(1))` 直接用。`offset == 0` 仍然非法（“下一 tick”用不带 offset 的形式）。值仍是十六进制，语法 `INPUT <name> <offset> <hex>` 不变。
+
+### 9.4 自动化消息的字符串分配（📋 待做，2026-11-04）
+
+每条消息当前的开销：
+
+| 方向 | 分配点 | 每条成本 |
+| --- | --- | --- |
+| 输入 | `name.to_string()` + `hex.to_string()` + `decode_hex` 内两次 `Vec<bool>` | 1~1.5 µs |
+| 输出 | `encode_hex` 的 `String` + `format!` 整行 + `hex.clone()` | 0.5~1 µs |
+
+65536 条一批合计 **30~100 ms**，与 Python 侧解析同量级。
+
+- `✚` 组名在加载 `io.txt` 时驻留成 `u16` id；`RequestKind` / `Reservation` / `pout_bindings` 只存 id。
+- `✚` `decode_hex` 直接写进复用的 `Vec<bool>`（`decode_hex_into`），不再返回新 Vec。
+- `✚` `encode_hex` 写进复用的 `String`；`format!` 改成手写 `push_str`；输出行不 clone `hex`。
+
+**暂缓**：Python 侧逐行解析不优化（用户 2026-11-04 决定）。若它成为硬上限，改用 Go 客户端替代，不改服务端协议。
+
 ---
 
 ## 10. 编译器与红石（`crates/redpiler`、`crates/redstone`）
