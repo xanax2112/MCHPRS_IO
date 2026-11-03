@@ -24,6 +24,10 @@ from .mchprs_io import Client, ProtocolError, hex_width
 _LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "log")
 
 
+MAX_CHUNK = 65536
+MAX_DETAIL = 20
+
+
 class _Tee:
     """同时写终端和日志文件。"""
 
@@ -33,6 +37,11 @@ class _Tee:
     def write(self, data):
         for stream in self._streams:
             stream.write(data)
+            # 立刻落盘：脚本被中断时也要能看到最后一行，否则日志里只有开头
+            try:
+                stream.flush()
+            except Exception:
+                pass
 
     def flush(self):
         for stream in self._streams:
@@ -374,7 +383,12 @@ def _pipeline_vectors(cfg, batch):
 
 @_logged("pipeline")
 def run_pipeline(cfg):
-    """流水时序精确：/tick seq 下按间隔预约输入，验证输出间隔与延迟。"""
+    """流水时序精确 + 吞吐。
+
+    按 `batch` 组一批灌预约、发一次 RADV，验证完再灌下一批，
+    直到跑满 `total` 组。RADV 的 tick 数按
+    `这批组数 * interval + delay + 2` 估算（多给几 tick 余量）。
+    """
     try:
         client = _open(cfg)
     except OSError as err:
@@ -390,111 +404,125 @@ def run_pipeline(cfg):
         if interval < 2:
             print("输入间隔必须 >= 2 tick（当前 %d）" % interval)
             return 2
-        batch = cfg.get("batch", 128)
         delay = cfg.get("delay", 1)
+        total = cfg.get("total", cfg.get("batch", 2000))
+        chunk = cfg.get("batch", total)
+        if chunk < 1:
+            print("每批组数必须 >= 1")
+            return 2
+        if chunk > MAX_CHUNK:
+            print("每批最多 %d 组（预约表容量），已按上限处理" % MAX_CHUNK)
+            chunk = MAX_CHUNK
         in_bits, out_bits = cfg["IN_BITS"], cfg["OUT_BITS"]
         timeout = cfg.get("timeout", 3.0)
 
         client.pout(cfg["POUT"])
         client.drain(cfg.get("drain_seconds", 0.005))
 
-        vectors = list(_pipeline_vectors(cfg, batch))
-        batch = len(vectors)
-        # 一次性把所有预约发出去再收 OK。逐条等 OK 会把灌数据变成 N 次往返，
-        # 2000 组就要好几秒，而一次全发是 2 万条/秒量级（PY-005 实测）。
+        vectors = list(_pipeline_vectors(cfg, total))
+        total = len(vectors)
         digits = (in_bits + 3) // 4
-        outgoing = []
-        for i, value in enumerate(vectors):
-            outgoing.append("INPUT %s %d %0*x"
-                            % (cfg["PIN"], 1 + i * interval, digits, value))
-        client.send("\n".join(outgoing))
+        rounds = (total + chunk - 1) // chunk
 
-        in_ticks = []
-        try:
-            for _ in range(len(outgoing)):
-                line = client.expect("OK INPUT", timeout)
-                in_ticks.append(int(line.split()[-1]))
-        except ProtocolError as err:
-            if "mode" in str(err):
-                print("当前不是 /tick seq 模式：先在游戏或终端执行 /tick seq")
-                return 2
-            print("协议错误：%s" % err)
-            return 2
-
-        total_ticks = (batch - 1) * interval + delay + 2
-        print("已预约 %d 个输入，间隔 %dt，推进 %d tick" % (batch, interval, total_ticks))
-
-        # 吞吐只算 RADV 这一段：从发出 RADV 到全部 tick 推完并收齐输出，
-        # 不含上面灌预约的时间和下面补收的时间（PY-005 的测法）。
-        advance_start = time.monotonic()
-        try:
-            outs = client.radv_collect(total_ticks, cfg["POUT"], timeout)
-        except (TimeoutError, ProtocolError) as err:
-            print("RADV 失败：%s" % err)
-            return 2
-        advance_elapsed = time.monotonic() - advance_start
-        try:
-            outs += client.collect_outputs(cfg["POUT"], cfg.get("collect_seconds", 0.5))
-        except (TimeoutError, ProtocolError) as err:
-            print("RADV 失败：%s" % err)
-            return 2
-
-        if advance_elapsed > 0:
-            print("RADV 段耗时 %.3fs：%.0f 组/s，%.0f tick/s"
-                  % (advance_elapsed, batch / advance_elapsed, total_ticks / advance_elapsed))
-
-        by_tick = {}
-        for t, v in outs:
-            by_tick.setdefault(t, []).append(v)
-
-        passed = failed = 0
-        prev = None
+        passed = failed = gaps = 0
+        detail_shown = 0
         records = []
-        for i, value in enumerate(vectors):
-            want = _expect(cfg, value)
-            expect_tick = in_ticks[i] + delay - 1
-            got_list = by_tick.get(expect_tick, [])
-            desc = "输入 %s  in_tick=%d" % (_fmt(value, in_bits), in_ticks[i])
-            if len(got_list) == 1 and got_list[0] == want:
-                passed += 1
-                records.append({"index": i + 1, "in_tick": in_ticks[i],
-                                "out_tick": expect_tick, "expect_tick": expect_tick,
-                                "in_value": value, "got": got_list[0],
-                                "want": want, "ok": True})
-                cur = {"desc": desc,
-                       "want": _fmt(want, out_bits),
-                       "got": _fmt(got_list[0], out_bits)}
-            else:
-                failed += 1
-                if len(got_list) > 1:
-                    got = "多余 %d 条" % len(got_list)
-                elif got_list:
-                    got = _fmt(got_list[0], out_bits)
-                else:
-                    got = "无输出"
-                records.append({"index": i + 1, "in_tick": in_ticks[i],
-                                "out_tick": expect_tick if got_list else None,
-                                "expect_tick": expect_tick, "in_value": value,
-                                "got": got_list[0] if got_list else None,
-                                "want": want, "ok": False})
-                cur = {"desc": desc,
-                       "want": _fmt(want, out_bits),
-                       "got": got,
-                       "extra": "  期望 tick=%d" % expect_tick}
-                _report_failure(i + 1, cur, prev)
-            prev = cur
+        sim_elapsed = 0.0
+        sim_ticks = 0
+        got_total = 0
+        index = 0
 
-        ticks = sorted(t for t, _ in outs)
-        bad_gaps = 0
-        for j in range(1, len(ticks)):
-            if ticks[j] - ticks[j - 1] != interval:
-                bad_gaps += 1
-        if bad_gaps:
-            print("⚠ 输出间隔不一致：%d 处相邻输出间隔 != %dt" % (bad_gaps, interval))
+        for r in range(rounds):
+            part = vectors[r * chunk:(r + 1) * chunk]
+            outgoing = [
+                "INPUT %s %d %0*x" % (cfg["PIN"], 1 + i * interval, digits, value)
+                for i, value in enumerate(part)
+            ]
+            client.send("\n".join(outgoing))
+
+            in_ticks = []
+            try:
+                for _ in range(len(outgoing)):
+                    line = client.expect("OK INPUT", timeout)
+                    in_ticks.append(int(line.split()[-1]))
+            except ProtocolError as err:
+                if "mode" in str(err):
+                    print("当前不是 /tick seq 模式：先在游戏或终端执行 /tick seq")
+                    return 2
+                print("协议错误：%s" % err)
+                return 2
+
+            span = len(part) * interval + delay + 2
+            sim_start = time.monotonic()
+            try:
+                outs = client.radv_collect(span, cfg["POUT"], timeout)
+                outs += client.collect_outputs(cfg["POUT"], cfg.get("collect_seconds", 0.5))
+            except (TimeoutError, ProtocolError) as err:
+                print("RADV 失败：%s" % err)
+                return 2
+            elapsed = time.monotonic() - sim_start
+            sim_elapsed += elapsed
+            sim_ticks += span
+            got_total += len(outs)
+
+            by_tick = {}
+            for t, v in outs:
+                by_tick.setdefault(t, []).append(v)
+            ticks_sorted = sorted(by_tick)
+            for k in range(1, len(ticks_sorted)):
+                if ticks_sorted[k] - ticks_sorted[k - 1] != interval:
+                    gaps += 1
+
+            prev = None
+            for i, value in enumerate(part):
+                index += 1
+                want = _expect(cfg, value)
+                expect_tick = in_ticks[i] + delay - 1
+                got_list = by_tick.get(expect_tick, [])
+                desc = "输入 %s  in_tick=%d" % (_fmt(value, in_bits), in_ticks[i])
+                if len(got_list) == 1 and got_list[0] == want:
+                    passed += 1
+                    records.append({"index": index, "in_tick": in_ticks[i],
+                                    "out_tick": expect_tick, "expect_tick": expect_tick,
+                                    "in_value": value, "got": got_list[0],
+                                    "want": want, "ok": True})
+                    cur = {"desc": desc,
+                           "want": _fmt(want, out_bits),
+                           "got": _fmt(got_list[0], out_bits)}
+                else:
+                    failed += 1
+                    if len(got_list) > 1:
+                        got = "多余 %d 条" % len(got_list)
+                    elif got_list:
+                        got = _fmt(got_list[0], out_bits)
+                    else:
+                        got = "无输出"
+                    records.append({"index": index, "in_tick": in_ticks[i],
+                                    "out_tick": expect_tick if got_list else None,
+                                    "expect_tick": expect_tick, "in_value": value,
+                                    "got": got_list[0] if got_list else None,
+                                    "want": want, "ok": False})
+                    cur = {"desc": desc,
+                           "want": _fmt(want, out_bits),
+                           "got": got,
+                           "extra": "  期望 tick=%d" % expect_tick}
+                    if detail_shown < MAX_DETAIL:
+                        detail_shown += 1
+                        _report_failure(index, cur, prev)
+                prev = cur
+
+            print("  第 %d/%d 批：%d 组，本批 %.3fs -> %.0f 组/s；累计通过 %d 失败 %d"
+                  % (r + 1, rounds, len(part), elapsed, len(part) / elapsed,
+                     passed, failed))
 
         print("\n完成：%d 组，通过 %d，失败 %d；推送 %d 条，间隔异常 %d"
-              % (batch, passed, failed, len(outs), bad_gaps))
+              % (total, passed, failed, got_total, gaps))
+        if sim_elapsed > 0:
+            print("模拟段总耗时 %.3fs：%.0f 组/s，%.0f tick/s"
+                  % (sim_elapsed, total / sim_elapsed, sim_ticks / sim_elapsed))
+        if detail_shown >= MAX_DETAIL and failed > detail_shown:
+            print("（只打印了前 %d 条错误明细，其余省略）" % MAX_DETAIL)
         svg.maybe_write(records, cfg, "pipeline")
-        return 0 if failed == 0 and bad_gaps == 0 else 1
+        return 0 if failed == 0 and gaps == 0 else 1
     finally:
         client.close()

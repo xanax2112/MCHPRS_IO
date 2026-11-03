@@ -11,10 +11,11 @@ import java.io.OutputStream;
 /**
  * 把打进 APK 的文档与 Python 工具释放到工作目录（用户 2026-11-02 需求）。
  *
- * 覆盖策略：
- * - docs/ 与 python/core/：每次启动覆盖，跟着版本更新；
- * - python 顶层脚本（correctness.py / timing.py / pipeline.py / README.md）：只补缺，
- *   因为这几个文件顶部是用户要改的配置区，覆盖会把它们冲掉。
+ * 覆盖策略（用户 2026-11-03 要求：**绝不覆盖工作目录里已有的文件**）：
+ * - 只补缺：目标文件已存在就跳过，不再覆盖；
+ * - 想更新某份文档或脚本，删掉它再启动 App 即可补回；
+ * - 原因：python/core 被覆盖会把用户在 Termux 里改好的工具冲掉，
+ *   表现为"改了没生效/日志里没有新功能"。
  */
 public final class Assets {
 
@@ -26,8 +27,8 @@ public final class Assets {
         AssetManager am = c.getAssets();
         File base = new File(root);
         int n = 0;
-        n += tree(am, "docs", new File(base, "docs"), true);
-        n += tree(am, "python/core", new File(base, "python" + File.separator + "core"), true);
+        n += tree(am, "docs", new File(base, "docs"), false);
+        n += tree(am, "python/core", new File(base, "python" + File.separator + "core"), false);
         n += flat(am, "python", new File(base, "python"), false);
         n += flat(am, "", base, true);
         return n;
