@@ -517,6 +517,17 @@ impl Plot {
         if self.automation_slice % 64 != 0 {
             return;
         }
+        self.automation_pump();
+    }
+
+    /// The actual time check. Called once per `update` (so a slow or frozen
+    /// clock rate still gets polled: 64 ticks is half a second at 110 tps) and
+    /// every 64 ticks from the hot loop (where one `Instant::now` per tick would
+    /// eat 5% of the CPU at full speed).
+    fn automation_pump(&mut self) {
+        if self.automation.is_none() {
+            return;
+        }
         let now = Instant::now();
         if !self.automation_busy
             && now.duration_since(self.automation_last_poll).as_micros() >= 200
@@ -550,6 +561,14 @@ impl Plot {
             let reply = self.handle_automation_request(conn_id, request);
             if let Some(server) = self.automation.as_mut() {
                 server.handle_reply(conn_id, reply);
+            }
+        }
+        // Answers go out as soon as they exist: waiting for the 5 ms slice
+        // would put a 5 ms floor under every round trip (BACKLOG.md/ §9.1).
+        // A `RADV` batch is the exception, it flushes on the slice.
+        if !self.automation_busy {
+            if let Some(server) = self.automation.as_mut() {
+                server.flush();
             }
         }
     }
@@ -2681,6 +2700,11 @@ impl Plot {
 
     fn update(&mut self) {
         self.handle_messages();
+        // The bridge has to run even while nothing is compiled (`HELLO` has to
+        // answer), and `update` is the only place that always runs. The tick
+        // loops pump it too, so a circuit ticking at full speed still polls
+        // every 200 us rather than once per update (BACKLOG.md/ §9.1).
+        self.automation_pump();
 
         // Tick unconditionally (BACKLOG.md). Upstream gated this whole
         // body behind `!self.players.is_empty()`, which froze the redstone
@@ -2991,6 +3015,15 @@ impl Plot {
         }
 
         while self.running {
+            // Nothing to simulate and nobody connected: do not spin. Headless
+            // automation still gets its time slices through `update`, and once
+            // a circuit is compiled this branch stops applying
+            // (BACKLOG.md/ §9.1).
+            if self.players.is_empty() && !self.redpiler.is_active() {
+                thread::sleep(Duration::from_millis(1));
+                self.update();
+                continue;
+            }
             // Fast path, for super high RTPS
             if self.sleep_time <= Duration::from_millis(5) && !self.players.is_empty() {
                 self.update();
