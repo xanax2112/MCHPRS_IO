@@ -3,7 +3,7 @@
 //! 与同为协议实现的 [`crate::packets`]（Java 协议）平级：`packets/` 放 Java 包定义，
 //! 本模块放 Bedrock 侧的协议常量与包构造。
 //!
-//! 背景与验收记录见仓库根目录 `BACKLOG.md` 的 `BUG-032`，
+//! 背景与验收记录见仓库根目录 `BEDROCK.md` 的 `BUG-032`，
 //! 协议细节与踩坑证据见 `docs/BEDROCK-SPIKE-STATUS.md`。
 //!
 //! 设计约束（来自项目硬要求）：

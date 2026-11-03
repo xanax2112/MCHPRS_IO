@@ -19,7 +19,7 @@ pub use task_monitor::TaskMonitor;
 /// Enables or disables the `betterio` timing tweaks.
 ///
 /// The flag lives in `mchprs_redstone` so the uncompiled simulator and the
-/// compiled backend always agree (BACKLOG.md BUG-021).
+/// compiled backend always agree (BACKLOG.md).
 pub fn set_betterio(enabled: bool) {
     mchprs_redstone::set_betterio(enabled);
 }

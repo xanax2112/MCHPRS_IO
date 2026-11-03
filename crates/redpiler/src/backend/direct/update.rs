@@ -76,7 +76,7 @@ pub(super) fn update_node(
             let lit = node.powered;
             if crate::betterio() {
                 // betterio makes a lamp behave exactly like a trapdoor: both
-                // edges apply in the tick the input changes (BACKLOG.md BUG-021).
+                // edges apply in the tick the input changes (BACKLOG.md).
                 if lit != should_be_lit {
                     set_node(node, should_be_lit);
                 }

@@ -1,6 +1,6 @@
 //! Bedrock 端点与 MCHPRS 服务端之间的**最小只读桥**。
 //!
-//! 线程拓扑（见 `BACKLOG.md` BUG-032「最小只读通路方案」）：
+//! 线程拓扑（见 `BEDROCK.md` BUG-032「最小只读通路方案」）：
 //!
 //! ```text
 //! Bedrock 监听线程  --BedrockEvent-->  服务端线程  --PrivMessage-->  plot 线程
@@ -19,7 +19,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 ///
 /// 出站方向**按语义传**（不传 Java 包，也不传 Bedrock 包）：`crates/core` 不依赖
 /// `bedrock` 协议 crate，所以这里只放"想表达什么"，具体包由会话线程自己编码。
-/// 见 BACKLOG.md BUG-032「入站转义 / 出站语义化」。
+/// 见 BEDROCK.md「入站转义 / 出站语义化」。
 #[derive(Debug)]
 pub enum BedrockCommand {
     /// 断开这个客户端（客户端会收到 Java 侧的 kick 文案，下一版再补 Bedrock Disconnect 包）。
@@ -197,7 +197,7 @@ pub struct BedrockSidebar {
 /// 从服务端侧操作一个 Bedrock 会话的句柄，可跨线程克隆。
 ///
 /// 有了它，Bedrock 客户端就能作为 `PlayerBackend::Bedrock` 进入 MCHPRS 的玩家体系，
-/// 复用位置、权限、命令、计分板等已有逻辑（见 BACKLOG.md BUG-032「玩家化」）。
+/// 复用位置、权限、命令、计分板等已有逻辑（见 BEDROCK.md「玩家化」）。
 ///
 /// 指令通道用 **tokio 的 unbounded** 而不是 `std::sync::mpsc`：会话线程要把它和
 /// `conn.recv()` 一起 `tokio::select!`，而 `std::sync::mpsc::Receiver::recv()` 是阻塞调用、
@@ -309,7 +309,7 @@ impl BedrockHandle {
 ///   塞进来；`plot` 的 `handle_packets_for_player` 会像处理 Java 客户端一样处理它们，
 ///   于是命令、方块交互、移动等逻辑**完全复用**，不需要为 Bedrock 再写一套。
 ///
-/// 见 BACKLOG.md BUG-032「玩家化 · 入站转义」。
+/// 见 BEDROCK.md「玩家化 · 入站转义」。
 pub struct BedrockPlayerLink {
     pub handle: BedrockHandle,
     pub packets: mpsc::Receiver<Box<dyn crate::packets::serverbound::ServerBoundPacket>>,
@@ -372,7 +372,7 @@ pub enum BedrockEvent {
         username: String,
     },
     /// 一个 Bedrock 客户端已经进入世界，请把它登记成**真正的玩家**
-    /// （BACKLOG.md BUG-032「玩家化」）。服务端线程会用 `handle` 构造
+    /// （BEDROCK.md「玩家化」）。服务端线程会用 `handle` 构造
     /// `PlayerBackend::Bedrock`，并把它送进 spawn plot。
     ///
     /// 这里只带 `username`：UUID 由**服务端**用

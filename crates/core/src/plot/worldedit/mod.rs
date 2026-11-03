@@ -32,7 +32,7 @@ pub fn execute_command(
     command: &str,
     args: &mut Vec<&str>,
 ) -> bool {
-    // `//schem load|save|list` (BACKLOG.md BUG-023): `load` and `save` are
+    // `//schem load|save|list` (BACKLOG.md): `load` and `save` are
     // exactly `//load` and `//save`, `list` prints the schematic directory.
     if command == "/schem" {
         match args.first().copied() {
@@ -1085,7 +1085,7 @@ fn expand_selection(player: &mut Player, amount: BlockPos, contract: bool) {
 }
 
 /// Lists the schematic files in `./schems` (or the per-player folder when
-/// `schemati` is on) for `//schem list` (BACKLOG.md BUG-023).
+/// `schemati` is on) for `//schem list` (BACKLOG.md).
 fn schem_list(plot: &mut Plot, player_idx: usize) {
     let player = &mut plot.players[player_idx];
     let mut dir = std::path::PathBuf::from("./schems");
@@ -1166,7 +1166,7 @@ pub fn add_command_completions(nodes: &mut Vec<CCommandsNode>) {
         }
     }
 
-    // `//schem load|save|list` (BACKLOG.md BUG-023). `load` / `save` redirect
+    // `//schem load|save|list` (BACKLOG.md). `load` / `save` redirect
     // to the existing `//load` / `//save` nodes so they complete their filename
     // argument as well.
     let find_idx = |nodes: &Vec<CCommandsNode>, name: &str| -> i32 {

@@ -314,7 +314,7 @@ fn check_group(group: &IoGroup, redpiler: &Compiler, world: &impl World) -> Resu
         })?;
         let ok = if group.kind.is_input() {
             // Buttons are allowed as input points too; a written `1` pulses
-            // them (BACKLOG.md BUG-024).
+            // them (docs/file-formats.md).
             matches!(
                 io.0,
                 IoElement::Lever | IoElement::PressurePlate | IoElement::Button
@@ -360,7 +360,7 @@ fn check_group(group: &IoGroup, redpiler: &Compiler, world: &impl World) -> Resu
     }
     // A port with no coordinates has nothing to drive or sample; it is only
     // meaningful as a clock event, where `INPUT <name> 0` presses the button
-    // once and `OUTPUT` reports `0` on every rising edge (BACKLOG.md BUG-008).
+    // once and `OUTPUT` reports `0` on every rising edge (docs/file-formats.md).
     if group.bits() == 0 && group.clock.is_none() {
         return Err(
             "`width = 0` needs a clock (`clk = x, y, z`), otherwise the group has nothing to do"
@@ -371,7 +371,7 @@ fn check_group(group: &IoGroup, redpiler: &Compiler, world: &impl World) -> Resu
 }
 
 /// `io.txt` body written when the file is missing; the `v<version>` line is
-/// prepended at write time so it follows the crate version (BACKLOG.md BUG-011).
+/// prepended at write time so it follows the crate version (docs/file-formats.md).
 const IO_TEMPLATE: &str = "\
 input none_in = [
 origin = 0
@@ -385,7 +385,7 @@ width = 0
 ]
 ";
 
-/// Creates `io.txt` if it does not exist yet (BACKLOG.md BUG-011).
+/// Creates `io.txt` if it does not exist yet (docs/file-formats.md).
 pub fn ensure_file() {
     let path = std::path::Path::new(IO_FILE);
     if path.exists() {
@@ -408,7 +408,7 @@ fn strip_inner_line(message: &str) -> String {
 
 /// Records a file-level error and disables every group: only a file whose
 /// structure can be followed at all may load the groups it does contain
-/// (BACKLOG.md §7.11).
+/// (docs/protocol.md).
 fn fatal(mut table: IoTable, line: usize, message: String) -> IoTable {
     table.errors.push(IoError { line, message });
     table.groups.clear();
@@ -432,7 +432,7 @@ fn parse(text: &str) -> IoTable {
 
     let mut idx = 0usize;
     // An optional version stamp is allowed as the first content line, so a file
-    // written by 0.5.0 or newer keeps loading (BACKLOG.md BUG-009).
+    // written by 0.5.0 or newer keeps loading (docs/file-formats.md).
     while idx < lines.len() && lines[idx].trim().is_empty() {
         idx += 1;
     }
@@ -630,7 +630,7 @@ fn parse(text: &str) -> IoTable {
                     line: start_line + 1,
                     // The parser already prefixes its message with the group
                     // name; wrapping it again printed the name twice
-                    // (BACKLOG.md BUG-020).
+                    // (docs/file-formats.md).
                     message: strip_inner_line(&message).to_string(),
                 });
                 continue;
@@ -638,7 +638,7 @@ fn parse(text: &str) -> IoTable {
         };
         // A `width = 0` group with no coordinates is the empty skeleton the
         // server writes on startup, and `/coord` fills it in later; it loads as
-        // an empty group instead of failing the file (BACKLOG.md BUG-011).
+        // an empty group instead of failing the file (docs/file-formats.md).
         let points: Vec<BlockPos> = list
             .points
             .iter()

@@ -1,4 +1,4 @@
-//! Bedrock 计分板（sidebar）编码，对应 Java 版右侧的 redpiler 状态栏（BACKLOG.md BUG-032 R3）。
+//! Bedrock 计分板（sidebar）编码，对应 Java 版右侧的 redpiler 状态栏（BEDROCK.md R3）。
 //!
 //! Java 的做法：一个 objective（`redpiler_status`）+ display slot 1（sidebar）+
 //! 每行一个 fake player（`redpiler_state`、`flags`、`flag_o`…）的分数，分数用于排序，

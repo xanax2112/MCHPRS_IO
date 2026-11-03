@@ -222,7 +222,7 @@ impl JITBackend for DirectBackend {
                     return;
                 }
                 // betterio shortens the button release from 10 to 2 ticks
-                // (BACKLOG.md BUG-021).
+                // (BACKLOG.md).
                 self.schedule_tick(
                     node_id,
                     if crate::betterio() { 2 } else { 10 },
@@ -332,7 +332,7 @@ impl JITBackend for DirectBackend {
                     return true;
                 }
                 // betterio shortens the button release from 10 to 2 ticks
-                // (BACKLOG.md BUG-021).
+                // (BACKLOG.md).
                 self.schedule_tick(
                     node_id,
                     if crate::betterio() { 2 } else { 10 },
@@ -372,7 +372,7 @@ impl JITBackend for DirectBackend {
             }
             // A button written by a script behaves like a press: `1` pulses it
             // and the normal schedule releases it, `0` does nothing
-            // (BACKLOG.md BUG-024).
+            // (BACKLOG.md).
             NodeType::Button => {
                 if powered && !self.nodes[node_id].powered {
                     self.schedule_tick(

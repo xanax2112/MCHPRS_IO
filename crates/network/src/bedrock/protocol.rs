@@ -395,7 +395,7 @@ pub fn teleport(
 /// 出生/重生的 `MovePlayerPacket`（`mode=RESPAWN`）。
 ///
 /// Geyser 每次连接都**先**发 RESPAWN、**再**发 TELEPORT(BEHAVIOR)，两条的位置和朝向完全相同
-/// （BACKLOG.md BUG-032 第 31 条抓包）。只发 TELEPORT 时客户端不会重置相机状态，重进服务器会
+/// （BEDROCK.md 第 31 条抓包）。只发 TELEPORT 时客户端不会重置相机状态，重进服务器会
 /// 沿用上一局的视场角/移动表现 —— 这就是"第二次进入视场角变大、移动变快"。
 pub fn respawn(
     runtime_id: u64,

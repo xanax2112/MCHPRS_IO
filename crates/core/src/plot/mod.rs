@@ -70,7 +70,7 @@ const ERROR_IO_ONLY: &str = "This plot cannot be interacted with while redpiler 
 const MAX_BATCH_SIZE: u32 = 50_000;
 
 /// Maximum number of pending `INPUT` reservations. The queue is global because
-/// reservation mode only ever admits one script (BACKLOG.md §3.3 / BUG-004).
+/// reservation mode only ever admits one script (docs/protocol.md.3 / BUG-004).
 const MAX_RESERVATIONS: usize = 255;
 
 pub struct Plot {
@@ -78,7 +78,7 @@ pub struct Plot {
     pub players: Vec<Player>,
     pub redpiler: Compiler,
 
-    /// File-backed read-only memories (BACKLOG.md BUG-015), loaded from
+    /// File-backed read-only memories (BACKLOG.md), loaded from
     /// `memory/*.rom.txt` and re-validated after every successful compile.
     memories: Vec<MemoryState>,
 
@@ -91,9 +91,9 @@ pub struct Plot {
 
     // Timings
     tps: Tps,
-    /// rtps to restore on `/tick unfreeze` (BACKLOG.md BUG-023).
+    /// rtps to restore on `/tick unfreeze` (BACKLOG.md).
     frozen_rtps: Option<Tps>,
-    /// `/coord` context, undo and redo stacks (BACKLOG.md BUG-022).
+    /// `/coord` context, undo and redo stacks (BACKLOG.md).
     coord: coord::CoordState,
     /// Set when `/coord` touched a file, so the next compile re-reads it.
     coord_dirty: bool,
@@ -121,22 +121,22 @@ pub struct Plot {
     io: io::IoTable,
     /// Completed tick counter of the running circuit: `0` the instant a compile
     /// finishes and `+1` per completed tick, wrapping at 32 bits
-    /// (BACKLOG.md §7.2).
+    /// (BACKLOG.md).
     tick: u32,
     /// Groups each automation connection is bound to with `POUT`. Any compile
     /// or reset empties this; scripts have to send `POUT` again
-    /// (BACKLOG.md §7.3).
+    /// (BACKLOG.md).
     pout_bindings: FxHashMap<u64, FxHashSet<String>>,
     /// Pending `INPUT` reservations, locked to absolute ticks. At most
     /// [`MAX_RESERVATIONS`] entries; a later request for the same tick and
-    /// group overwrites the earlier one (BACKLOG.md §7.2).
+    /// group overwrites the earlier one (BACKLOG.md).
     reservations: Vec<Reservation>,
     /// `/tick seq` is active: the plot is in reservation mode and the single
-    /// exclusive script may reserve ticks (BACKLOG.md BUG-004).
+    /// exclusive script may reserve ticks (BACKLOG.md).
     seq_mode: bool,
     /// The connection currently holding the reservation lock, mirrored from the
     /// automation bridge. Only that connection may use the
-    /// `INPUT <name> <offset> <hex>` form (BACKLOG.md BUG-004).
+    /// `INPUT <name> <offset> <hex>` form (BACKLOG.md).
     exclusive: Option<u64>,
 
     /// Bedrock 区块流送状态（BUG-032 第 26 条 + 第 19 条），key = 玩家 uuid。
@@ -177,7 +177,7 @@ fn radius_blocks(chunk_radius: i32) -> u32 {
     (chunk_radius as f64 * 16.0 * std::f64::consts::SQRT_2).floor() as u32
 }
 
-/// One pending `INPUT`, locked to an absolute tick (BACKLOG.md §7.2).
+/// One pending `INPUT`, locked to an absolute tick (BACKLOG.md).
 #[derive(Clone)]
 struct Reservation {
     /// Absolute tick counter value the input is applied at.
@@ -186,7 +186,7 @@ struct Reservation {
     bits: Vec<bool>,
 }
 
-/// Formats the empty-container compile warning (BACKLOG.md BUG-014): one red
+/// Formats the empty-container compile warning (BACKLOG.md): one red
 /// message listing every affected comparator position, at most ten of them.
 fn format_empty_container_warning(positions: &[BlockPos]) -> String {
     const MAX_LISTED: usize = 10;
@@ -411,7 +411,7 @@ impl World for PlotWorld {
     }
 }
 
-/// Result of `/memory reload` (BACKLOG.md §4.4 / BUG-030).
+/// Result of `/memory reload` (BACKLOG.md).
 pub(super) enum ReloadOutcome {
     /// Refused: the running circuit was compiled with `-i` (io only).
     CompiledIoOnly,
@@ -439,7 +439,7 @@ impl Plot {
     ///
     /// ROM / RAM see **every** tick, exactly like the automatic loop, and the
     /// tick counter advances once per completed tick so an `OUTPUT` sampled
-    /// during `/radv 5` carries ticks `n+1 ..= n+5` (BACKLOG.md §7.2).
+    /// during `/radv 5` carries ticks `n+1 ..= n+5` (BACKLOG.md).
     fn advance_ticks(&mut self, ticks: u64) {
         if !self.redpiler.is_active() {
             self.tickn(ticks);
@@ -469,7 +469,7 @@ impl Plot {
     /// The order is: apply every reservation that belongs to this tick, run the
     /// tick, bump the counter, then let the memories see the result. In `exact`
     /// mode the IO groups are sampled right away, so an `OUTPUT` line describes
-    /// the state at the end of the tick it names (BACKLOG.md §7.2 / §7.4).
+    /// the state at the end of the tick it names (BACKLOG.md/ §7.4).
     fn step_tick(&mut self, exact: bool) {
         let next = self.tick.wrapping_add(1);
         self.apply_reservations(next);
@@ -485,7 +485,7 @@ impl Plot {
     ///
     /// Reservations that never became due stay in the queue, so a `/radv` that
     /// stops short of the reserved tick simply leaves them pending
-    /// (BACKLOG.md §7.2).
+    /// (BACKLOG.md).
     fn apply_reservations(&mut self, tick: u32) {
         if self.reservations.is_empty() {
             return;
@@ -687,7 +687,7 @@ impl Plot {
             self.world.x, self.world.z
         ));
         // Java 的方块广播只对 Java 连接有意义；Bedrock 玩家的后端是句柄，
-        // 它的方块更新要走 Bedrock 的推送通道（后续接入，见 BACKLOG.md BUG-032）。
+        // 它的方块更新要走 Bedrock 的推送通道（后续接入，见 BEDROCK.md）。
         if let Some(java_client) = player.client.as_java() {
             self.world
                 .packet_senders
@@ -1066,7 +1066,7 @@ impl Plot {
     ///
     /// Every answer that depends on the circuit lives here: the handshake tick
     /// counter, `POUT` bindings, `INPUT` reservations and `READ`. Errors are a
-    /// single code from BACKLOG.md §7.11.
+    /// single code from docs/protocol.md.
     fn handle_automation_request(
         &mut self,
         conn_id: u64,
@@ -1091,7 +1091,7 @@ impl Plot {
     }
 
     /// `HELLO MCHPRS_IO 0.5.2-alpha [<tick>]`; the tick field is omitted while
-    /// no circuit is compiled (BACKLOG.md §7.1).
+    /// no circuit is compiled (BACKLOG.md).
     fn handle_hello(&self) -> AutomationResponse {
         AutomationResponse::Hello {
             tick: self.redpiler.is_active().then_some(self.tick),
@@ -1102,7 +1102,7 @@ impl Plot {
     /// current value.
     ///
     /// A repeated `POUT` for a group the connection is already bound to is
-    /// idempotent and pushes nothing (BACKLOG.md §7.3).
+    /// idempotent and pushes nothing (BACKLOG.md).
     fn handle_bind(&mut self, conn_id: u64, name: &str) -> AutomationResponse {
         if !self.redpiler.is_active() {
             return AutomationResponse::Err("nocompile");
@@ -1123,7 +1123,7 @@ impl Plot {
         if bound {
             // Re-`POUT` on a group we already listen to means "give me the
             // current value once more"; the binding and the push rules stay
-            // exactly the same (BACKLOG.md BUG-007).
+            // exactly the same (docs/protocol.md).
             let bits = self
                 .io
                 .find(name)
@@ -1163,7 +1163,7 @@ impl Plot {
     ///
     /// Without an offset it lands on the next tick. With an offset it is a
     /// reservation, which needs `exact` mode plus `rtps 0` and the exclusive
-    /// script (BACKLOG.md §7.2 / §7.13).
+    /// script (BACKLOG.md/ §7.13).
     fn handle_input(
         &mut self,
         conn_id: u64,
@@ -1175,7 +1175,7 @@ impl Plot {
             return AutomationResponse::Err("nocompile");
         }
         if offset.is_some() && !self.reservations_allowed(conn_id) {
-            // Reservations only exist in `/tick seq` mode (BACKLOG.md BUG-005).
+            // Reservations only exist in `/tick seq` mode (docs/protocol.md).
             return AutomationResponse::Err("mode");
         }
         let Some(group) = self.io.find(name) else {
@@ -1206,7 +1206,7 @@ impl Plot {
 
     /// `true` when the connection may use the reservation form of `INPUT`:
     /// only the exclusive script of an active `/tick seq` session may reserve
-    /// (BACKLOG.md BUG-004 / BUG-005).
+    /// (BACKLOG.md/ BUG-005).
     fn reservations_allowed(&self, conn_id: u64) -> bool {
         self.seq_mode
             && CONFIG.io_mode() == IoMode::Exact
@@ -1215,7 +1215,7 @@ impl Plot {
     }
 
     /// Adds a reservation, replacing the one for the same tick and group
-    /// (BACKLOG.md §7.2: later requests win).
+    /// (BACKLOG.md: later requests win).
     fn reserve_input(
         &mut self,
         group: &str,
@@ -1243,7 +1243,7 @@ impl Plot {
 
     /// `READ <name>:<bit>`: bit `0` is the group's last coordinate, for analog
     /// groups it counts points and answers the strength of that point
-    /// (BACKLOG.md §7.4).
+    /// (BACKLOG.md).
     fn handle_read_bit(&mut self, name: &str, bit: u32) -> AutomationResponse {
         if !self.redpiler.is_active() {
             return AutomationResponse::Err("nocompile");
@@ -1282,7 +1282,7 @@ impl Plot {
 
     /// `READ <x,y,z>`: read the IO element at an absolute coordinate. Redstone
     /// dust answers its strength (`0-15`), every other element answers `0/1`
-    /// (BACKLOG.md §7.4 / §7.7).
+    /// (BACKLOG.md/ §7.7).
     fn handle_read_pos(&mut self, pos: BlockPos) -> AutomationResponse {
         if !self.redpiler.is_active() {
             return AutomationResponse::Err("nocompile");
@@ -1305,7 +1305,7 @@ impl Plot {
         }
     }
 
-    /// `TICK NOW`: the latest completed tick (BACKLOG.md §7.2).
+    /// `TICK NOW`: the latest completed tick (BACKLOG.md).
     fn handle_tick_now(&self) -> AutomationResponse {
         if !self.redpiler.is_active() {
             return AutomationResponse::Err("nocompile");
@@ -1316,13 +1316,13 @@ impl Plot {
     /// Re-validates every `io.txt` group against the freshly compiled graph and
     /// reports the ones that were disabled.
     ///
-    /// A failed group only disables itself (BACKLOG.md §3.7). The report goes to
+    /// A failed group only disables itself (docs/protocol.md.7). The report goes to
     /// the player that started the compile; scripts cannot compile, so there is
-    /// no wire report any more (BACKLOG.md BUG-008).
+    /// no wire report any more (docs/file-formats.md).
     fn validate_io_groups(&mut self, source: Option<usize>) {
         self.io.validate(&self.redpiler, &self.world);
         // An io clock may not share its button with a memory clock: both would
-        // pulse the same element (BACKLOG.md §5.4).
+        // pulse the same element (BACKLOG.md).
         let memory_clocks: Vec<BlockPos> = self
             .memories
             .iter()
@@ -1358,7 +1358,7 @@ impl Plot {
         if failures.is_empty() {
             return;
         }
-        // Automatic compiles do not report (BACKLOG.md §3.7); only a player or
+        // Automatic compiles do not report (docs/protocol.md.7); only a player or
         // the console sees the failures.
         if let Some(player) = source {
             for (name, reason) in &failures {
@@ -1368,10 +1368,10 @@ impl Plot {
         }
     }
 
-    /// `RADV <ticks>`: manual stepping started by a script (BACKLOG.md BUG-008).
+    /// `RADV <ticks>`: manual stepping started by a script (docs/file-formats.md).
     ///
     /// A script may only step while nothing else advances the circuit; the
-    /// player command `/radv` has no such restriction (BACKLOG.md BUG-006).
+    /// player command `/radv` has no such restriction (docs/protocol.md).
     fn handle_radv(&mut self, ticks: u32) -> AutomationResponse {
         if !self.redpiler.is_active() {
             return AutomationResponse::Err("nocompile");
@@ -1387,13 +1387,13 @@ impl Plot {
     }
 
     /// The tick counter as shown by `/tick`; `None` while nothing is compiled
-    /// (BACKLOG.md BUG-003).
+    /// (BACKLOG.md).
     pub(super) fn current_tick(&self) -> Option<u32> {
         self.redpiler.is_active().then_some(self.tick)
     }
 
     /// `/tick seq`: kick every script, set rtps to 0 and enter reservation mode
-    /// (BACKLOG.md BUG-004). Running it again re-arms the session: connections
+    /// (BACKLOG.md). Running it again re-arms the session: connections
     /// are dropped again and pending reservations are cleared.
     ///
     /// `Err("nocompile")` means nothing is compiled yet, `Err("performance")`
@@ -1422,7 +1422,7 @@ impl Plot {
         self.reset_timings();
     }
 
-    /// Player issued `/rtps <n>` (BACKLOG.md BUG-005).
+    /// Player issued `/rtps <n>` (docs/protocol.md).
     ///
     /// A plain `/rtps 0` only changes the speed: it neither kicks scripts nor
     /// grants reservations. Automatic speeds leave reservation mode, which is
@@ -1444,7 +1444,7 @@ impl Plot {
             .send(Message::SeqModeChanged { on: false });
     }
 
-    /// `/io list`: a summary of `io.txt` only (BACKLOG.md §7.11). While no
+    /// `/io list`: a summary of `io.txt` only (docs/protocol.md). While no
     /// circuit is compiled only the format errors are known; a compiled plot
     /// also reports the groups that were disabled by validation.
     fn io_summary(&self) -> String {
@@ -1482,7 +1482,7 @@ impl Plot {
             }
             // Analog points only exist in the graph when the compile was given
             // `-d` / `-c`; say so whenever the file declares analog groups
-            // (BACKLOG.md §3.9).
+            // (docs/protocol.md.9).
             if self.io.groups.iter().any(|group| group.kind.is_analog()) {
                 message.push_str("; analog groups require -d -c when compiling");
             }
@@ -1507,7 +1507,7 @@ impl Plot {
         // RAM contents are only written back at explicit events (shutdown,
         // /redpiler reset, a compile crash and /memory reload); the tick loop
         // never touches the disk, so a large RAM cannot stall a tick
-        // (BACKLOG.md BUG-021 / BUG-026).
+        // (BACKLOG.md/ BUG-026).
     }
 
     /// Forces every dirty memory to disk. Used on shutdown, on a compile crash
@@ -1516,7 +1516,7 @@ impl Plot {
         for state in &mut self.memories {
             if !state.active {
                 // A memory that failed validation must not carry its contents
-                // back to disk (BACKLOG.md §7.11: the data is discarded).
+                // back to disk (docs/protocol.md: the data is discarded).
                 state.discard();
                 continue;
             }
@@ -1530,7 +1530,7 @@ impl Plot {
 
     /// Validates every memory against the freshly compiled graph. A memory that
     /// does not match is disabled and reported; the others keep working
-    /// (BACKLOG.md BUG-015).
+    /// (BACKLOG.md).
     fn validate_memories(&mut self, source: Option<usize>) {
         for state in &mut self.memories {
             state.reset_edges();
@@ -1549,7 +1549,7 @@ impl Plot {
     }
 
     /// Re-reads `memory/*.rom.txt` from disk and re-validates every definition.
-    /// Returns `(loaded, active)` (BACKLOG.md BUG-015).
+    /// Returns `(loaded, active)` (BACKLOG.md).
     /// `/tick freeze`: remembers the current rtps, then sets it to 0.
     fn freeze_rtps(&mut self) {
         if self.tps != Tps::Limited(0.0) {
@@ -1566,7 +1566,7 @@ impl Plot {
         Some(restored)
     }
 
-    /// `/io reload`: same contract as `/memory reload` (BACKLOG.md BUG-012) —
+    /// `/io reload`: same contract as `/memory reload` (BACKLOG.md) —
     /// refused while a `-i` compile is active, otherwise the compiled state is
     /// dropped and `io.txt` is parsed again. It never starts a compile.
     fn reload_io(&mut self) -> ReloadOutcome {
@@ -1597,8 +1597,7 @@ impl Plot {
 
     fn reload_memories(&mut self) -> ReloadOutcome {
         // `-i` (io only) compiles never re-read memory definitions, and a
-        // reload is refused while such a compile is running (BACKLOG.md
-        // §4.4 / BUG-030).
+        // reload is refused while such a compile is running (BACKLOG.md// §4.4 / BUG-030).
         if self
             .redpiler
             .current_flags()
@@ -1634,7 +1633,7 @@ impl Plot {
         // **注意**：`self.world.flush_block_changes()` 是 `crates/world` 里的空实现
         // （`fn flush_block_changes(&mut self) {}`），什么都不做。真正发包的是
         // `Plot::flush_block_changes`（本文件 339 行）。写错过一次，后果是
-        // 方块变化永远发不出去、玩家点按钮要等十几秒才看到变化（BACKLOG.md BUG-032 第 34 条）。
+        // 方块变化永远发不出去、玩家点按钮要等十几秒才看到变化（BEDROCK.md 第 34 条）。
         self.world.flush_block_changes();
         self.send_bedrock_block_changes();
         self.last_world_send_time = Instant::now();
@@ -1675,15 +1674,15 @@ impl Plot {
         debug!("Starting redpiler");
         // Every compile updates the whole plot first, silently: `--update`
         // runs `mchprs_redstone::update` over every non-empty section after the
-        // graph is built (BACKLOG.md BUG-023).
+        // graph is built (BACKLOG.md).
         let mut options = options;
         options.update = true;
         // `betterio` is a runtime timing switch, not a compile option
-        // (BACKLOG.md BUG-021): push the Config value into the backend
+        // (BACKLOG.md): push the Config value into the backend
         // before every compile so a restart is all it takes.
         mchprs_redpiler::set_betterio(CONFIG.betterio);
         // A `/coord` edit is not visible until the files are read again; the
-        // next compile does that once (BACKLOG.md BUG-022).
+        // next compile does that once (BACKLOG.md).
         if self.coord_dirty {
             self.io = io::IoTable::load(Path::new(IO_FILE));
             let report = memory::load_all(Path::new(memory::MEMORY_DIR));
@@ -1737,7 +1736,7 @@ impl Plot {
                     .set_redpiler_state(&self.players, RedpilerState::Running);
                 self.reset_timings();
                 // The compile succeeded, but empty containers may have been
-                // read as 0 (BACKLOG.md BUG-001 revision, BUG-014). Report every
+                // read as 0 (BACKLOG.mdrevision, BUG-014). Report every
                 // distinct position to the player who started the compile;
                 // automatic compiles stay silent.
                 if let Some(player) = source {
@@ -1758,7 +1757,7 @@ impl Plot {
 
                 // 0.5.2-alpha: a finished compile starts from tick 0, drops
                 // every binding and every reservation, and re-validates the
-                // `io.txt` groups against the new graph (BACKLOG.md §7.2 /
+                // `io.txt` groups against the new graph (BACKLOG.md/
                 // §7.3).
                 self.clear_io_state();
                 self.validate_io_groups(source);
@@ -1791,14 +1790,13 @@ impl Plot {
                 self.scoreboard
                     .set_redpiler_options(&self.players, &Default::default());
             }
-            // A panic during compilation is unrecoverable (BACKLOG.md
-            // BUG-011): save the plot, report what happened, and terminate the
+            // A panic during compilation is unrecoverable (BACKLOG.md// BUG-011): save the plot, report what happened, and terminate the
             // process so a half-dead server is never left running.
             Err(payload) => {
                 let reason = panic_payload_message(payload.as_ref());
                 let saved_to = self.crash_save();
                 // RAM contents are persisted by their own files, so a crash
-                // must not lose them (BACKLOG.md BUG-021).
+                // must not lose them (BACKLOG.md).
                 self.flush_memories();
                 error!(
                     "[CRASH] plot ({}, {}) redpiler panic: {} — saved to {} — exiting with code 1",
@@ -1813,13 +1811,13 @@ impl Plot {
 
     /// Clears the runtime state that belongs to a compiled circuit: the tick
     /// counter, every `POUT` binding, every reservation and the IO groups'
-    /// change detectors (BACKLOG.md §7.2 / §7.3).
+    /// change detectors (BACKLOG.md/ §7.3).
     fn clear_io_state(&mut self) {
         self.tick = 0;
         self.pout_bindings.clear();
         self.reservations.clear();
         self.exclusive = None;
-        // A new compile always ends reservation mode (BACKLOG.md BUG-004).
+        // A new compile always ends reservation mode (BACKLOG.md).
         if self.seq_mode {
             self.seq_mode = false;
             let _ = self
@@ -1837,8 +1835,7 @@ impl Plot {
     /// can be
     fn reset_redpiler(&mut self) {
         // The circuit that drives the memories is about to disappear, so a RAM
-        // must not carry unsaved words into the next compile (BACKLOG.md
-        // BUG-021).
+        // must not carry unsaved words into the next compile (BACKLOG.md// BUG-021).
         self.flush_memories();
         if self.redpiler.is_active() {
             debug!("Discarding redpiler");
@@ -2078,8 +2075,7 @@ impl Plot {
                     self.pout_bindings.remove(&conn_id);
                     if self.exclusive == Some(conn_id) {
                         // The session stays armed in the bridge but nobody may
-                        // reserve until `/tick seq` runs again (BACKLOG.md
-                        // BUG-004).
+                        // reserve until `/tick seq` runs again (BACKLOG.md// BUG-004).
                         self.exclusive = None;
                     }
                 }
@@ -2089,7 +2085,7 @@ impl Plot {
                     spawn,
                 } => {
                     // 只读快照：在本线程里读方块、编码成 Bedrock 区块，再回传给监听线程。
-                    // 不写世界、不发更新（BACKLOG.md BUG-032「最小只读通路」）。
+                    // 不写世界、不发更新（BEDROCK.md「最小只读通路」）。
                     let snapshot = self.build_bedrock_snapshot(chunk_radius, spawn);
                     let _ = reply.send(snapshot);
                 }
@@ -2097,13 +2093,13 @@ impl Plot {
         }
     }
 
-    // Note: `remove_oob_players` was removed on purpose (BACKLOG.md BUG-010).
+    // Note: `remove_oob_players` was removed on purpose (docs/file-formats.md).
     // Stepping outside the plot no longer kicks the player into a neighbouring
     // plot; that plot would have to be loaded, which the single-plot rule
     // forbids. Players may wander into the empty space around p0,0 and stay
     // attached to it — the "skyblock" model this server now implements.
 
-    /// 给 Bedrock 客户端打包一份**只读**世界快照（BACKLOG.md BUG-032）。
+    /// 给 Bedrock 客户端打包一份**只读**世界快照（BEDROCK.md）。
     ///
     /// 坐标与 Java 版一致：同一个方块，Bedrock 的 y = MCHPRS 的 y - 64。
     /// 出生点取 Java 新玩家的默认位置 `(128, 128, 128)`。
@@ -2236,7 +2232,7 @@ impl Plot {
         // A player leaving is the natural end of a session: p0,0 never unloads
         // (BUG-010), so `Drop` can never persist anything while the server
         // keeps running. Writing the RAM contents back here replaces the old
-        // periodic flush entirely (BACKLOG.md BUG-021 rule 7b).
+        // periodic flush entirely (BACKLOG.mdrule 7b).
         if had_disconnections {
             self.flush_memories();
         }
@@ -2577,7 +2573,7 @@ impl Plot {
     fn update(&mut self) {
         self.handle_messages();
 
-        // Tick unconditionally (BACKLOG.md BUG-009). Upstream gated this whole
+        // Tick unconditionally (BACKLOG.md). Upstream gated this whole
         // body behind `!self.players.is_empty()`, which froze the redstone
         // simulation, the redpiler flush and every automation sample on a plot
         // with no players — headless operation was impossible. p0,0 is now
@@ -2632,7 +2628,7 @@ impl Plot {
                     // nothing is merged or dropped; `performance` samples once
                     // at the end of the batch. ROM / RAM always see every tick,
                     // otherwise a lagging batch merges clock edges and loses
-                    // RAM writes (BACKLOG.md BUG-027 / §7.5).
+                    // RAM writes (BACKLOG.md/ §7.5).
                     let exact = CONFIG.io_mode() == IoMode::Exact;
                     for _ in 0..batch_size {
                         // The tick counter and the reservations advance tick by
@@ -2676,7 +2672,7 @@ impl Plot {
         // Unload the plot after 600 seconds without players unless it is marked
         // as always running. This is now an independent check rather than the
         // `else` of the tick branch. p0,0 is always running, so it never
-        // unloads (BACKLOG.md BUG-010).
+        // unloads (docs/file-formats.md).
         if self.players.is_empty() && !self.always_running {
             if self.last_player_time.elapsed().as_secs() > 600 {
                 self.running = false;
@@ -3022,7 +3018,7 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 impl Drop for Plot {
     fn drop(&mut self) {
-        // Last chance to persist writable memories (BACKLOG.md BUG-021).
+        // Last chance to persist writable memories (BACKLOG.md).
         self.flush_memories();
         if !self.players.is_empty() {
             for player in &mut self.players {

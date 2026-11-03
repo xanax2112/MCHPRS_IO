@@ -2,7 +2,7 @@
 members = ["crates/block_data_gen","crates/proc_macros", "crates/redpiler_graph", "crates/rilc", "crates/schematic", "crates/world_exporter"]
 # vendor/bedrock-rs 是上游 bedrock-rs 的完整副本（自带独立 workspace）。
 # 必须 exclude：否则它会被当成本 workspace 的成员，从而继承本仓库的 workspace.dependencies，
-# 但它需要的是自己那份（uuid、nbtx、facet 等）。详见 BACKLOG.md BUG-032。
+# 但它需要的是自己那份（uuid、nbtx、facet 等）。详见 BEDROCK.md。
 exclude = ["vendor/bedrock-rs"]
 
 [package]

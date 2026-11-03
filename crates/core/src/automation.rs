@@ -3,7 +3,7 @@
 //! declared in `io.txt`.
 //!
 //! This is the 0.5.2-alpha wire format; the contract this module implements
-//! (BACKLOG.md §3) is:
+//! (docs/protocol.md) is:
 //!
 //! ```text
 //! HELLO MCHPRS_IO 0.5.2-alpha <tick>        (compiled)
@@ -27,10 +27,10 @@
 //! ```
 //!
 //! Every verb must be written in upper case; `input`, `radv` or `tick now`
-//! answer `ERR unknown` (BACKLOG.md BUG-007).
+//! answer `ERR unknown` (docs/protocol.md).
 //!
 //! Scripts have **no** `/` command channel: any line beginning with `/` is
-//! answered with `ERR unknown` (BACKLOG.md BUG-005). `PIN` / `SUB` / `UNSUB` /
+//! answered with `ERR unknown` (docs/protocol.md). `PIN` / `SUB` / `UNSUB` /
 //! `EVENT` / `USE` / `SET` / `TICK STEP` and the old data-port coordinate
 //! syntax were removed as well; they answer `ERR unknown` too.
 //!
@@ -52,23 +52,23 @@ use tracing::{debug, info, warn};
 /// Taken from the crate version so it can never drift from `/version`.
 pub const PROTOCOL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Maximum length of a single request or response line (BACKLOG.md §7.11).
+/// Maximum length of a single request or response line (docs/protocol.md).
 const MAX_LINE_LEN: usize = 65_536;
 
 /// Maximum amount of bytes queued for a connection that is not reading. A
 /// client that lets more than this pile up is dropped instead of letting the
-/// queue grow without bound (BACKLOG.md §7.11).
+/// queue grow without bound (docs/protocol.md).
 const MAX_PENDING: usize = 1024 * 1024;
 
 /// Group-name based requests carry no coordinates. They are routed to the one
-/// plot this server ever has (BACKLOG.md BUG-010); `/` commands use the same
+/// plot this server ever has (docs/file-formats.md); `/` commands use the same
 /// model.
 const ROUTE_ANCHOR: BlockPos = BlockPos::new(0, 64, 0);
 
 /// What an automation client asked for.
 ///
 /// The `exclusive` flag records whether the connection that sent the request
-/// is the one holding the `rtps 0` lock (BACKLOG.md §7.13); reservations are
+/// is the one holding the `rtps 0` lock (docs/protocol.md); reservations are
 /// only accepted from that connection.
 #[derive(Debug, Clone)]
 pub struct AutomationRequest {
@@ -97,7 +97,7 @@ pub enum RequestKind {
     ReadPos { pos: BlockPos },
     /// `TICK NOW`: report the latest completed tick.
     TickNow,
-    /// `RADV <ticks>`: advance the circuit manually (BACKLOG.md BUG-008).
+    /// `RADV <ticks>`: advance the circuit manually (docs/file-formats.md).
     Radv { ticks: u32 },
 }
 
@@ -127,7 +127,7 @@ pub enum AutomationResponse {
     Now { tick: u32 },
     /// `OK RADV <ticks> <tick>`.
     Radv { ticks: u32, tick: u32 },
-    /// `ERR <code>`; the code comes from the table in BACKLOG.md §3.7 and is
+    /// `ERR <code>`; the code comes from the table in docs/protocol.md.7 and is
     /// always lower case.
     Err(&'static str),
     /// The request reached no running circuit; answered with `ERR nocompile`
@@ -176,7 +176,7 @@ pub struct AutomationServer {
     next_conn_id: u64,
     connections: FxHashMap<u64, AutomationConn>,
     /// `/tick seq` just ran: drop everyone and let the next connection become
-    /// the single exclusive script (BACKLOG.md BUG-004).
+    /// the single exclusive script (docs/protocol.md).
     waiting: bool,
     /// The one script connection allowed while reservation mode is active.
     exclusive: Option<u64>,
@@ -253,8 +253,7 @@ impl AutomationServer {
                 let line = match std::str::from_utf8(&raw) {
                     Ok(line) => line.trim(),
                     Err(_) => {
-                        // Never silently repair a broken payload (BACKLOG.md
-                        // §7.11); answer and move on with the next line.
+                        // Never silently repair a broken payload (docs/protocol.md// §7.11); answer and move on with the next line.
                         replies.push((conn_id, "ERR encoding\n".to_string()));
                         continue;
                     }
@@ -374,7 +373,7 @@ impl AutomationServer {
             AutomationResponse::Err(code) => format!("ERR {}\n", code),
             // No plot runs the requested circuit. If the handshake is still
             // pending this is its answer: an uncompiled server omits the tick
-            // field (BACKLOG.md §7.1).
+            // field (docs/protocol.md).
             AutomationResponse::Inactive(_) => {
                 if hello_pending {
                     if let Some(conn) = self.connections.get_mut(&conn_id) {
@@ -396,7 +395,7 @@ impl AutomationServer {
     }
 
     /// Player ran `/tick seq` (`on`) or left reservation mode with `/rtps > 0`
-    /// (`off`, BACKLOG.md BUG-004 / BUG-005).
+    /// (`off`, docs/protocol.md/ BUG-005).
     ///
     /// Turning the mode on always drops every connection, so the next one to
     /// arrive becomes the single exclusive script; running it again re-arms
@@ -425,7 +424,7 @@ impl AutomationServer {
             match self.listener.accept() {
                 Ok((stream, addr)) => {
                     // While an exclusive script holds the plot, everyone else
-                    // is refused outright (BACKLOG.md BUG-004).
+                    // is refused outright (docs/protocol.md).
                     if self.exclusive.is_some() {
                         info!(
                             "Refusing automation client {}: a /tick seq exclusive session is active",
@@ -514,7 +513,7 @@ impl AutomationServer {
         if self.exclusive == Some(conn_id) {
             // The only writer is gone: unlock, but do not hand the session to
             // the next connection; the player has to run `/tick seq` again
-            // (BACKLOG.md BUG-004).
+            // (docs/protocol.md).
             self.exclusive = None;
             self.waiting = false;
         }
@@ -531,10 +530,10 @@ enum Parsed {
 }
 
 /// Parses one client request line. Every failure maps to a single lower-case
-/// error code (BACKLOG.md §3.7); a line never reports more than one error.
+/// error code (docs/protocol.md.7); a line never reports more than one error.
 fn parse_request(line: &str, exclusive: bool) -> Parsed {
     // Scripts have no command channel: anything that looks like a `/` command
-    // is refused outright (BACKLOG.md BUG-008).
+    // is refused outright (docs/file-formats.md).
     if line.starts_with('/') {
         return Parsed::Error("unknown");
     }
@@ -551,7 +550,7 @@ fn parse_request(line: &str, exclusive: bool) -> Parsed {
     };
 
     // `RADV` is the only verb that carries an argument but no group, so it is
-    // matched first; like every verb it must be upper case (BACKLOG.md BUG-007).
+    // matched first; like every verb it must be upper case (docs/protocol.md).
     if raw_verb == "RADV" {
         let Some(arg) = parts.next() else {
             return Parsed::Error("arg");
@@ -566,7 +565,7 @@ fn parse_request(line: &str, exclusive: bool) -> Parsed {
     }
 
     // Verbs are case sensitive: only the upper-case spelling is accepted, so
-    // `input` or `tick now` answer `ERR unknown` (BACKLOG.md BUG-007).
+    // `input` or `tick now` answer `ERR unknown` (docs/protocol.md).
     match raw_verb {
         "INPUT" => {
             let Some(name) = parts.next() else {
@@ -671,11 +670,11 @@ fn parse_request(line: &str, exclusive: bool) -> Parsed {
 ///
 /// The vector is treated as one unsigned integer: the first bit is the most
 /// significant one, and a width that is not a multiple of four is padded at
-/// the front of the whole value (BACKLOG.md §7.6). A `matrix` group pads every
+/// the front of the whole value (docs/protocol.md). A `matrix` group pads every
 /// row to a whole number of hex digits, exactly like the memory files do.
 pub fn encode_hex(bits: &[bool], matrix: Option<MatrixShape>) -> String {
     // A zero-width port always reports `0`; an empty string would produce
-    // `OUTPUT <name> <tick> `, which no script can parse (BACKLOG.md BUG-008).
+    // `OUTPUT <name> <tick> `, which no script can parse (docs/file-formats.md).
     if matrix.is_none() && bits.is_empty() {
         return "0".to_string();
     }
@@ -720,14 +719,13 @@ pub fn encode_hex(bits: &[bool], matrix: Option<MatrixShape>) -> String {
 
 /// Decodes a protocol hex word into the group's bit vector.
 ///
-/// The script side is strict (BACKLOG.md §7.6): the number of digits must be
+/// The script side is strict (docs/protocol.md): the number of digits must be
 /// exactly the one the group needs, `ceil(width / 4)` for a plain list or the
 /// per-row padded width for a `matrix` list, and every digit must be
 /// hexadecimal. `bits` is the group width and is ignored for `matrix` groups.
 pub fn decode_hex(hex: &str, bits: usize, matrix: Option<MatrixShape>) -> Result<Vec<bool>, ()> {
     // A zero-width port carries no data at all: its word is the single digit
-    // `0`, so the line protocol always has a third argument (BACKLOG.md
-    // BUG-008).
+    // `0`, so the line protocol always has a third argument (docs/protocol.md// BUG-008).
     if matrix.is_none() && bits == 0 {
         return if hex == "0" { Ok(Vec::new()) } else { Err(()) };
     }

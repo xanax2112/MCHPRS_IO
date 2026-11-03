@@ -133,7 +133,7 @@ impl std::fmt::Display for PlayerPos {
 /// 这个类型**实现了与 `PlayerConn` 同名的 `send_packet` / `alive` / `close_connection`**，
 /// 因此 `plot` 里现有的 `player.client.send_packet(..)` 之类调用不需要改。
 ///
-/// 见 BACKLOG.md BUG-032「玩家化」：Bedrock 客户端从现在起是 `plot.players` 里的真玩家，
+/// 见 BEDROCK.md「玩家化」：Bedrock 客户端从现在起是 `plot.players` 里的真玩家，
 /// 位置、权限、命令、计分板都复用已有逻辑；尚不支持的功能（Java 包）在 Bedrock 后端是 no-op。
 pub enum PlayerBackend {
     Java(PlayerConn),
@@ -178,7 +178,7 @@ impl PlayerBackend {
     /// 推 Bedrock 计分板（Java 后端不用：Java 走自己的 `CUpdateScore` 那一套）。
     ///
     /// 出站方向是**语义化**的：core 不构造 Bedrock 包，只把"要显示什么"交给会话线程
-    /// （见 BACKLOG.md BUG-032「入站转义 / 出站语义化」）。
+    /// （见 BEDROCK.md「入站转义 / 出站语义化」）。
     pub fn send_sidebar(&self, sidebar: &mchprs_network::bedrock::bridge::BedrockSidebar) {
         if let Self::Bedrock(link) = self {
             link.handle
@@ -620,7 +620,7 @@ impl Player {
     /// Manages keep alives and packet reading. Return true if the view position should be updated.
     pub fn update(&mut self) -> bool {
         // Bedrock 后端没有 Java 的 keep-alive 往返，超时逻辑必须跳过，
-        // 否则 Bedrock 玩家会在 30 秒后被当成超时踢掉（BACKLOG.md BUG-032「玩家化」）。
+        // 否则 Bedrock 玩家会在 30 秒后被当成超时踢掉（BEDROCK.md「玩家化」）。
         if !self.client.is_bedrock() {
             if self.last_keep_alive_received.elapsed().as_secs() > 30 {
                 self.kick("Timed out.".into());
@@ -970,7 +970,7 @@ impl PacketSender for Player {
     }
 
     /// Bedrock 玩家收不到 `CSystemChatMessage`：转成 `TextPacket`（RAW）推过去；
-    /// Java 玩家仍走原来的 JSON 组件包。见 BACKLOG.md BUG-032 R4「回执/聊天」。
+    /// Java 玩家仍走原来的 JSON 组件包。见 BEDROCK.md R4「回执/聊天」。
     fn send_raw_system_message(&self, message: TextComponent) {
         if self.client.is_bedrock() {
             self.client.send_chat(&message.to_legacy_text());

@@ -1,6 +1,6 @@
 //! Bedrock 入站包 → Java 入站包的转义。
 //!
-//! 目的（BACKLOG.md BUG-032「玩家化 · 入站转义」）：让 `plot` 的
+//! 目的（BEDROCK.md「玩家化 · 入站转义」）：让 `plot` 的
 //! `handle_packets_for_player` 完全复用现有 Java 逻辑 —— 它只认
 //! `Box<dyn ServerBoundPacket>`，所以只要把 Bedrock 的输入转成 Java 包，
 //! 命令、方块交互、移动、潜行等等都不需要为 Bedrock 再写一套。
@@ -97,7 +97,7 @@ pub fn translate(packet: &Protocol) -> Vec<Box<dyn ServerBoundPacket>> {
                     // 其余 status 会掉进背包分支，没有意义也白造包。
                     //
                     // 创造模式必须同时认 `CreativeDestroyBlock`：创造是瞬时破坏，客户端报的是
-                    // 13 而不是 0（BACKLOG.md BUG-032 复查第 15 条）。
+                    // 13 而不是 0（BEDROCK.md 复查第 15 条）。
                     if !matches!(
                         action.action_type,
                         bedrock::protocol::v662::enums::PlayerActionType::StartDestroyBlock

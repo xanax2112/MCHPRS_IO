@@ -424,8 +424,7 @@ impl Plot {
         }
     }
 
-    /// Chat/console text for a [`Plot::start_seq_mode`] failure (BACKLOG.md
-    /// BUG-004).
+    /// Chat/console text for a [`Plot::start_seq_mode`] failure (BACKLOG.md/// BUG-004).
     fn seq_error(&self, code: &'static str) -> String {
         match code {
             "nocompile" => "/tick seq needs a compiled circuit; compile first.".to_string(),
@@ -586,7 +585,7 @@ impl Plot {
                         };
                         self.apply_rtps(tps);
                     } else {
-                        // Bare `/tick rate` sets 20 (BACKLOG.md BUG-023).
+                        // Bare `/tick rate` sets 20 (BACKLOG.md).
                         self.apply_rtps(Tps::Limited(20.0));
                     }
                     self.players[player]
@@ -791,7 +790,7 @@ impl Plot {
                                 loaded
                             ));
                             // Files that failed to load would otherwise only show
-                            // up in the log (BACKLOG.md BUG-021).
+                            // up in the log (BACKLOG.md).
                             for message in rejected.iter().take(5) {
                                 self.players[player].send_error_message(message);
                             }
@@ -1138,7 +1137,7 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
                 parser: None,
                 suggestions_type: None,
             },
-            // 30-33: /whitelist —— 白名单功能已整体删除（见 BACKLOG.md BUG-005）。
+            // 30-33: /whitelist —— 白名单功能已整体删除（见 docs/protocol.md）。
             // 这四个节点保留在数组中是为了避免整体重编号（甲方案）；根节点的
             // children 已不再引用节点 30，因此客户端看不到、也补全不出它们。
             // 30: /whitelist

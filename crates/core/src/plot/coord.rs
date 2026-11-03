@@ -1,4 +1,4 @@
-//! `/coord` (BACKLOG.md BUG-022): turn the WorldEdit second position into
+//! `/coord` (BACKLOG.md): turn the WorldEdit second position into
 //! coordinates inside `io.txt` or a memory file, with `/coord add` (append),
 //! `/coord new` (replace), and an eight-step undo/redo history.
 //!
@@ -77,7 +77,7 @@ fn memory_role(code: &str, rom: bool) -> Option<Role> {
     })
 }
 
-/// Full name used in the purple feedback (BACKLOG.md BUG-022).
+/// Full name used in the purple feedback (BACKLOG.md).
 fn role_display(code: &str, _rom: bool) -> &'static str {
     match code {
         "clk" => "clk",
@@ -168,7 +168,7 @@ impl CoordState {
 
 /// Candidate names for `/coord in <file>`: `io.txt` (only when it loaded at
 /// least one group) plus every non-dot `.rom`/`.ram` memory file, whether or
-/// not it parses (BACKLOG.md BUG-022). `io.txt` disabled at load level is
+/// not it parses (BACKLOG.md). `io.txt` disabled at load level is
 /// never offered.
 pub(super) fn file_candidates() -> Vec<String> {
     let mut out = Vec::new();
@@ -212,7 +212,7 @@ pub(super) fn type_candidates(rom: bool) -> Vec<&'static str> {
 /// Group-level validation errors must not hide a group here: those groups are
 /// exactly the ones `/coord` is used to repair. Only a file that fails at file
 /// level is hidden, which `file_candidates` already decides
-/// (BACKLOG.md BUG-022).
+/// (BACKLOG.md).
 pub(super) fn io_group_candidates() -> Vec<String> {
     let Ok(text) = fs::read_to_string(crate::io::IO_FILE) else {
         return Vec::new();
@@ -239,7 +239,7 @@ pub(super) fn io_group_candidates() -> Vec<String> {
 }
 
 impl Plot {
-    /// Suggestions for the `/coord` arguments (BACKLOG.md BUG-022).
+    /// Suggestions for the `/coord` arguments (BACKLOG.md).
     ///
     /// Returns the byte offset where the word being completed starts plus the
     /// matching candidates, or `None` when the text is not a `/coord` command we
@@ -456,7 +456,7 @@ impl Plot {
         };
         // `width` in the file is the hard limit, `width = 0` included: a group
         // declared with zero points accepts no coordinates at all
-        // (BACKLOG.md BUG-022).
+        // (BACKLOG.md).
         if total > width {
             return Err(format!(
                 "Refused: that would need {} point(s) but the file says `width = {}`.",
@@ -560,7 +560,7 @@ impl Plot {
             return;
         }
         self.coord.push_undo(path.clone(), old);
-        // The next compile has to re-read the touched files (BACKLOG.md BUG-022).
+        // The next compile has to re-read the touched files (BACKLOG.md).
         self.coord_dirty = true;
         // A-t2：`/coord` 可能新建/改写 `io.txt`、`memory/*.txt`，
         // Bedrock 的补全候选（`coord_files`）必须跟着刷新，否则新文件永远补不出来。

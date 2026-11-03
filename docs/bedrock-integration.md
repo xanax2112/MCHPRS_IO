@@ -99,7 +99,7 @@ cargo run -p mchprs_network --example bedrock_server
    地块坐标同样要 `+64` 换回。
 4. **节流**：Bedrock 客户端对高频方块更新敏感，必须按 `world_send_rate` 合并下发。
 5. ~~**创造背包物品表**~~：已接入 Geyser 的 `creative_items.1_21_50.json`（1712 条全量面板），
-   见 BACKLOG.md BUG-032 的「R1 全量面板实现」。
+   见 BEDROCK.md 的「R1 全量面板实现」。
 
 ## 7. 约束（来自项目要求，改代码时别破坏）
 

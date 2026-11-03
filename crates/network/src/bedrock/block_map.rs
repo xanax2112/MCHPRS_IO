@@ -9,7 +9,7 @@
 //! is paired with the vanilla 1.21.4 reports/blocks.json to build a version-independent
 //! "javaName|props" -> bedrock runtime id table, then applied to MCHPRS's 1.20.4 states.
 //! v1 matched by block name only and always used the all-default Bedrock state, which made
-//! every lever face "up" and every toggle invisible (BACKLOG.md BUG-032 row 33).
+//! every lever face "up" and every toggle invisible (BEDROCK.md row 33).
 //!
 //! **Unmatched entries are -1** and are treated as air at runtime. Never use 0 as a
 //! sentinel: runtime id 0 is a real block (minecraft:cyan_terracotta).

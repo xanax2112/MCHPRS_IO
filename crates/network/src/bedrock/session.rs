@@ -59,7 +59,7 @@ const ENTITY_IDENTIFIERS_NBT: &[u8] = include_bytes!("data/entity_identifiers.da
 
 /// Bedrock 端点的世界数据来源。
 ///
-/// **两个世界是分开的**（用户 2026-10-29 明确要求，见 BACKLOG.md BUG-032）：
+/// **两个世界是分开的**（用户 2026-10-29 明确要求，见 BEDROCK.md）：
 /// `Demo` 只是协议层的石头试验台；`Mchprs` 读真实 plot。两者不共用任何世界数据路径。
 #[derive(Clone)]
 pub enum WorldSource {
@@ -75,7 +75,7 @@ pub enum WorldSource {
     },
 }
 
-/// 登录完成后交给上层的信息（玩家化用，见 BACKLOG.md BUG-032）。
+/// 登录完成后交给上层的信息（玩家化用，见 BEDROCK.md）。
 pub struct BedrockSessionInfo {
     /// 客户端显示名；服务端据此推导与同名 Java 离线玩家一致的身份。
     pub username: String,
@@ -84,7 +84,7 @@ pub struct BedrockSessionInfo {
     /// 换算只在这里做一次（`spawn_pos` 是 Bedrock 坐标，y 比 MCHPRS 少 64）。
     /// 之前把 Bedrock 坐标直接当 MCHPRS 坐标用，服务端会认为玩家在地底 64 格，
     /// 而且退出时的 `player.save()` 会把这个错误位置写进同名 Java 存档
-    /// （BACKLOG.md BUG-032 复查第 12 条）。
+    /// （BEDROCK.md 复查第 12 条）。
     pub position: (f64, f64, f64),
 }
 
@@ -630,7 +630,7 @@ async fn do_login(
     // ?Geyser 一致：模式/能力包在 spawn 之后再发（见 C2?
 
     // ---------- C1: 区块半径握手 ----------
-    // **声明的视距必须和实际下发的区块数一致**（BACKLOG.md BUG-032 第 16/26 条）：
+    // **声明的视距必须和实际下发的区块数一致**（BEDROCK.md 第 16/26 条）：
     // 声明得比实际发的大，客户端会以为周围都已加载，远处是一片虚空。
     // 半径来源只有一个：core 从 `CONFIG.view_distance` 取来、随 `WorldSource` 传进来。
     // `Demo` 没有配置（示例程序），用它自己的固定值。
@@ -1475,7 +1475,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                 }
             };
 
-            // 玩家化：把这条 Bedrock 连接登记成 MCHPRS 的真玩家（BACKLOG.md BUG-032）。
+            // 玩家化：把这条 Bedrock 连接登记成 MCHPRS 的真玩家（BEDROCK.md）。
             // 服务端会用这个句柄构造 `PlayerBackend::Bedrock` 并送进 spawn plot (0,0)。
             let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
             // 指令方向必须是 tokio 通道：它要和 `conn.recv()` 一起进 `tokio::select!`，
@@ -2203,7 +2203,7 @@ pub async fn serve(addr: String, source: WorldSource) -> Result<(), Box<dyn std:
                                     // 以前这里会把位置原样回显给客户端（"服务端权威移动"）。
                                     // 那既没用又和客户端预测打架：回显用的是写死的 `ActorRuntimeID(1)`，
                                     // 每个包都把客户端自己报的位置再设回去，是"移动发飘/变慢"的可疑来源
-                                    // （BACKLOG.md BUG-032 复查第 17 条）。现在只记录，不纠正；
+                                    // （BEDROCK.md 复查第 17 条）。现在只记录，不纠正；
                                     // 真要纠正时必须走 `MovePlayer(Teleport)` 且用真实的 runtime id。
                                 }
                                 Protocol::PlayerHotbarPacket(h) => {

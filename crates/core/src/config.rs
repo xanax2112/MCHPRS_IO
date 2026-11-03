@@ -69,8 +69,7 @@ macro_rules! gen_config {
                     "automation_per_tick_push",
                     "auto_redpiler",
                     // 0.5.2-alpha: `mode` became the boolean `performance`; the
-                    // old value is ignored and the line is dropped (BACKLOG.md
-                    // BUG-001).
+                    // old value is ignored and the line is dropped (BACKLOG.md// BUG-001).
                     "mode",
                 ] {
                     doc.remove(legacy);
@@ -105,7 +104,7 @@ macro_rules! gen_config {
 gen_config! {
     bind_address: String = "0.0.0.0:25565".to_string(),
     /// Bedrock（基岩版）客户端监听端口（UDP），与 Java 的 `bind_address` 分开。
-    /// 改端口需要重启服务端。见 BACKLOG.md BUG-032。
+    /// 改端口需要重启服务端。见 BEDROCK.md。
     bedrock: i64 = 19132,
     motd: String = "Minecraft High Performance Redstone Server".to_string(),
     chat_format: String = "<{username}> {message}".to_string(),
@@ -119,7 +118,7 @@ gen_config! {
     io_port: i64 = 25585,
     /// `false` samples every tick (exact); `true` samples once per tick batch.
     performance: bool = false,
-    /// Better IO timing (BACKLOG.md BUG-021): buttons release after 2 ticks
+    /// Better IO timing (BACKLOG.md): buttons release after 2 ticks
     /// instead of 10, and redstone lamps switch instantly like trapdoors.
     /// `false` (default) keeps the classic timing.
     betterio: bool = false

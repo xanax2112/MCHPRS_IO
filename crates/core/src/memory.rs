@@ -32,7 +32,7 @@
 //! and its `clk` is mandatory. RAM contents are written back to the same file
 //! (sparse, header preserved, atomically replaced).
 //!
-//! See `BACKLOG.md` BUG-015 (ROM) and BUG-021 (RAM).
+//! See `docs/file-formats.md` BUG-015 (ROM) and BUG-021 (RAM).
 
 use mchprs_blocks::blocks::Block;
 use mchprs_blocks::BlockPos;
@@ -47,7 +47,7 @@ use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 /// ROM/RAM templates written on startup. They are dot-prefixed so the loader
-/// skips them; they only document the format (BACKLOG.md BUG-011).
+/// skips them; they only document the format (docs/file-formats.md).
 /// Body of the `.rom.txt` skeleton; the `v<version> hex words addressed`
 /// header is prepended when the file is written, so it follows the crate version.
 const ROM_TEMPLATE: &str = "\
@@ -82,7 +82,7 @@ width = 0
 ";
 
 /// Creates `memory/` and the two hidden templates when they are missing. Called
-/// once on startup (BACKLOG.md BUG-011).
+/// once on startup (docs/file-formats.md).
 pub fn ensure_dir_and_templates() {
     if let Err(err) = fs::create_dir_all(MEMORY_DIR) {
         warn!("Could not create {}: {}", MEMORY_DIR, err);
@@ -116,7 +116,7 @@ const MAX_ADDRESS_BITS: usize = 63;
 const MAX_POINTS_PER_LINE: usize = 1024;
 
 /// Words per written line; also the alignment of every line start
-/// (BACKLOG.md BUG-021 rules 1-2).
+/// (docs/file-formats.mdrules 1-2).
 const WORDS_PER_LINE: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -159,7 +159,7 @@ pub enum Ports {
 }
 
 /// Layout of a `matrix:` list, needed to align hex words. Every row is padded
-/// at its front to a whole number of hex digits (BACKLOG.md BUG-022).
+/// at its front to a whole number of hex digits (docs/file-formats.md).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MatrixShape {
     /// Points along the fastest-changing (first) direction.
@@ -283,7 +283,7 @@ impl MemoryState {
     }
 
     /// Drops unsaved contents. A memory that failed validation never writes
-    /// back (BACKLOG.md §7.11).
+    /// back (docs/protocol.md).
     pub fn discard(&mut self) {
         self.dirty = false;
     }
@@ -329,7 +329,7 @@ impl MemoryState {
             text.push('\n');
         }
 
-        // Logisim-compatible layout (BACKLOG.md BUG-021 rules 1-6): one line
+        // Logisim-compatible layout (docs/file-formats.mdrules 1-6): one line
         // per 8-word block, the block start aligned to 8, always eight words,
         // and every word as wide as the data bus. Blocks without a stored word
         // are skipped entirely; readers treat those addresses as zero.
@@ -392,8 +392,7 @@ impl MemoryState {
             return;
         }
         // Only touch nodes whose level actually changes, otherwise a wide
-        // data bus re-triggers every consumer on every tick (BACKLOG.md
-        // BUG-026).
+        // data bus re-triggers every consumer on every tick (docs/file-formats.md// BUG-026).
         write_line(redpiler, data, words.get(&value));
     }
 
@@ -478,7 +477,7 @@ pub struct LoadReport {
 }
 
 /// Loads every `*.rom.txt` and `*.ram.txt` file in `dir`, skipping broken ones
-/// and reporting why (BACKLOG.md BUG-015 / BUG-021).
+/// and reporting why (docs/file-formats.md/ BUG-021).
 pub fn load_all(dir: &Path) -> LoadReport {
     let mut memories: Vec<MemoryState> = Vec::new();
     let mut rejected: Vec<String> = Vec::new();
@@ -514,7 +513,7 @@ pub fn load_all(dir: &Path) -> LoadReport {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         // Dot-prefixed files are the templates created on startup, never
-        // memories themselves (BACKLOG.md BUG-011).
+        // memories themselves (docs/file-formats.md).
         if name.starts_with('.') {
             continue;
         }
@@ -906,7 +905,7 @@ fn read_bits(redpiler: &Compiler, points: &[BlockPos]) -> Option<Vec<bool>> {
 /// Applies a byte-masked write: enabled groups take the new bits, disabled
 /// groups keep the old ones. Groups are cut from the most significant end,
 /// eight bits at a time; the most significant group may be shorter, and the
-/// LAST group is always the low 8 bits (BACKLOG.md BUG-021).
+/// LAST group is always the low 8 bits (docs/file-formats.md).
 fn merge_word(old: &[bool], new: &[bool], enables: &[bool]) -> Vec<bool> {
     if enables.is_empty() {
         return new.to_vec();
@@ -935,7 +934,7 @@ fn merge_word(old: &[bool], new: &[bool], enables: &[bool]) -> Vec<bool> {
 }
 
 /// Packs one word into hex the same way the protocol does: the bit vector as a
-/// single unsigned integer, zero-padded at the front (BACKLOG.md BUG-016).
+/// single unsigned integer, zero-padded at the front (docs/file-formats.md).
 fn pack_word_hex(bits: &[bool], matrix: Option<MatrixShape>) -> String {
     let Some(shape) = matrix else {
         return pack_bits_hex(bits);
@@ -951,7 +950,7 @@ fn pack_word_hex(bits: &[bool], matrix: Option<MatrixShape>) -> String {
 
 /// Packs a bit vector into hex, big-endian, padding the whole value at its
 /// front so the first digit carries only the leftover high bits
-/// (BACKLOG.md BUG-016).
+/// (docs/file-formats.md).
 fn pack_bits_hex(bits: &[bool]) -> String {
     let mut hex = String::with_capacity(bits.len() / 4 + 1);
     let leftover = bits.len() % 4;
@@ -1243,7 +1242,7 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
     }
     let byte_enable = byte_enable.unwrap_or_else(PortList::empty);
 
-    // Two bit positions may never alias (BACKLOG.md BUG-022 rule 5).
+    // Two bit positions may never alias (docs/file-formats.mdrule 5).
     {
         let mut lists: Vec<(&str, &PortList)> = vec![("address coordinate", &address)];
         match kind {
@@ -1427,7 +1426,7 @@ fn parse_single_or_triple(value: &str) -> Result<Coordinate, String> {
 }
 
 /// Parses a `[ ... ]` list. The opening bracket may sit on the same line as
-/// the `=` or on a later one (BACKLOG.md BUG-015). The first entry must be
+/// the `=` or on a later one (docs/file-formats.md). The first entry must be
 /// `width = N` (BUG-023); the remaining entries are coordinates, either one
 /// per line (`x, y, z` or `x, y, z, step, count`) or a single `matrix:` line.
 /// `idx` is advanced to the last line the list consumed.
@@ -1444,7 +1443,7 @@ pub(crate) fn version_stamp(line: &str) -> Option<(u32, u32)> {
     let token = parts.next()?;
     let tail: Vec<&str> = parts.collect();
     // A bare `v0.5.x-alpha` line is accepted as well, which is what the
-    // generated `io.txt` uses (BACKLOG.md BUG-011); memory files keep the
+    // generated `io.txt` uses (docs/file-formats.md); memory files keep the
     // full `hex words addressed` form.
     if !tail.is_empty() && tail != ["hex", "words", "addressed"] {
         return None;
@@ -1671,8 +1670,7 @@ pub(crate) fn parse_list(
         ));
     }
     // Analog buses carry four bits per point, so a per-row pad is meaningless:
-    // drop the shape and pack them as one flat point sequence (BACKLOG.md
-    // BUG-010).
+    // drop the shape and pack them as one flat point sequence (docs/file-formats.md// BUG-010).
     if analog {
         matrix = None;
     }

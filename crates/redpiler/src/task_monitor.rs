@@ -11,7 +11,7 @@ pub struct TaskMonitor {
     error: Mutex<Option<OverrideError>>,
     /// Non-fatal problems worth telling the player about. Recorded for empty
     /// containers, whose comparator output is treated as 0 instead of aborting
-    /// the compile. Every distinct position is kept (BACKLOG.md BUG-014).
+    /// the compile. Every distinct position is kept (BACKLOG.md).
     warnings: Mutex<Vec<OverrideError>>,
 }
 
@@ -41,7 +41,7 @@ impl TaskMonitor {
 
     /// Records a non-fatal problem. Unlike [`Self::set_error`], every distinct
     /// position is kept so one compile can report all of them at once
-    /// (BACKLOG.md BUG-014). Duplicates of the same position are collapsed.
+    /// (BACKLOG.md). Duplicates of the same position are collapsed.
     pub fn set_warning(&self, warning: OverrideError) {
         let mut warnings = self.warnings.lock().unwrap();
         let pos = match warning {

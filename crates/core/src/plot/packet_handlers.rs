@@ -77,7 +77,7 @@ impl ServerBoundPacketHandler for Plot {
         player_idx: usize,
     ) {
         // `/coord` completes files, `io.txt` groups and type codes
-        // (BACKLOG.md BUG-022).
+        // (BACKLOG.md).
         if let Some((start, matches)) = self.coord_suggestions(&packet.text) {
             let res = CCommandSuggestionsResponse {
                 id: packet.transaction_id,
@@ -326,7 +326,7 @@ impl ServerBoundPacketHandler for Plot {
         self.players[player].pos = new;
         // The client sends yaw unnormalized (it can arrive as e.g. 9820.04,
         // after many turns). Narrowing that later saturates and pinned the
-        // sign rotation to 15 (BACKLOG.md BUG-024), so normalize once on the
+        // sign rotation to 15 (BACKLOG.md), so normalize once on the
         // way in and make every consumer see [0, 360).
         let yaw = player_position_and_rotation.yaw.rem_euclid(360.0);
         self.players[player].yaw = yaw;
@@ -380,7 +380,7 @@ impl ServerBoundPacketHandler for Plot {
 
     fn handle_player_rotation(&mut self, player_rotation: SPlayerRotation, player: usize) {
         // Same normalization as `handle_set_player_position_and_rotation`
-        // (BACKLOG.md BUG-024).
+        // (BACKLOG.md).
         let yaw = player_rotation.yaw.rem_euclid(360.0);
         self.players[player].yaw = yaw;
         self.players[player].pitch = player_rotation.pitch;

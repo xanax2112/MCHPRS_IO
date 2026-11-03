@@ -1,6 +1,6 @@
 # MCHPRS_IO Python 开发台账
 
-> 本文件是 **Python 开发线**的唯一真相源，与主台账 `../MCHPRS_IO/BACKLOG.md` **完全独立**：
+> 本文件是 **Python 开发线**的唯一真相源，与主台账 `BACKLOG.md`、基岩台账 `BEDROCK.md` **完全独立**：
 > 主台账记录 Rust 核心与协议，本台账只记录 Python 侧的立项、需求、实现与测试验收。
 > 主台账一个字不改；两者冲突时，各自以各自台账为准。
 >

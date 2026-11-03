@@ -68,7 +68,7 @@ pub enum Message {
     },
     /// The plot entered reservation mode (`/tick seq`) or left it. On entry the
     /// automation bridge drops every connection and lets the next one become
-    /// the exclusive script; leaving only unlocks (BACKLOG.md BUG-004).
+    /// the exclusive script; leaving only unlocks (BEDROCK.md).
     SeqModeChanged { on: bool },
     /// A line typed into the server terminal (BUG-031); it is forwarded to the
     /// plot thread, which runs it like an operator command.
@@ -111,7 +111,7 @@ pub enum PrivMessage {
     /// A `/` command typed into the server terminal (BUG-031).
     ConsoleCommand(String),
     /// A Bedrock client just logged in and needs a read-only world snapshot
-    /// (BACKLOG.md BUG-032「最小只读通路」). The plot builds it on its own thread
+    /// (BEDROCK.md「最小只读通路」). The plot builds it on its own thread
     /// and answers through `reply`.
     ///
     /// `chunk_radius` 来自 `CONFIG.view_distance`：plot 按它决定快照覆盖多大，
@@ -159,7 +159,7 @@ pub struct MinecraftServer {
     online_players: FxHashMap<u128, PlayerListEntry>,
     running_plots: Vec<PlotListEntry>,
     automation: Option<AutomationServer>,
-    /// Events coming from the Bedrock listener thread (BACKLOG.md BUG-032).
+    /// Events coming from the Bedrock listener thread (BEDROCK.md).
     bedrock_events: Receiver<mchprs_network::bedrock::bridge::BedrockEvent>,
     /// Bedrock 玩家身份表：uuid → 会话句柄。
     ///
@@ -184,11 +184,11 @@ impl MinecraftServer {
         fs::create_dir_all("./world/plots").unwrap();
         fs::create_dir_all("./schems").unwrap();
         // `memory/` with its hidden templates and an `io.txt` skeleton
-        // (BACKLOG.md BUG-011).
+        // (BEDROCK.md).
         crate::memory::ensure_dir_and_templates();
         crate::io::ensure_file();
         // The `betterio` flag is read by the uncompiled simulator too, so it has
-        // to be set at startup, not only before a compile (BACKLOG.md BUG-021).
+        // to be set at startup, not only before a compile (BEDROCK.md).
         mchprs_redstone::set_betterio(CONFIG.betterio);
 
         plot::database::init();
@@ -217,7 +217,7 @@ impl MinecraftServer {
         }
 
         // Create server struct
-        // Bedrock listener (BACKLOG.md BUG-032): `bedrock = 0` disables it.
+        // Bedrock listener (BEDROCK.md): `bedrock = 0` disables it.
         let (bedrock_tx, bedrock_rx) = mpsc::channel();
         let mut server = MinecraftServer {
             network: NetworkServer::new(bind_addr),
@@ -242,7 +242,7 @@ impl MinecraftServer {
             bedrock_players: FxHashMap::default(),
         };
 
-        // 基岩版监听：`bedrock = 0` 表示关闭（BACKLOG.md BUG-032）。
+        // 基岩版监听：`bedrock = 0` 表示关闭（BEDROCK.md）。
         // 视距用 `CONFIG.view_distance`，与 Java 侧 `CLogin` 同源：Bedrock 的世界大小
         // 不能和 Java 玩家看到的不一样（第 16/26 条）。
         if CONFIG.bedrock > 0 {
@@ -319,7 +319,7 @@ impl MinecraftServer {
     }
 
     fn send_player_to_plot(&mut self, mut player: Player, new_entry: bool) {
-        // Single-plot server (BACKLOG.md BUG-010): p0,0 is the only plot that
+        // Single-plot server (docs/file-formats.md): p0,0 is the only plot that
         // ever exists. A player whose saved position lies outside it is moved
         // to the plot center instead of causing another plot to be loaded.
         let (mut plot_x, mut plot_z) = player.pos.plot_pos();
@@ -396,7 +396,7 @@ impl MinecraftServer {
     /// 把一个 Bedrock 客户端登记成**真正的玩家**并送进 spawn plot (0,0)。
     ///
     /// 复用 Java 玩家的加载路径（背包、权限缓存、存档格式完全一致），只把连接后端换成
-    /// `PlayerBackend::Bedrock`。见 BACKLOG.md BUG-032「玩家化」。
+    /// `PlayerBackend::Bedrock`。见 BEDROCK.md「玩家化」。
     fn handle_bedrock_register(
         &mut self,
         username: String,
@@ -807,7 +807,7 @@ impl MinecraftServer {
         }
 
         // Bedrock listener 的请求：转给常驻的 spawn plot（0,0）去打包只读快照。
-        // 见 BACKLOG.md BUG-032「最小只读通路」。
+        // 见 BEDROCK.md「最小只读通路」。
         while let Ok(event) = self.bedrock_events.try_recv() {
             match event {
                 mchprs_network::bedrock::bridge::BedrockEvent::SnapshotRequest {
