@@ -131,9 +131,29 @@ pub enum Kind {
 pub struct Line {
     pub points: Vec<BlockPos>,
     pub analog: bool,
+    /// Cached node handles, one per point, resolved after each compile
+    /// (BACKLOG.md/ §9.2). Empty means "not resolved" and the helpers fall back
+    /// to the position API, so a stale handle can never be used.
+    handles: Vec<u32>,
 }
 
 impl Line {
+    /// Caches one node handle per point. Empties the cache when a point no
+    /// longer resolves, so the helpers below fall back to the position API
+    /// instead of reading through a handle from an older compile.
+    fn resolve_handles(&mut self, redpiler: &Compiler) {
+        self.handles.clear();
+        for pos in &self.points {
+            match redpiler.resolve_io_node(*pos) {
+                Some(handle) => self.handles.push(handle),
+                None => {
+                    self.handles.clear();
+                    return;
+                }
+            }
+        }
+    }
+
     /// Number of bits this bus carries.
     pub fn bits(&self) -> usize {
         if self.analog {
@@ -841,6 +861,13 @@ fn read_address(redpiler: &Compiler, line: &Line) -> Option<usize> {
         }
         return Some(value);
     }
+    if line.handles.len() == line.points.len() {
+        for handle in &line.handles {
+            let (powered, _) = redpiler.node_state(*handle)?;
+            value = (value << 1) | usize::from(powered);
+        }
+        return Some(value);
+    }
     for pos in &line.points {
         let (_, powered, _) = redpiler.query_io(*pos)?;
         value = (value << 1) | usize::from(powered);
@@ -853,11 +880,28 @@ fn read_address(redpiler: &Compiler, line: &Line) -> Option<usize> {
 fn read_line(redpiler: &Compiler, line: &Line) -> Option<Vec<bool>> {
     if line.analog {
         let mut bits = Vec::with_capacity(line.points.len() * 4);
+        if line.handles.len() == line.points.len() {
+            for handle in &line.handles {
+                let strength = redpiler.node_wire_power(*handle)?;
+                for shift in [3u8, 2, 1, 0] {
+                    bits.push((strength >> shift) & 1 == 1);
+                }
+            }
+            return Some(bits);
+        }
         for pos in &line.points {
             let strength = redpiler.query_wire_power(*pos)?;
             for shift in [3u8, 2, 1, 0] {
                 bits.push((strength >> shift) & 1 == 1);
             }
+        }
+        return Some(bits);
+    }
+    if line.handles.len() == line.points.len() {
+        let mut bits = Vec::with_capacity(line.handles.len());
+        for handle in &line.handles {
+            let (powered, _) = redpiler.node_state(*handle)?;
+            bits.push(powered);
         }
         return Some(bits);
     }
@@ -869,8 +913,9 @@ fn read_line(redpiler: &Compiler, line: &Line) -> Option<Vec<bool>> {
 fn write_line(redpiler: &mut Compiler, line: &Line, word: Option<&Vec<bool>>) {
     let zero: Vec<bool> = Vec::new();
     let word = word.unwrap_or(&zero);
+    let cached = line.handles.len() == line.points.len();
     if line.analog {
-        for (index, pos) in line.points.iter().enumerate() {
+        for index in 0..line.points.len() {
             let mut strength = 0u8;
             for shift in [3u8, 2, 1, 0] {
                 let bit = word.get(index * 4 + (3 - shift) as usize).copied().unwrap_or(false);
@@ -878,16 +923,32 @@ fn write_line(redpiler: &mut Compiler, line: &Line, word: Option<&Vec<bool>>) {
                     strength |= 1 << shift;
                 }
             }
-            if redpiler.query_wire_power(*pos) != Some(strength) {
-                let _ = redpiler.try_set_wire_power(*pos, strength);
+            if cached {
+                let handle = line.handles[index];
+                if redpiler.node_wire_power(handle) != Some(strength) {
+                    let _ = redpiler.set_node_wire_power(handle, strength);
+                }
+            } else {
+                let pos = line.points[index];
+                if redpiler.query_wire_power(pos) != Some(strength) {
+                    let _ = redpiler.try_set_wire_power(pos, strength);
+                }
             }
         }
         return;
     }
-    for (index, pos) in line.points.iter().enumerate() {
+    for index in 0..line.points.len() {
         let bit = word.get(index).copied().unwrap_or(false);
-        if redpiler.query_io(*pos).map(|(_, powered, _)| powered) != Some(bit) {
-            let _ = redpiler.try_set_powered(*pos, bit);
+        if cached {
+            let handle = line.handles[index];
+            if redpiler.node_state(handle).map(|state| state.0) != Some(bit) {
+                let _ = redpiler.set_node_powered(handle, bit);
+            }
+        } else {
+            let pos = line.points[index];
+            if redpiler.query_io(pos).map(|(_, powered, _)| powered) != Some(bit) {
+                let _ = redpiler.try_set_powered(pos, bit);
+            }
         }
     }
 }
@@ -1283,6 +1344,7 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
                     data: Line {
                         points: offset_all(data.points, origin),
                         analog: data.analog,
+                        handles: Vec::new(),
                     },
                 },
             )
@@ -1343,10 +1405,12 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
                     write_data: Line {
                         points: offset_all(write_data.points, origin),
                         analog: write_data.analog,
+                        handles: Vec::new(),
                     },
                     read_data: Line {
                         points: offset_all(read_data.points, origin),
                         analog: read_data.analog,
+                        handles: Vec::new(),
                     },
                     write_enable: write_enable.add(origin),
                     read_enable: read_enable.add(origin),
@@ -1359,6 +1423,7 @@ pub fn parse(name: &str, text: &str, kind: Kind) -> Result<(Memory, String), Str
     let address = Line {
         points: offset_all(address.points, origin),
         analog: address.analog,
+        handles: Vec::new(),
     };
     let clock = clock.map(|pos| pos.add(origin));
     let words = parse_words(&lines, data_start, bits, matrix)?;
@@ -2099,4 +2164,26 @@ pub(crate) fn strip_comments(text: &str) -> Result<String, (usize, String)> {
     }
 
     Ok(out)
+}
+
+impl Memory {
+    /// Resolves the cached node handles every bus uses. Called right after a
+    /// successful compile; a bus that fails to resolve simply keeps an empty
+    /// cache and the helpers fall back to the position API
+    /// (BACKLOG.md/ §9.2).
+    pub fn resolve_handles(&mut self, redpiler: &Compiler) {
+        let Memory { address, ports, .. } = self;
+        address.resolve_handles(redpiler);
+        match ports {
+            Ports::Rom { data } => data.resolve_handles(redpiler),
+            Ports::Ram {
+                write_data,
+                read_data,
+                ..
+            } => {
+                write_data.resolve_handles(redpiler);
+                read_data.resolve_handles(redpiler);
+            }
+        }
+    }
 }

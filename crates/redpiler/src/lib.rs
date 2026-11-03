@@ -285,6 +285,47 @@ impl Compiler {
         self.backend.as_ref()?.query_io(pos)
     }
 
+    /// Resolves `pos` into an opaque node handle for the per-tick accessors
+    /// below. Handles are only valid until the next compile (BACKLOG.md/ §9.2).
+    pub fn resolve_io_node(&self, pos: BlockPos) -> Option<u32> {
+        if !self.is_active {
+            return None;
+        }
+        self.backend.as_ref()?.resolve_io_node(pos)
+    }
+
+    /// `(powered, output_power)` of a resolved node.
+    pub fn node_state(&self, node: u32) -> Option<(bool, u8)> {
+        if !self.is_active {
+            return None;
+        }
+        self.backend.as_ref()?.node_state(node)
+    }
+
+    /// Strength (0-15) of a resolved wire node.
+    pub fn node_wire_power(&self, node: u32) -> Option<u8> {
+        if !self.is_active {
+            return None;
+        }
+        self.backend.as_ref()?.node_wire_power(node)
+    }
+
+    /// Sets a lever / pressure plate / button by handle.
+    pub fn set_node_powered(&mut self, node: u32, powered: bool) -> bool {
+        if !self.is_active {
+            return false;
+        }
+        self.backend().set_node_powered(node, powered)
+    }
+
+    /// Sets a wire node by handle.
+    pub fn set_node_wire_power(&mut self, node: u32, power: u8) -> bool {
+        if !self.is_active {
+            return false;
+        }
+        self.backend().set_node_wire_power(node, power)
+    }
+
     /// Whether the compiled graph can drive the node at `pos`. `None` when the
     /// compiler is inactive or nothing is compiled at `pos`.
     pub fn has_inputs(&self, pos: BlockPos) -> Option<bool> {

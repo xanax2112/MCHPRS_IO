@@ -8,7 +8,7 @@ mod scoreboard;
 pub mod worldedit;
 
 use crate::automation::{
-    AutomationRequest, AutomationResponse, RequestKind, decode_hex, encode_hex,
+    AutomationRequest, AutomationResponse, AutomationServer, RequestKind, decode_hex, encode_hex,
 };
 use crate::config::{CONFIG, IoMode};
 use crate::interaction;
@@ -71,7 +71,11 @@ const MAX_BATCH_SIZE: u32 = 50_000;
 
 /// Maximum number of pending `INPUT` reservations. The queue is global because
 /// reservation mode only ever admits one script (docs/protocol.md.3 / BUG-004).
-const MAX_RESERVATIONS: usize = 255;
+///
+/// 65536 entries cost about 11 MB with the current per-entry layout (56-byte
+/// struct plus the group name and the bit vector), which lets a script queue a
+/// whole batch ahead (BACKLOG.md/ §9.3).
+const MAX_RESERVATIONS: usize = 65_536;
 
 pub struct Plot {
     pub world: PlotWorld,
@@ -130,7 +134,13 @@ pub struct Plot {
     /// Pending `INPUT` reservations, locked to absolute ticks. At most
     /// [`MAX_RESERVATIONS`] entries; a later request for the same tick and
     /// group overwrites the earlier one (BACKLOG.md).
-    reservations: Vec<Reservation>,
+    ///
+    /// Kept sorted by requesting ticks in non-decreasing order: the queue is a
+    /// FIFO whose front is always the next reservation due (BACKLOG.md/ §9.3).
+    reservations: VecDeque<Reservation>,
+    /// Highest tick any reservation asked for since the queue was last cleared.
+    /// A request below it is rejected with `ERR order`.
+    last_reservation_tick: u32,
     /// `/tick seq` is active: the plot is in reservation mode and the single
     /// exclusive script may reserve ticks (BACKLOG.md).
     seq_mode: bool,
@@ -138,6 +148,17 @@ pub struct Plot {
     /// automation bridge. Only that connection may use the
     /// `INPUT <name> <offset> <hex>` form (BACKLOG.md).
     exclusive: Option<u64>,
+    /// The automation bridge. Only the spawn plot (0,0) owns it: scripts cannot
+    /// address another plot (BACKLOG.md/ §9.1).
+    automation: Option<AutomationServer>,
+    /// Tick counter behind the automation time slices, so `Instant::now` stays
+    /// off the hot path.
+    automation_slice: u32,
+    automation_last_poll: Instant,
+    automation_last_flush: Instant,
+    /// True while a synchronous `RADV` run owns the tick loop: requests must not
+    /// be read then, only `OUTPUT` flushed on the 5 ms slice.
+    automation_busy: bool,
 
     /// Bedrock 区块流送状态（BUG-032 第 26 条 + 第 19 条），key = 玩家 uuid。
     ///
@@ -479,6 +500,58 @@ impl Plot {
         if exact {
             self.sample_io_groups();
         }
+        self.automation_slice_tick();
+    }
+
+    /// Drives the automation bridge from the tick loop.
+    ///
+    /// The bridge owns its sockets on this thread, so it has to borrow a slice
+    /// of the loop. A counter keeps `Instant::now` off the hot path: requests
+    /// are read every 200 µs, output is flushed every 5 ms while a `RADV` batch
+    /// is running (everything else flushes per line, see `sample_io_groups`).
+    fn automation_slice_tick(&mut self) {
+        if self.automation.is_none() {
+            return;
+        }
+        self.automation_slice = self.automation_slice.wrapping_add(1);
+        if self.automation_slice % 64 != 0 {
+            return;
+        }
+        let now = Instant::now();
+        if !self.automation_busy
+            && now.duration_since(self.automation_last_poll).as_micros() >= 200
+        {
+            self.automation_last_poll = now;
+            self.poll_automation();
+        }
+        if now.duration_since(self.automation_last_flush).as_millis() >= 5 {
+            self.automation_last_flush = now;
+            if let Some(server) = self.automation.as_mut() {
+                server.flush();
+            }
+        }
+    }
+
+    /// Reads every pending request and answers it on the spot.
+    fn poll_automation(&mut self) {
+        let Some(server) = self.automation.as_mut() else {
+            return;
+        };
+        let poll = server.poll();
+        for conn_id in poll.closed {
+            // The owning connection is gone; drop its bindings so no stale
+            // `OUTPUT` is ever pushed to it.
+            self.pout_bindings.remove(&conn_id);
+            if self.exclusive == Some(conn_id) {
+                self.exclusive = None;
+            }
+        }
+        for (conn_id, request) in poll.requests {
+            let reply = self.handle_automation_request(conn_id, request);
+            if let Some(server) = self.automation.as_mut() {
+                server.handle_reply(conn_id, reply);
+            }
+        }
     }
 
     /// Writes every `INPUT` reserved for `tick` into its group.
@@ -487,19 +560,24 @@ impl Plot {
     /// stops short of the reserved tick simply leaves them pending
     /// (BACKLOG.md).
     fn apply_reservations(&mut self, tick: u32) {
-        if self.reservations.is_empty() {
-            return;
-        }
-        let mut due: Vec<Reservation> = Vec::new();
-        self.reservations.retain(|reservation| {
-            if reservation.tick == tick {
-                due.push(reservation.clone());
-                false
-            } else {
-                true
+        // The queue is sorted by construction, so only the front can be due:
+        // this is O(k) per tick (k = entries for this tick) instead of the O(n)
+        // retain-and-clone the old queue needed (BACKLOG.md/ §9.3).
+        while let Some(front) = self.reservations.front() {
+            if front.tick > tick {
+                break;
             }
-        });
-        for reservation in due {
+            let reservation = self.reservations.pop_front().unwrap();
+            if reservation.tick < tick {
+                // The tick it was scheduled for is already gone (a manual
+                // `/tick step` can skip ahead). Dropping it is what keeps a
+                // stale entry from blocking every reservation behind it.
+                debug!(
+                    "Dropping stale reservation for group {} at tick {} (now {})",
+                    reservation.group, reservation.tick, tick
+                );
+                continue;
+            }
             if let Some(group) = self.io.find_mut(&reservation.group) {
                 group.write(&mut self.redpiler, &reservation.bits);
             }
@@ -540,16 +618,21 @@ impl Plot {
                 fired.push((name, hex));
             }
         }
+        let tick = self.tick;
         for (name, hex) in fired {
             for (conn_id, groups) in &self.pout_bindings {
                 if groups.contains(&name) {
-                    let _ = self.message_sender.send(Message::IoDataPortOutput {
-                        conn_id: *conn_id,
-                        name: name.clone(),
-                        tick: self.tick,
-                        hex: hex.clone(),
-                    });
+                    if let Some(server) = self.automation.as_mut() {
+                        server.push_output(*conn_id, &name, tick, &hex);
+                    }
                 }
+            }
+        }
+        // A `RADV` batch flushes on the 5 ms slice; everything else pushes each
+        // line as soon as it is produced (BACKLOG.md/ §9.1).
+        if !self.automation_busy {
+            if let Some(server) = self.automation.as_mut() {
+                server.flush();
             }
         }
     }
@@ -1168,7 +1251,7 @@ impl Plot {
         &mut self,
         conn_id: u64,
         name: &str,
-        offset: Option<u16>,
+        offset: Option<u32>,
         hex: &str,
     ) -> AutomationResponse {
         if !self.redpiler.is_active() {
@@ -1194,7 +1277,7 @@ impl Plot {
             Err(()) => return AutomationResponse::Err("hex"),
         };
 
-        let absolute = self.tick.wrapping_add(u32::from(offset.unwrap_or(1)));
+        let absolute = self.tick.wrapping_add(offset.unwrap_or(1));
         match self.reserve_input(name, bits, absolute) {
             Ok(()) => AutomationResponse::Input {
                 name: name.to_string(),
@@ -1222,18 +1305,29 @@ impl Plot {
         bits: Vec<bool>,
         tick: u32,
     ) -> Result<(), &'static str> {
-        if let Some(existing) = self
-            .reservations
-            .iter_mut()
-            .find(|reservation| reservation.tick == tick && reservation.group == group)
-        {
-            existing.bits = bits;
-            return Ok(());
+        if tick < self.last_reservation_tick {
+            // Reservation mode is a forward-only schedule: re-sending an older
+            // tick would break the sorted queue (BACKLOG.md/ §9.3).
+            return Err("order");
+        }
+        if tick == self.last_reservation_tick {
+            // Duplicates can only sit at the back (same `tick`), so walking back
+            // until the tick changes is enough to keep "later wins".
+            for reservation in self.reservations.iter_mut().rev() {
+                if reservation.tick != tick {
+                    break;
+                }
+                if reservation.group == group {
+                    reservation.bits = bits;
+                    return Ok(());
+                }
+            }
         }
         if self.reservations.len() >= MAX_RESERVATIONS {
             return Err("full");
         }
-        self.reservations.push(Reservation {
+        self.last_reservation_tick = tick;
+        self.reservations.push_back(Reservation {
             tick,
             group: group.to_string(),
             bits,
@@ -1285,6 +1379,12 @@ impl Plot {
     /// (BACKLOG.md/ §7.7).
     fn handle_read_pos(&mut self, pos: BlockPos) -> AutomationResponse {
         if !self.redpiler.is_active() {
+            return AutomationResponse::Err("nocompile");
+        }
+        // Only this plot can answer now that the bridge lives on its thread, so
+        // coordinates outside it count as "no circuit there"
+        // (BACKLOG.md/ §9.1).
+        if !Plot::in_plot_bounds(self.world.x, self.world.z, pos.x, pos.z) {
             return AutomationResponse::Err("nocompile");
         }
         let target = format!("{},{},{}", pos.x, pos.y, pos.z);
@@ -1379,7 +1479,11 @@ impl Plot {
         if !self.rtps_zero() {
             return AutomationResponse::Err("mode");
         }
+        // Requests are not read while the batch runs (the pump only flushes),
+        // so a second `RADV` cannot re-enter this loop.
+        self.automation_busy = true;
         self.advance_ticks(u64::from(ticks));
+        self.automation_busy = false;
         AutomationResponse::Radv {
             ticks,
             tick: self.tick,
@@ -1408,9 +1512,12 @@ impl Plot {
         }
         self.seq_mode = true;
         self.reservations.clear();
+        self.last_reservation_tick = 0;
         self.exclusive = None;
         self.apply_rtps(Tps::Limited(0.0));
-        let _ = self.message_sender.send(Message::SeqModeChanged { on: true });
+        if let Some(server) = self.automation.as_mut() {
+            server.set_seq_mode(true);
+        }
         Ok(())
     }
 
@@ -1439,9 +1546,9 @@ impl Plot {
         }
         self.seq_mode = false;
         self.exclusive = None;
-        let _ = self
-            .message_sender
-            .send(Message::SeqModeChanged { on: false });
+        if let Some(server) = self.automation.as_mut() {
+            server.set_seq_mode(false);
+        }
     }
 
     /// `/io list`: a summary of `io.txt` only (docs/protocol.md). While no
@@ -1535,7 +1642,10 @@ impl Plot {
         for state in &mut self.memories {
             state.reset_edges();
             match state.memory.validate(&self.redpiler, &self.world) {
-                Ok(()) => state.active = true,
+                Ok(()) => {
+                    state.active = true;
+                    state.memory.resolve_handles(&self.redpiler);
+                }
                 Err(invalid) => {
                     state.active = false;
                     let message = memory::describe_invalid(&state.memory, &invalid);
@@ -1816,13 +1926,14 @@ impl Plot {
         self.tick = 0;
         self.pout_bindings.clear();
         self.reservations.clear();
+        self.last_reservation_tick = 0;
         self.exclusive = None;
         // A new compile always ends reservation mode (BACKLOG.md).
         if self.seq_mode {
             self.seq_mode = false;
-            let _ = self
-                .message_sender
-                .send(Message::SeqModeChanged { on: false });
+        }
+        if let Some(server) = self.automation.as_mut() {
+            server.set_seq_mode(false);
         }
         for group in &mut self.io.groups {
             group.active = false;
@@ -2062,22 +2173,8 @@ impl Plot {
                     }
                     self.enter_plot(player);
                 }
-                PrivMessage::AutomationRequest { conn_id, request } => {
-                    let reply = self.handle_automation_request(conn_id, request);
-                    let _ = self.message_sender.send(Message::IoResponse(conn_id, reply));
-                }
                 PrivMessage::ConsoleCommand(line) => {
                     self.handle_console_command(&line);
-                }
-                PrivMessage::AutomationDisconnect { conn_id } => {
-                    // The owning connection is gone; drop its bindings so no
-                    // stale `OUTPUT` is ever pushed to it.
-                    self.pout_bindings.remove(&conn_id);
-                    if self.exclusive == Some(conn_id) {
-                        // The session stays armed in the bridge but nobody may
-                        // reserve until `/tick seq` runs again (BACKLOG.md// BUG-004).
-                        self.exclusive = None;
-                    }
                 }
                 PrivMessage::BedrockSnapshot {
                     reply,
@@ -2737,6 +2834,7 @@ impl Plot {
         tx: Sender<Message>,
         priv_rx: Receiver<PrivMessage>,
         always_running: bool,
+        automation: Option<AutomationServer>,
     ) -> Plot {
         let chunk_x_offset = x << PLOT_SCALE;
         let chunk_z_offset = z << PLOT_SCALE;
@@ -2804,9 +2902,15 @@ impl Plot {
             io: io::IoTable::load(Path::new(IO_FILE)),
             tick: 0,
             pout_bindings: FxHashMap::default(),
-            reservations: Vec::new(),
+            reservations: VecDeque::new(),
+            last_reservation_tick: 0,
             seq_mode: false,
             exclusive: None,
+            automation,
+            automation_slice: 0,
+            automation_last_poll: Instant::now(),
+            automation_last_flush: Instant::now(),
+            automation_busy: false,
             bedrock_streams: HashMap::new(),
             bedrock_chunk_cache: HashMap::new(),
             bedrock_chunk_dirty: HashSet::new(),
@@ -2821,11 +2925,14 @@ impl Plot {
         tx: Sender<Message>,
         priv_rx: Receiver<PrivMessage>,
         always_running: bool,
+        automation: Option<AutomationServer>,
     ) -> Result<Plot, (Error, Sender<Message>)> {
         let plot_path = format!("./world/plots/p{},{}", x, z);
         Ok(if Path::new(&plot_path).exists() {
             match data::load_plot(plot_path) {
-                Ok(data) => Plot::from_data(data, x, z, rx, tx, priv_rx, always_running),
+                Ok(data) => {
+                    Plot::from_data(data, x, z, rx, tx, priv_rx, always_running, automation)
+                }
                 Err(err) => {
                     return Result::Err((
                         err.context(format!("error loading plot {},{}", x, z)),
@@ -2834,7 +2941,16 @@ impl Plot {
                 }
             }
         } else {
-            Plot::from_data(data::empty_plot(), x, z, rx, tx, priv_rx, always_running)
+            Plot::from_data(
+                data::empty_plot(),
+                x,
+                z,
+                rx,
+                tx,
+                priv_rx,
+                always_running,
+                automation,
+            )
         })
     }
 
@@ -2918,12 +3034,13 @@ impl Plot {
         tx: Sender<Message>,
         priv_rx: Receiver<PrivMessage>,
         always_running: bool,
+        automation: Option<AutomationServer>,
         initial_player: Option<Player>,
     ) {
         thread::Builder::new()
             .name(format!("p{},{}", x, z))
             .spawn(
-                move || match Plot::load(x, z, rx, tx, priv_rx, always_running) {
+                move || match Plot::load(x, z, rx, tx, priv_rx, always_running, automation) {
                     Ok(mut plot) => plot.run(initial_player),
                     Err((err, tx)) => {
                         if let Some(mut player) = initial_player {

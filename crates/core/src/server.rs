@@ -1,8 +1,8 @@
-use crate::automation::{AutomationAction, AutomationRequest, AutomationResponse, AutomationServer};
+use crate::automation::AutomationServer;
 use crate::config::CONFIG;
 use crate::player::{Gamemode, PacketSender, Player, PlayerPos};
 use crate::plot::commands::DECLARE_COMMANDS;
-use crate::plot::{self, database, Plot, PLOT_BLOCK_HEIGHT, PLOT_SCALE};
+use crate::plot::{self, database, Plot, PLOT_BLOCK_HEIGHT};
 use crate::{permissions, utils};
 use backtrace::Backtrace;
 use bus::Bus;
@@ -20,7 +20,6 @@ use mchprs_network::packets::serverbound::{
     SLoginStart, SPing, SRequest, ServerBoundPacketHandler, VelocityResponseData,
 };
 use mchprs_network::packets::{PacketEncoderExt, PlayerProperty, SlotData, COMPRESSION_THRESHOLD};
-use mchprs_blocks::BlockPos;
 use mchprs_network::{NetworkServer, NetworkState};
 use mchprs_text::TextComponent;
 use mchprs_utils::map;
@@ -54,22 +53,6 @@ pub enum Message {
     PlotUnload(i32, i32),
     /// This message is sent to the server thread when a player runs /stop.
     Shutdown,
-    /// This message is sent to the server thread when a plot thread answers
-    /// an automation request. The u64 is the automation connection id.
-    IoResponse(u64, AutomationResponse),
-    /// This message is sent to the server thread when a plot samples a group
-    /// that an automation connection bound with `POUT`. The server pushes the
-    /// `OUTPUT <name> <tick> <hex>` line to that connection.
-    IoDataPortOutput {
-        conn_id: u64,
-        name: String,
-        tick: u32,
-        hex: String,
-    },
-    /// The plot entered reservation mode (`/tick seq`) or left it. On entry the
-    /// automation bridge drops every connection and lets the next one become
-    /// the exclusive script; leaving only unlocks (BEDROCK.md).
-    SeqModeChanged { on: bool },
     /// A line typed into the server terminal (BUG-031); it is forwarded to the
     /// plot thread, which runs it like an operator command.
     ConsoleCommand(String),
@@ -102,12 +85,6 @@ pub enum BroadcastMessage {
 pub enum PrivMessage {
     PlayerEnterPlot(Player),
     PlayerTeleportOther(Player, String),
-    AutomationRequest {
-        conn_id: u64,
-        request: AutomationRequest,
-    },
-    /// An automation connection closed; the plot must drop its data ports.
-    AutomationDisconnect { conn_id: u64 },
     /// A `/` command typed into the server terminal (BUG-031).
     ConsoleCommand(String),
     /// A Bedrock client just logged in and needs a read-only world snapshot
@@ -271,6 +248,7 @@ impl MinecraftServer {
         // Load the spawn area plot on server start
         // This plot should be always active
         let (spawn_tx, spawn_rx) = mpsc::channel();
+        let automation = server.automation.take();
         Plot::load_and_run(
             0,
             0,
@@ -278,6 +256,7 @@ impl MinecraftServer {
             server.plot_sender.clone(),
             spawn_rx,
             true,
+            automation,
             None,
         );
         server.running_plots.push(PlotListEntry {
@@ -290,7 +269,7 @@ impl MinecraftServer {
 
         loop {
             server.update();
-            std::thread::sleep(Duration::from_millis(2));
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
@@ -374,34 +353,6 @@ impl MinecraftServer {
                     player.username, plot_x, plot_z
                 );
             }
-        }
-    }
-
-    /// Routes an automation request to the plot containing `pos`.
-    fn route_automation_request(
-        &mut self,
-        conn_id: u64,
-        pos: BlockPos,
-        request: AutomationRequest,
-    ) {
-        let plot_x = pos.x >> 4 >> PLOT_SCALE;
-        let plot_z = pos.z >> 4 >> PLOT_SCALE;
-        let plot_loaded = self
-            .running_plots
-            .iter()
-            .any(|p| p.plot_x == plot_x && p.plot_z == plot_z);
-        if plot_loaded {
-            let plot_list_entry = self
-                .running_plots
-                .iter()
-                .find(|p| p.plot_x == plot_x && p.plot_z == plot_z)
-                .unwrap();
-            let _ = plot_list_entry
-                .priv_message_sender
-                .send(PrivMessage::AutomationRequest { conn_id, request });
-        } else if let Some(automation) = &mut self.automation {
-            // The plot is not loaded, so no circuit can be running there.
-            automation.handle_reply(conn_id, AutomationResponse::Inactive(pos));
         }
     }
 
@@ -790,26 +741,6 @@ impl MinecraftServer {
                 self.broadcaster
                     .broadcast(BroadcastMessage::PlayerUpdateGamemode(uuid, gamemode));
             }
-            Message::IoResponse(conn_id, response) => {
-                if let Some(automation) = &mut self.automation {
-                    automation.handle_reply(conn_id, response);
-                }
-            }
-            Message::IoDataPortOutput {
-                conn_id,
-                name,
-                tick,
-                hex,
-            } => {
-                if let Some(automation) = &mut self.automation {
-                    automation.push_output(conn_id, &name, tick, &hex);
-                }
-            }
-            Message::SeqModeChanged { on } => {
-                if let Some(automation) = &mut self.automation {
-                    automation.set_seq_mode(on);
-                }
-            }
         }
     }
 
@@ -859,39 +790,6 @@ impl MinecraftServer {
         }
 
         self.network.update();
-
-        // Poll the automation bridge and route requests to their plots.
-        let automation_actions = match &mut self.automation {
-            Some(automation) => automation.poll(),
-            None => Vec::new(),
-        };
-        for action in automation_actions {
-            match action {
-                AutomationAction::Route {
-                    conn_id,
-                    pos,
-                    request,
-                } => self.route_automation_request(conn_id, pos, request),
-                AutomationAction::Disconnect {
-                    conn_id,
-                    plot_x,
-                    plot_z,
-                } => {
-                    if let Some(plot_list_entry) = self
-                        .running_plots
-                        .iter()
-                        .find(|p| p.plot_x == plot_x && p.plot_z == plot_z)
-                    {
-                        let _ = plot_list_entry
-                            .priv_message_sender
-                            .send(PrivMessage::AutomationDisconnect { conn_id });
-                    }
-                }
-            }
-        }
-        if let Some(automation) = &mut self.automation {
-            automation.flush();
-        }
 
         let mut client_idx = 0;
         let mut clients_len = self.network.handshaking_clients.len();

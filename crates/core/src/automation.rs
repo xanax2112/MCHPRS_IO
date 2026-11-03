@@ -58,12 +58,15 @@ const MAX_LINE_LEN: usize = 65_536;
 /// Maximum amount of bytes queued for a connection that is not reading. A
 /// client that lets more than this pile up is dropped instead of letting the
 /// queue grow without bound (docs/protocol.md).
-const MAX_PENDING: usize = 1024 * 1024;
+///
+/// 16 MB holds a whole `RADV` batch of `OUTPUT` lines (a 65536-entry run with
+/// one change per entry is about 2.6 MB), so the script only has to keep
+/// reading, not to read instantly.
+const MAX_PENDING: usize = 16 * 1024 * 1024;
 
-/// Group-name based requests carry no coordinates. They are routed to the one
-/// plot this server ever has (docs/file-formats.md); `/` commands use the same
-/// model.
-const ROUTE_ANCHOR: BlockPos = BlockPos::new(0, 64, 0);
+/// Total bytes queued across every connection. `/tick seq` admits a single
+/// script, so this only matters with several ordinary connections open.
+const MAX_PENDING_TOTAL: usize = 32 * 1024 * 1024;
 
 /// What an automation client asked for.
 ///
@@ -87,8 +90,9 @@ pub enum RequestKind {
     /// `INPUT ...`: drive an input group, optionally at a reserved tick.
     Input {
         name: String,
-        /// `Some` for the `INPUT <name> <offset> <hex>` form.
-        offset: Option<u16>,
+        /// `Some` for the `INPUT <name> <offset> <hex>` form. `u32` so a whole
+        /// batch can be scheduled ahead (BACKLOG.md/ §9.3).
+        offset: Option<u32>,
         hex: String,
     },
     /// `READ <name>:<bit>`: read one point of a group.
@@ -99,16 +103,6 @@ pub enum RequestKind {
     TickNow,
     /// `RADV <ticks>`: advance the circuit manually (docs/file-formats.md).
     Radv { ticks: u32 },
-}
-
-impl AutomationRequest {
-    /// The plot a request has to be routed to.
-    pub fn pos(&self) -> BlockPos {
-        match &self.kind {
-            RequestKind::ReadPos { pos } => *pos,
-            _ => ROUTE_ANCHOR,
-        }
-    }
 }
 
 /// The reply a plot thread sends back after handling an [`AutomationRequest`].
@@ -138,23 +132,18 @@ pub enum AutomationResponse {
     CommandOk,
 }
 
-/// An action the server thread must perform on behalf of the automation
-/// bridge.
-#[derive(Debug)]
-pub enum AutomationAction {
-    /// Route an automation request to the plot containing `pos`.
-    Route {
-        conn_id: u64,
-        pos: BlockPos,
-        request: AutomationRequest,
-    },
-    /// An automation connection closed; the plot holding its `POUT` bindings
-    /// must drop them so they stop being sampled and pushed.
-    Disconnect {
-        conn_id: u64,
-        plot_x: i32,
-        plot_z: i32,
-    },
+/// What a single [`AutomationServer::poll`] collected.
+///
+/// The bridge lives on the plot thread now, so requests and closed connections
+/// are handed straight back to it instead of being routed through the server
+/// thread.
+#[derive(Default)]
+pub struct AutomationPoll {
+    /// Requests parsed since the last poll (accepted handshakes included).
+    pub requests: Vec<(u64, AutomationRequest)>,
+    /// Connections dropped since the last poll; the plot must forget their
+    /// `POUT` bindings.
+    pub closed: Vec<u64>,
 }
 
 struct AutomationConn {
@@ -180,8 +169,10 @@ pub struct AutomationServer {
     waiting: bool,
     /// The one script connection allowed while reservation mode is active.
     exclusive: Option<u64>,
-    /// Connections dropped since the last `poll`, so the plots can forget them.
-    pending_disconnects: Vec<(u64, i32, i32)>,
+    /// Requests parsed since the last `poll` (accepted handshakes included).
+    inbox: Vec<(u64, AutomationRequest)>,
+    /// Connections dropped since the last `poll`.
+    closed: Vec<u64>,
 }
 
 impl AutomationServer {
@@ -206,7 +197,8 @@ impl AutomationServer {
             connections: FxHashMap::default(),
             waiting: false,
             exclusive: None,
-            pending_disconnects: Vec::new(),
+            inbox: Vec::new(),
+            closed: Vec::new(),
         })
     }
 
@@ -216,14 +208,13 @@ impl AutomationServer {
     /// Everything that can be answered locally (protocol errors, line length)
     /// is written to the connection's output queue directly and picked up by
     /// [`AutomationServer::flush`].
-    pub fn poll(&mut self) -> Vec<AutomationAction> {
-        let mut actions = Vec::new();
-        self.accept_new(&mut actions);
+    pub fn poll(&mut self) -> AutomationPoll {
+        self.accept_new();
 
         let mut replies: Vec<(u64, String)> = Vec::new();
         let mut close_now: Vec<u64> = Vec::new();
         let mut close_after_flush: Vec<u64> = Vec::new();
-        let mut routed: Vec<AutomationAction> = Vec::new();
+        let mut routed: Vec<(u64, AutomationRequest)> = Vec::new();
 
         let conn_ids: Vec<u64> = self.connections.keys().copied().collect();
         for conn_id in conn_ids {
@@ -262,11 +253,7 @@ impl AutomationServer {
                     continue;
                 }
                 match parse_request(line, exclusive) {
-                    Parsed::Request(request) => routed.push(AutomationAction::Route {
-                        conn_id,
-                        pos: request.pos(),
-                        request,
-                    }),
+                    Parsed::Request(request) => routed.push((conn_id, request)),
                     Parsed::Error(code) => {
                         replies.push((conn_id, format!("ERR {}\n", code)));
                     }
@@ -286,17 +273,11 @@ impl AutomationServer {
             self.drop_connection(conn_id);
         }
 
-        actions.extend(routed);
-        actions.extend(
-            self.pending_disconnects
-                .drain(..)
-                .map(|(conn_id, plot_x, plot_z)| AutomationAction::Disconnect {
-                    conn_id,
-                    plot_x,
-                    plot_z,
-                }),
-        );
-        actions
+        self.inbox.extend(routed);
+        AutomationPoll {
+            requests: std::mem::take(&mut self.inbox),
+            closed: std::mem::take(&mut self.closed),
+        }
     }
 
     /// Flushes queued responses to all connections, removing dead sockets and
@@ -419,7 +400,7 @@ impl AutomationServer {
         }
     }
 
-    fn accept_new(&mut self, actions: &mut Vec<AutomationAction>) {
+    fn accept_new(&mut self) {
         loop {
             match self.listener.accept() {
                 Ok((stream, addr)) => {
@@ -468,14 +449,13 @@ impl AutomationServer {
                     );
                     // The handshake carries the plot's tick counter, so it is
                     // answered by the plot rather than here.
-                    actions.push(AutomationAction::Route {
+                    self.inbox.push((
                         conn_id,
-                        pos: ROUTE_ANCHOR,
-                        request: AutomationRequest {
+                        AutomationRequest {
                             exclusive: self.exclusive == Some(conn_id),
                             kind: RequestKind::Hello,
                         },
-                    });
+                    ));
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => return,
                 Err(err) => {
@@ -487,6 +467,7 @@ impl AutomationServer {
     }
 
     fn queue_line(&mut self, conn_id: u64, line: String) {
+        let total: usize = self.connections.values().map(|conn| conn.pending.len()).sum();
         let Some(conn) = self.connections.get_mut(&conn_id) else {
             return;
         };
@@ -494,7 +475,7 @@ impl AutomationServer {
             return;
         }
         conn.pending.extend_from_slice(line.as_bytes());
-        if conn.pending.len() > MAX_PENDING {
+        if conn.pending.len() > MAX_PENDING || total + line.len() > MAX_PENDING_TOTAL {
             // The client stopped reading; drop it instead of buffering forever.
             warn!(
                 "Automation connection {} fell more than {} bytes behind, dropping it",
@@ -517,7 +498,7 @@ impl AutomationServer {
             self.exclusive = None;
             self.waiting = false;
         }
-        self.pending_disconnects.push((conn_id, 0, 0));
+        self.closed.push(conn_id);
     }
 }
 
@@ -584,12 +565,12 @@ fn parse_request(line: &str, exclusive: bool) -> Parsed {
                     let Ok(offset) = args[0].parse::<u32>() else {
                         return Parsed::Error("arg");
                     };
-                    if offset == 0 || offset > u32::from(u16::MAX) {
+                    if offset == 0 {
                         return Parsed::Error("range");
                     }
                     request(RequestKind::Input {
                         name: name.to_string(),
-                        offset: Some(offset as u16),
+                        offset: Some(offset),
                         hex: args[1].to_string(),
                     })
                 }

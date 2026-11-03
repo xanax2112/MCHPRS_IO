@@ -365,27 +365,7 @@ impl JITBackend for DirectBackend {
         let Some(&node_id) = self.pos_map.get(&pos) else {
             return false;
         };
-        match self.nodes[node_id].ty {
-            NodeType::Lever | NodeType::PressurePlate => {
-                self.set_node(node_id, powered, bool_to_ss(powered));
-                true
-            }
-            // A button written by a script behaves like a press: `1` pulses it
-            // and the normal schedule releases it, `0` does nothing
-            // (BACKLOG.md).
-            NodeType::Button => {
-                if powered && !self.nodes[node_id].powered {
-                    self.schedule_tick(
-                        node_id,
-                        if crate::betterio() { 2 } else { 10 },
-                        TickPriority::Normal,
-                    );
-                    self.set_node(node_id, true, 15);
-                }
-                true
-            }
-            _ => false,
-        }
+        self.set_powered_node(node_id, powered)
     }
 
     fn query_wire_power(&self, pos: BlockPos) -> Option<u8> {
@@ -402,15 +382,48 @@ impl JITBackend for DirectBackend {
         let Some(&node_id) = self.pos_map.get(&pos) else {
             return false;
         };
-        if !matches!(self.nodes[node_id].ty, NodeType::Wire) {
+        self.set_wire_power_node(node_id, power)
+    }
+
+    fn resolve_io_node(&self, pos: BlockPos) -> Option<u32> {
+        let node_id = *self.pos_map.get(&pos)?;
+        let ty = self.nodes[node_id].ty;
+        // Wires are not IO elements but analog buses read their strength, so
+        // they resolve too (BACKLOG.md/ §9.2).
+        if io_element(ty).is_none() && !matches!(ty, NodeType::Wire) {
+            return None;
+        }
+        Some(node_id.index() as u32)
+    }
+
+    fn node_state(&self, node: u32) -> Option<(bool, u8)> {
+        let entry = self.nodes.inner().get(node as usize)?;
+        Some((entry.powered, entry.output_power))
+    }
+
+    fn node_wire_power(&self, node: u32) -> Option<u8> {
+        let entry = self.nodes.inner().get(node as usize)?;
+        if matches!(entry.ty, NodeType::Wire) {
+            Some(entry.output_power)
+        } else {
+            None
+        }
+    }
+
+    fn set_node_powered(&mut self, node: u32, powered: bool) -> bool {
+        if node as usize >= self.nodes.inner().len() {
             return false;
         }
-        let power = power.min(15);
-        // A wire driven by a memory must keep the injected strength: mark it
-        // locked so `update` does not recompute it from its (absent) inputs.
-        self.nodes[node_id].locked = true;
-        self.set_node(node_id, power > 0, power);
-        true
+        let node_id = self.nodes.get(node as usize);
+        self.set_powered_node(node_id, powered)
+    }
+
+    fn set_node_wire_power(&mut self, node: u32, power: u8) -> bool {
+        if node as usize >= self.nodes.inner().len() {
+            return false;
+        }
+        let node_id = self.nodes.get(node as usize);
+        self.set_wire_power_node(node_id, power)
     }
 
     fn take_io_events(&mut self) -> Vec<IoEvent> {
@@ -552,5 +565,47 @@ impl fmt::Display for DirectBackend {
             }
         }
         writeln!(f, "}}")
+    }
+}
+
+impl DirectBackend {
+    /// Sets a lever / pressure plate / button by resolved node. Shared by the
+    /// position API and the cached-handle API (BACKLOG.md/ §9.2).
+    fn set_powered_node(&mut self, node_id: NodeId, powered: bool) -> bool {
+        match self.nodes[node_id].ty {
+            NodeType::Lever | NodeType::PressurePlate => {
+                self.set_node(node_id, powered, bool_to_ss(powered));
+                true
+            }
+            // A button written by a script behaves like a press: `1` pulses it
+            // and the normal schedule releases it, `0` does nothing
+            // (BACKLOG.md).
+            NodeType::Button => {
+                if powered && !self.nodes[node_id].powered {
+                    self.schedule_tick(
+                        node_id,
+                        if crate::betterio() { 2 } else { 10 },
+                        TickPriority::Normal,
+                    );
+                    self.set_node(node_id, true, 15);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Sets a wire by resolved node and marks it locked, so `update` stops
+    /// recomputing an externally driven strength (BACKLOG.md/ §9.2).
+    fn set_wire_power_node(&mut self, node_id: NodeId, power: u8) -> bool {
+        if !matches!(self.nodes[node_id].ty, NodeType::Wire) {
+            return false;
+        }
+        let power = power.min(15);
+        // A wire driven by a memory must keep the injected strength: mark it
+        // locked so `update` does not recompute it from its (absent) inputs.
+        self.nodes[node_id].locked = true;
+        self.set_node(node_id, power > 0, power);
+        true
     }
 }

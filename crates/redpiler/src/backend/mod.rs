@@ -90,6 +90,22 @@ pub trait JITBackend {
     /// externally driven, so `update` stops recomputing it from its inputs.
     /// Returns `false` when there is no wire node at `pos`.
     fn try_set_wire_power(&mut self, pos: BlockPos, power: u8) -> bool;
+
+    // Fast per-tick accessors (BACKLOG.md/ §9.2). A group resolves its points
+    // once per compile and then reads/writes by handle, so the hot loop never
+    // touches `pos_map`.
+
+    /// Resolves `pos` into an opaque handle for the accessors below. Handles
+    /// stay valid until the next compile; `None` when no IO node is there.
+    fn resolve_io_node(&self, pos: BlockPos) -> Option<u32>;
+    /// `(powered, output_power)` of a resolved node.
+    fn node_state(&self, node: u32) -> Option<(bool, u8)>;
+    /// Strength (0-15) of a resolved wire node; `None` when it is not a wire.
+    fn node_wire_power(&self, node: u32) -> Option<u8>;
+    /// Sets a lever / pressure plate / button by handle.
+    fn set_node_powered(&mut self, node: u32, powered: bool) -> bool;
+    /// Sets a wire node by handle and marks it externally driven.
+    fn set_node_wire_power(&mut self, node: u32, power: u8) -> bool;
     /// Drains all pending IO state change events.
     fn take_io_events(&mut self) -> Vec<IoEvent>;
 }

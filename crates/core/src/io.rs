@@ -78,6 +78,12 @@ pub struct IoGroup {
     pub reason: Option<String>,
     prev_bits: Vec<bool>,
     prev_clk: bool,
+    /// Resolved node handles for `points`, filled lazily after a compile and
+    /// emptied by `reset_edges` so a recompile can never read a stale node
+    /// (BACKLOG.md/ §9.2).
+    handles: Vec<u32>,
+    /// Reused word buffer, so a poll does not allocate.
+    scratch: Vec<bool>,
 }
 
 impl IoGroup {
@@ -127,9 +133,20 @@ impl IoGroup {
             return false;
         }
         let packed = self.pack(bits);
+        if self.handles.len() != self.points.len() {
+            self.handles.clear();
+            for pos in &self.points {
+                let Some(handle) = redpiler.resolve_io_node(*pos) else {
+                    self.handles.clear();
+                    self.active = false;
+                    return false;
+                };
+                self.handles.push(handle);
+            }
+        }
         let mut touched = true;
         if self.kind.is_analog() {
-            for (index, pos) in self.points.iter().enumerate() {
+            for (index, handle) in self.handles.iter().enumerate() {
                 let mut strength = 0u8;
                 for shift in [3u8, 2, 1, 0] {
                     let bit = packed
@@ -140,14 +157,14 @@ impl IoGroup {
                         strength |= 1 << shift;
                     }
                 }
-                if !redpiler.try_set_wire_power(*pos, strength) {
+                if !redpiler.set_node_wire_power(*handle, strength) {
                     touched = false;
                 }
             }
         } else {
-            for (index, pos) in self.points.iter().enumerate() {
+            for (index, handle) in self.handles.iter().enumerate() {
                 let bit = packed.get(index).copied().unwrap_or(false);
-                if !redpiler.try_set_powered(*pos, bit) {
+                if !redpiler.set_node_powered(*handle, bit) {
                     touched = false;
                 }
             }
@@ -165,7 +182,12 @@ impl IoGroup {
         if !self.active || self.kind.is_input() {
             return None;
         }
-        let bits = self.read(redpiler)?;
+        if !self.read_into_scratch(redpiler) {
+            // A point stopped resolving to a node: disable the group instead of
+            // reading through a handle that may not match it any more.
+            self.active = false;
+            return None;
+        }
         let fired = match self.clock {
             Some(clk) => {
                 let now = redpiler
@@ -176,10 +198,52 @@ impl IoGroup {
                 self.prev_clk = now;
                 edge
             }
-            None => self.prev_bits != bits,
+            None => self.prev_bits != self.scratch,
         };
-        self.prev_bits = bits.clone();
-        if fired { Some(bits) } else { None }
+        std::mem::swap(&mut self.prev_bits, &mut self.scratch);
+        if fired {
+            // Only a change pays for the copy: steady signals cost no
+            // allocation at all.
+            Some(self.prev_bits.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Fills `scratch` with the current word through the cached node handles.
+    ///
+    /// Resolves the handles on first use after a compile. Returns `false` when
+    /// a point no longer maps to a compiled IO node.
+    fn read_into_scratch(&mut self, redpiler: &Compiler) -> bool {
+        if self.handles.len() != self.points.len() {
+            self.handles.clear();
+            for pos in &self.points {
+                let Some(handle) = redpiler.resolve_io_node(*pos) else {
+                    self.handles.clear();
+                    return false;
+                };
+                self.handles.push(handle);
+            }
+        }
+        self.scratch.clear();
+        if self.kind.is_analog() {
+            for handle in &self.handles {
+                let Some(strength) = redpiler.node_wire_power(*handle) else {
+                    return false;
+                };
+                for shift in [3u8, 2, 1, 0] {
+                    self.scratch.push((strength >> shift) & 1 == 1);
+                }
+            }
+        } else {
+            for handle in &self.handles {
+                let Some((powered, _)) = redpiler.node_state(*handle) else {
+                    return false;
+                };
+                self.scratch.push(powered);
+            }
+        }
+        true
     }
 
     /// Seeds the previous state at binding time so the first poll does not
@@ -195,6 +259,8 @@ impl IoGroup {
     pub fn reset_edges(&mut self) {
         self.prev_bits.clear();
         self.prev_clk = false;
+        self.handles.clear();
+        self.scratch.clear();
     }
 }
 
@@ -664,6 +730,8 @@ fn parse(text: &str) -> IoTable {
             reason: None,
             prev_bits: Vec::new(),
             prev_clk: false,
+            handles: Vec::new(),
+            scratch: Vec::new(),
         });
         let _ = original;
     }
