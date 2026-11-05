@@ -84,8 +84,8 @@ APK 里打包了用户手册与 `python/` 测试工具（24 个文件），**每
 ```
 <工作目录>/
 ├── README.md / README_zh.md   项目说明
-├── docs/                      protocol.md、file-formats.md 及各中文版
-└── python/                    correctness.py / timing.py / pipeline.py + core/
+├── docs/                      使用手册（Instruction-manual 中英）+ 台账 + 上游说明
+└── python/                    main.py + core/
 ```
 
 覆盖规则：

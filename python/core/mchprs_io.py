@@ -1,6 +1,6 @@
 """MCHPRS_IO 自动化协议客户端（内部库，用户不需要直接打开）。
 
-协议要点（详见 docs/protocol_zh.md）：
+协议要点（详见 docs/Instruction-manual-zh.md）：
 - TCP 一行一条报文，服务器连上先发 HELLO。
 - 动词全大写；`/` 开头一律 ERR unknown。
 - 输入 hex 长度严格 = ceil(位宽 / 4)。
@@ -136,12 +136,44 @@ class Client:
         line = self.expect("OK INPUT", timeout)
         return int(line.split()[-1])
 
+    def input_wait(self, group, value, bits, seconds):
+        """发 INPUT，随后 `seconds` 秒内只保留 `OK INPUT` 和**最后一条** `OUTPUT <group>`。
+
+        返回 `(in_tick, last)`：`in_tick` 来自 `OK INPUT`（没等到就抛
+        `TimeoutError`）；`last` 是窗口内最后一条推送 `(tick, value)`，
+        没有任何推送时为 `None`。窗口内的其它行一律丢弃。
+        """
+        hx = encode_hex(value, bits)
+        self.send("INPUT %s %s" % (group, hx))
+        deadline = time.monotonic() + seconds
+        tick = None
+        last = None
+        while True:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                break
+            try:
+                line = self._recv_line(remain)
+            except TimeoutError:
+                break
+            if line.startswith("OK INPUT"):
+                tick = int(line.split()[-1])
+            elif line.startswith("ERR"):
+                raise ProtocolError(line)
+            else:
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == "OUTPUT" and parts[1] == group:
+                    last = (int(parts[2]), int(parts[3], 16))
+        if tick is None:
+            raise TimeoutError("等待 OK INPUT 超时")
+        return tick, last
+
     def reserve_batch(self, group, values, bits, interval, timeout=None):
         """一次发完一整批预约，确认条数无误后才返回。
 
         `/tick seq` 模式下服务器不再逐条回 `OK INPUT`：整批只回一条
         `OK INPUT <group> <条数>`（连续 5 ms 没有新预约即视为批结束，
-        BACKLOG.md/ §9.3）。因此必须按「先取基准 tick → 灌入 → 核对条数 →
+        docs/backlog/BACKLOG.md/ §9.3）。因此必须按「先取基准 tick → 灌入 → 核对条数 →
         才允许发 RADV」的顺序来，否则无法判断有没有丢预约。
 
         返回每条输入生效的绝对 tick 列表；核对失败抛 ProtocolError，
@@ -177,6 +209,8 @@ class Client:
                     "只确认了 %d/%d 条预约，检查是否忘了 /tick seq" % (total, expected)
                 )
             line = self._recv_line(remain)
+            # 空闲超时：只要还有回复在来就续期（docs/backlog/BACKLOG.md BUG-051）。
+            deadline = time.monotonic() + limit
             if line.startswith("ERR"):
                 raise ProtocolError(line)
             parts = line.split()
@@ -207,7 +241,11 @@ class Client:
         return int(self.expect("OK RADV", timeout).split()[-1])
 
     def radv_collect(self, ticks, group, timeout=None):
-        """RADV 并收集推进期间推送的 OUTPUT，返回 [(tick, value), ...]。"""
+        """RADV 并收集推进期间推送的 OUTPUT，返回 [(tick, value), ...]。
+
+        超时是**空闲超时**：每收到一行就把 deadline 重置成 `now + timeout`，
+        只要还有数据过来就一直等，不管这批要跑多久（docs/backlog/BACKLOG.md BUG-051）。
+        """
         self.send("RADV %d" % ticks)
         limit = self.timeout if timeout is None else timeout
         deadline = time.monotonic() + limit
@@ -215,8 +253,11 @@ class Client:
         while True:
             remain = deadline - time.monotonic()
             if remain <= 0:
-                raise TimeoutError
+                raise TimeoutError(
+                    "RADV 空闲 %.3fs 没有新数据（已收 %d 条推送）" % (limit, len(collected))
+                )
             line = self._recv_line(remain)
+            deadline = time.monotonic() + limit
             parts = line.split()
             if len(parts) >= 4 and parts[0] == "OUTPUT" and parts[1] == group:
                 collected.append((int(parts[2]), int(parts[3], 16)))

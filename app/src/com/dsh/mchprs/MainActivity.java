@@ -48,11 +48,13 @@ public class MainActivity extends Activity implements MchprsService.Listener {
 
     /** 快捷指令：显示文本（用于前缀匹配）。 */
     private static final String[] QUICK_CMDS = {
-            "/redpiler compile", "/redpiler reset", "/rtps", "/tick seq"
+            "/redpiler compile", "/redpiler reset", "/rtps", "/tick seq",
+            "//update -p"
     };
     /** 快捷指令：点击后真正填进输入框的文本（/rtps 带一个尾随空格，光标直接停到参数位）。 */
     private static final String[] QUICK_FILL = {
-            "/redpiler compile", "/redpiler reset", "/rtps ", "/tick seq"
+            "/redpiler compile", "/redpiler reset", "/rtps ", "/tick seq",
+            "//update -p"
     };
 
     private TextView status;

@@ -1,10 +1,10 @@
 # MCHPRS_IO 基岩版台账
 
-> **本文件是基岩版（Bedrock）开发的唯一真相源。** 2026-11-03 从主台账 `BACKLOG.md` 拆出，
+> **本文件是基岩版（Bedrock）开发的唯一真相源。** 2026-11-03 从主台账 `docs/backlog/BACKLOG.md` 拆出，
 > BUG-032 的全部条目与开发日志**原样搬运**，编号体系保持「BUG-032 第 N 条」不变。
 >
-> - 主台账 `BACKLOG.md`：核心（Java 侧与通用）与未结项
-> - `python/PYTHON-BACKLOG.md`：协议测试工具（`PY-nnn`）
+> - 主台账 `docs/backlog/BACKLOG.md`：核心（Java 侧与通用）与未结项
+> - `docs/backlog/PYTHON-BACKLOG.md`：协议测试工具（`PY-nnn`）
 > - APK 工程：`~/dsh/apk-backlog.md`
 >
 > 协作规则见主台账 §0；五条铁律对本文件同样有效（目标先行、只记录不改码、写码与编译分离、
@@ -12,7 +12,7 @@
 >
 > **归属按文件位置划分**（用户 2026-11-03 下达）：`crates/network/src/bedrock_api.rs`、
 > `crates/network/src/bedrock/**`、`vendor/bedrock-rs/**` 的问题记在本文件；
-> `crates/core`、根 `Cargo.toml`、`src/`、`app/`、`docs/`、CI 的问题记在主台账 `BACKLOG.md`。
+> `crates/core`、根 `Cargo.toml`、`src/`、`app/`、`docs/`、CI 的问题记在主台账 `docs/backlog/BACKLOG.md`。
 > 跨两侧的改动两边各记自己那部分，并互相引用。
 
 ## 1. 现状速览
@@ -27,7 +27,7 @@
 | 日志 | 默认 `INFO` 静默；`MCHPRS_LOG=debug` 看明细 |
 | 已知限制 | 退出后立即重连被拒 5~10 秒（第 48 条）；`SubChunkRequest` 未做（带宽优化） |
 
-## 2. 条目与历史（自 `BACKLOG.md` 原样搬迁）
+## 2. 条目与历史（自 `docs/backlog/BACKLOG.md` 原样搬迁）
 
 **BUG-032 基岩版客户端接入（调研）**
 
@@ -62,13 +62,13 @@
 
 **BUG-032 接入进展（2026-10-29 夜）——spike 验收全部通过，开始并入主仓库**
 
-- spike 落地位置（**不在本仓库内**）：Windows 侧 `D:\computer\mchprs\bedrock\bedrock\spike`，独立 crate，只依赖 bedrock-rs 的 `bedrock` 门面；上游用 bedrock-rs 的本地副本（打了 5 处补丁，见 `docs/BEDROCK-SPIKE-STATUS.md`）。
+- spike 落地位置（**不在本仓库内**）：Windows 侧 `D:\computer\mchprs\bedrock\bedrock\spike`，独立 crate，只依赖 bedrock-rs 的 `bedrock` 门面；上游用 bedrock-rs 的本地副本（打了 5 处补丁，见 `本台账 §10.4`）。
 - 三项验收结果（均有人类实机确认 + 服务端日志/字节对拍证据）：
   - **S1 进世界稳定不掉**：✅ 登录 → 出生 → 区块 → 持续在线无断线；重连正常。
   - **S2 方块正确渲染可见**：✅ 根因是 `NetworkChunkPublisherUpdate` 的半径单位是**方块**而非区块（`ceil((视距+1)*√2)<<4` = 208），给 4 等于没给可渲染区域。已排除"state id 错 / 子段版本 / 发包时序 / 压缩"。
   - **S3 交互事件到达服务端**：✅ 客户端点方块 → 服务端收到 `PlayerAuthInput.player_block_actions`，含 `StartDestroyBlock` 与方块坐标 `(0,80,2)`、face=5。
 - 已对齐本服务端的运行形态：**创造模式 + 允许飞行 + 无限资源**（`LevelSettings.game_type=Creative`、`UpdateAbilities.ability_values=0x0FBF`），与"只支持创造/旁观"一致；人类实测无血条、双击起飞、可悬停。
-- 踩死并记录的三条协议坑（`docs/BEDROCK-SPIKE-STATUS.md` §0–§0.4 有完整证据链）：
+- 踩死并记录的三条协议坑（`本台账 §10.4` §0–§0.4 有完整证据链）：
   1. Bedrock 1.21 起必须下发 `SetActorData.FLAGS` 的 **`BREATHING`（bit 36 / FLAGS_2 bit 26 是另一组）**，否则客户端画空氧气条且移动变慢。
   2. bedrock-rs 把 **LONG 型实体元数据按 zigzag** 编码，线上实际是**无符号 varint**（本地补丁 PATCH-005）。
   3. 子区块用 **v9 + subchunk index**（负段补码 0xFC…0xFF），末尾必须有边界方块计数与方块实体数组。
@@ -92,9 +92,9 @@
   - 修改：`Cargo.toml`（根）：workspace 加 `exclude = ["vendor/bedrock-rs"]`——不加会被当成本仓库成员，进而去继承我们的 `workspace.dependencies` 并报 `dependency.uuid was not found`
   - 修改：`Cargo.lock`（由新增依赖自动生成，非手改）
   - **注意**：工作区里 `crates/core/src/plot/coord.rs` 的改动**不是本次接入产生的**，是 0.5.4-alpha 之后 `/coord` 步长修复的既有工作成果，勿与 Bedrock 接入混为一谈。
-  - 新增：`docs/bedrock-integration.md`（面向维护者的接入说明：改动清单、补丁表、验证方法、后续接入点）
-  - 新增：`docs/BEDROCK-SPIKE-STATUS.md`（spike 阶段验收记录，含三条协议坑的完整证据链）
-  - 修改：`BACKLOG.md`（本条目）
+  - 新增：本台账 §10.1（面向维护者的接入说明：改动清单、补丁表、验证方法、后续接入点）
+  - 新增：本台账 §10.4（spike 阶段验收记录，含三条协议坑的完整证据链）
+  - 修改：`docs/backlog/BACKLOG.md`（本条目）
   - `crates/core`、`crates/world`、`src/main.rs` **一行未动**（本阶段只落协议层）
 - 验证方式（不需要 Bedrock 客户端）：
   - `cargo test -p mchprs_network bedrock` → `set_actor_data_matches_geyser_codec`、`update_abilities_matches_geyser_codec` 两条断言，字节与 Cloudburst v766 codec 输出完全一致（2026-10-29 已跑通，2 passed）。
@@ -126,7 +126,7 @@
   3. `crates/network/src/bedrock/chunk.rs`：新增 `build_chunk_from_world<W: World>(world, chunk_x, chunk_z, biome)`（`y += 64` 取 MCHPRS 方块，经 `bedrock_block_state()` 翻译）。
   4. `crates/network/src/bedrock/bridge.rs`：新增少量跨线程消息类型（Bedrock 线程 ↔ 服务端线程 ↔ plot 线程）。
   5. `crates/core/src/server.rs` + `crates/core/src/plot/*`：启动监听、把 `PrivMessage` 请求转给常驻的 spawn plot（0,0），把 4 个区块 + 出生点回传。
-  6. `BACKLOG.md`、`docs/bedrock-integration.md`：同步记录。
+  6. `docs/backlog/BACKLOG.md`、`本台账 §10.1`：同步记录。
 - 未敲定/风险：①Bedrock 客户端在哪出生（用 plot 全局偏移还是 plot 本地原点）——**待用户确认**；②plots 是 32×32（`PLOT_SCALE=5`），视距 8 区块时其余区块是空；③监听线程用 tokio，需确认不干扰服务端 tick。
 - **流程事故（如实记录）**：本轮我在用户只说“准备做什么”“只做第一步”的情况下，自行改了 `crates/core/src/config.rs`（加 `bedrock` 字段）与 `crates/network/Cargo.toml`（加两个依赖），并自动跑了 `cargo build`，违反台账 §0 第 2、3 条铁律（先登记、用户明说“写代码”才动代码；写码与编译分离）。这两处改动目前**未提交**，等用户裁决保留或回滚。
 
@@ -491,7 +491,7 @@ node crates/network/generators/gen_creative.js <creative_items.json> <block_pale
 - 能力值**不跟随后端状态**：MCHPRS 的 `Player::update_player_abilities()` 发的是 Java `CPlayerAbilities`，对 Bedrock 是 no-op → "Java 侧是否飞行/飞行速度"永远到不了 Bedrock 客户端。第 25 条只修"初始不悬空"，真正跟随要等出站通道（`BedrockCommand` 加变体，与 R3 一起）。🧪 已编译待真机验证（2026-10-31，第三轮）：`BedrockCommand::Abilities { flying, fly_speed }` → 会话线程发 `protocol::update_abilities_for(flying, runtime_id, fly_speed)`；`Player::update_player_abilities()` 在发完 Java 包后再调 `client.send_abilities(self.flying, 0.05 * self.fly_speed)`。用户 2026-10-31 第五轮确认真机行为正常（起飞/落地、速度手感），飞行速度倍率已随包一起传（不再写死 0.05）。
 - **入站日志限流（2026-10-31 第四轮）**：`PlayerAuthInput`（20 条/秒）与 `MovePlayer` 原来是**逐包** println，一次 1 分钟会话就能把日志刷到几 MB，排查时关键行全被淹。现在两者都按 `LOG_WINDOW = 1s` 汇总成一行（`×N 最后 pos=… input=…`）。方块交互、背包、计分板这些低频事件仍然即时打印。
 - **踩坑（2026-10-31，务必别再犯）**：用 PowerShell `(Get-Content -Raw) -replace … | Set-Content -Encoding UTF8` 改 `.rs` 源码 → 本机是 Windows PowerShell 5.1，按 ANSI 读 UTF-8 再写回，**中文注释整片变成 mojibake**（`session.rs` 被毁一次，靠 `git checkout -- <file>` 从索引恢复才救回来）。源码编辑一律用编辑工具（`edit`），或 `read`+定点替换；`Get-Content` 只能看数字/ASCII 行。
-- **`ItemStackRequest`（从创造面板拿物品）暂时做不了，原因已查明（2026-10-31 第三轮）**：vendored `bedrock-rs` 的 `ItemStackRequestActionType::CraftCreative` **只有 `creative_item_network_id` 一个字段**，而 Cloudburst 766 的 `CraftCreativeAction` 有 **两个**（`creativeItemNetworkId` + `numberOfRequestedCrafts`）→ 直接拿去解码会把后面的 `TakeAction` 整体读错位。要做必须先打 **PATCH-006**（改 `crates/protocol/src/version/v662/enums/item_stack_request_action_type.rs` 并同步 `bedrock-integration.md` 的补丁表）。参考字节已经跑出来了，见下条。
+- **`ItemStackRequest`（从创造面板拿物品）暂时做不了，原因已查明（2026-10-31 第三轮）**：vendored `bedrock-rs` 的 `ItemStackRequestActionType::CraftCreative` **只有 `creative_item_network_id` 一个字段**，而 Cloudburst 766 的 `CraftCreativeAction` 有 **两个**（`creativeItemNetworkId` + `numberOfRequestedCrafts`）→ 直接拿去解码会把后面的 `TakeAction` 整体读错位。要做必须先打 **PATCH-006**（改 `crates/protocol/src/version/v662/enums/item_stack_request_action_type.rs` 并同步 `本台账 §10.1` 的补丁表）。参考字节已经跑出来了，见下条。
 - **取物品/回执/方块更新的参考字节（2026-10-31，`refs/ProbeItemRequest.java`）**：
   ```
   REQUEST      (CraftCreative(1) + Take(64 → HOTBAR 0))  0154020e0101004000003200000000000000000000
@@ -1631,7 +1631,7 @@ removal index (is 1) should be < len (is 1)
   具体是颜色还是光照还没分离验证）。
 - 新增的 `[R7] 快照区块 … / 负载 … 末尾48字节 …`、`[R7] 告示牌包 hex …`、
   `[A2] 解析后 …` 三处诊断日志（量不大，保留也行，定位完后建议关掉）。
-- 未提交：工作区仍是 19 文件（17 改 + `block_entity.rs` 新增 + `BACKLOG.md`）。
+- 未提交：工作区仍是 19 文件（17 改 + `block_entity.rs` 新增 + `docs/backlog/BACKLOG.md`）。
 - 运行态：服务端 **PID 9788**，日志 `logs\bedrock-snapshotdiag-1101-0138.log`。
 
 ---
@@ -1726,9 +1726,9 @@ pub struct ItemStackResponseInfo<V: ProtoVersion> {
      `-NoRun` 只编译。classpath 自动拼 `refs\geyser-deps`+`refs\jars`，产物落 `refs\out\`。
    - 顺手踩到一个坑并记在注释里：`$ErrorActionPreference='Stop'` 会让 javac 的
      "注解处理器"提示（stderr）把成功的编译中断。
-2. **两条取证通道写进仓库文档**：新增 `docs/BEDROCK-CAPTURE.md`
+2. **两条取证通道写进仓库文档**：新增 `本台账 §10.3`
    （顺序：读 Geyser 源码 → 探针权威字节 → packet-spy 抓包 → 结论写台账 + 固化成 `#[test]`），
-   `docs/BEDROCK-AGENT-NOTES.md` §7 改成指向它。
+   `本台账 §10.2` §7 改成指向它。
 3. **临时脚本收敛**：13 个一次性 `_patch_*.py` 挪进 `refs\patches\archive\`，
    `refs\patches\README.md` 写清"哪些还有用、archive 是什么、新脚本该写哪"。
 4. 工作区同步：`D:\computer\mchprs\bedrock\README.md` §2 改成用 `probe.ps1`。
@@ -1830,7 +1830,7 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
 ### 9.30 BUG-032 收尾：给维护 MCHPRS 内核的人（2026-11-01 02:2x）
 
 > 用户确认"没问题了"，本轮基岩版开发结束。这节只写**内核维护者需要知道的事**，
-> 其余细节在 `docs/BEDROCK-AGENT-NOTES.md`（边界 / 改动审计 / 不变量 / 未结清单）。
+> 其余细节在 `本台账 §10.2`（边界 / 改动审计 / 不变量 / 未结清单）。
 
 **一句话**：基岩版是**旁挂**的一整套新模块，MCHPRS 的红石/Java 协议/WorldEdit/存储器逻辑**没有被改写**。
 
@@ -1847,7 +1847,7 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
    Java 侧行为与改动前完全一致。
 4. **依赖**：`vendor/bedrock-rs` 是上游 bedrock-rs 的完整副本（自带独立 workspace，
    根 `Cargo.toml` 用 `exclude` 隔开），我们对它有 9 处本地补丁，清单见
-   `docs/BEDROCK-AGENT-NOTES.md` §3.5。仓库**不依赖任何外部目录**（已实测整目录拷走
+   `本台账 §10.2` §3.5。仓库**不依赖任何外部目录**（已实测整目录拷走
    `cargo build --offline` 通过）。
 5. **验收状态**：`cargo test -p mchprs_network bedrock` = 70 passed；`cargo test --workspace` 全绿；
    真机（基岩 1.21.50 / 协议 766）逐项验收通过（创造背包、计分板、命令、看见他人、
@@ -1935,7 +1935,7 @@ Geyser 写的是裸 NBT 串 —— 两种实现都"能用"，值得用真机 A/B
 - **版本**：`Cargo.toml` 的 `0.5.4-alpha` → **`0.6.1-alpha`**（`Cargo.lock` 随之更新）。
 - **验收**：Android aarch64 debug 86 / release 86 全过；`cargo build --release` 通过；
   二进制 **12,705,136 字节**，sha256 `cd0088e3…`，已替换 `~/mchprs/mchprs`（旧版备份见 §1）。
-- **合并与推送**：先 rebase 到远端 `a3e7d5f`（`/coord new|add` 步长修复），冲突只在 `BACKLOG.md` 的
+- **合并与推送**：先 rebase 到远端 `a3e7d5f`（`/coord new|add` 步长修复），冲突只在 `docs/backlog/BACKLOG.md` 的
   "BUG-032 接入进展" 段（远端那版没有），按"保留我们的段落 + 保留远端 BUG-022 补充"解决；
   22 个提交 rebase 后 0 冲突，`main` = `1333d8e`，**已推送 GitHub**。
 - **平台无关结论**：基岩运行路径上已无 facet/nbtx 反射；NBT 只把 `nbtx::Value` 当数据结构用。
@@ -2171,4 +2171,678 @@ src/main.rs                          install()（feature 打开时才编）
    要用 `\\`。
 
 **以后构建必须带 `--features bedrock`**（CI、两份 README、`app/build.sh` 提示、
-`docs/BEDROCK-AGENT-NOTES.md`、`docs/bedrock-integration.md` 已同步改）。
+`本台账 §10.2`、`本台账 §10.1` 已同步改）。
+
+
+
+---
+
+## 10. 专题文档（2026-11-05 由独立文件并入）
+
+> 四份基岩专题文档按用户要求并入本台账，内容原样保留、标题降级；
+> 原先的四个独立文件已删除，仓库里不再有 `BEDROCK-AGENT-NOTES.md` / `BEDROCK-CAPTURE.md` / `BEDROCK-SPIKE-STATUS.md` / `bedrock-integration.md`。
+
+### 10.1 接入说明
+
+> 原 `docs/mchprsio/bedrock-integration.md`，2026-11-05 并入本台账。
+
+> 对应台账条目：`docs/backlog/BACKLOG.md` → `BUG-032`。验收证据：`本台账 §10.4`。
+> 本文面向**维护本仓库的人**：只说“加了什么、放哪、为什么、怎么验”。
+>
+> **接手前先读 `本台账 §10.2`**：那是给后续维护者（人或 AI）的
+> 边界说明 + core 改动审计 + 真机验证过的不变量 + 未结清单，本文是设计/实现细节的补充。
+
+#### 1. 一句话现状
+
+Bedrock 1.21.51（协议 766）的**协议层 + 会话层**已并入本仓库：
+`cargo run -p mchprs_network --example bedrock_server --features bedrock` 可以起一个端点，
+真机客户端能连上、看到方块、点方块有反应（2026-10-29 实机验证）。
+**尚未接入**：真实世界数据（现在下发的是最小测试世界）与红石事件回传。
+
+#### 2. 目录与文件
+
+| 路径 | 性质 | 说明 |
+| --- | --- | --- |
+| `vendor/bedrock-rs/` | 新增（vendored） | 上游 [`bedrock-rs`](https://github.com/bedrock-crustaceans/bedrock-rs) 的完整副本，含我们的 5 处本地补丁。**不要手动改**，改动见 §4。 |
+| `crates/network/src/bedrock/mod.rs` | 新增 | 模块入口、协议版本常量 |
+| `crates/network/src/bedrock/protocol.rs` | 新增 | 服务端包构造（玩家初始元数据、创造模式能力）+ 字节级回归测试 |
+| `crates/network/src/bedrock/session.rs` | 新增 | 会话层：RakNet 监听 → 登录 → StartGame → 区块 → 交互收包 |
+| `crates/network/src/bedrock/chunk.rs` | 新增 | `LevelChunk` 负载编码（子区块 v9 + subchunk index、调色板、生物群系段） |
+| `crates/network/src/bedrock/items_gen.rs` | 新增 | 1788 条物品表（`StartGame.item_list` 必须完整，否则手机端异常） |
+| `crates/network/src/bedrock/data/*.dat` | 新增 | 生物群系表、实体标识表（**来自 Geyser 项目，MIT 许可**，原样内嵌进二进制） |
+| `crates/network/examples/bedrock_server.rs` | 新增 | 真机验证入口 |
+| `crates/network/src/lib.rs` | 修改 | 只加了一行 `pub mod bedrock;` |
+| `crates/network/Cargo.toml` | 修改 | 新增 `bedrock`（path 指向 vendored 副本）、`tokio`、`nbtx`、`uuid` |
+| `Cargo.toml`（根） | 修改 | workspace 增加 `exclude = ["vendor/bedrock-rs"]`，理由见 §3 |
+| `.gitattributes` | 修改 | 加 `vendor/bedrock-rs/** -text`，避免第三方源码被换行符转换污染 |
+| `本台账 §10.4` | 新增 | spike 阶段的完整验收记录（三条协议坑的证据链） |
+| `本台账 §10.1` | 新增 | 本文件 |
+
+Java 协议实现仍在 `crates/network/src/packets/`，Bedrock 与它**平级**（`src/bedrock/`），
+所以 `mchprs_network` 同时承担两种协议的“包定义层”，服务端逻辑（`crates/core`）一行未动。
+
+#### 3. 为什么要 vendoring，以及那个 `exclude`
+
+- `vendor/bedrock-rs` 不是 crates.io 依赖，而是**带补丁的源码副本**：我们改了它的
+  `data_item_type.rs` 等文件（见 §4），用 git 依赖无法表达这些补丁。
+- 该目录自带完整的上游 workspace（有自己的 `[workspace.dependencies]`、`nbtx`、`facet`…）。
+  如果不 exclude，Cargo 会把它当成本仓库的 workspace 成员，于是它去继承**我们的**
+  `workspace.dependencies`，直接报 `dependency.uuid was not found`。
+- 因此根 `Cargo.toml` 里加了 `exclude = ["vendor/bedrock-rs"]`，让它用自己的 workspace 根。
+
+**构建注意**：vendored 副本里的 `nbtx` 是 git 依赖，首次构建需要能访问 GitHub；
+`Cargo.lock` 已记录版本，后续构建可离线。
+
+#### 4. 上游补丁（在 vendored 副本内）
+
+| 编号 | 文件 | 改动 | 原因 |
+| --- | --- | --- | --- |
+| PATCH-001 | `crates/level/src/greedy.rs` | AVX-2 快路径加 `cfg(target_arch)` 守卫 | aarch64（Android）上编译失败 |
+| PATCH-002 | `crates/protocol/src/version/v662/packets/start_game.rs` | `player_property_data` 改成手写 newtype | `facet` 用指针高位做标记，Android 堆指针 tagging 冲突导致 abort |
+| PATCH-003 | 同上 | 该 newtype 的 NBT 编码：无长度前缀 + varint 字符串 | 与 766 规范一致 |
+| PATCH-004 | `crates/protocol/src/version/v662/enums/player_permission_level.rs` | 改成 `#[enum_repr(i8)]` | 上游按 u8 序列化，`Member` 被写成 2，客户端当成 Operator |
+| PATCH-005 | `crates/protocol/src/version/v662/enums/data_item_type.rs` | `Int64` 由 `i64` 改 `u64` | Bedrock 的 LONG 型元数据是无符号 varint；用 zigzag 会让标志位整体错位（→ 空氧气条、移动变慢） |
+| PATCH-006 | `crates/protocol/src/version/v662/types/command_origin_data.rs` | 去掉 run-on 写法（不再 `read_to_end`），改为按顺序读写：编号 varint → uuid → requestId | 上游 `deserialize` 用 `read_to_end` 把**整个包剩余字节**吞掉，导致 `CommandRequestPacket` 的 `internal`/`version` 读到 EOF → 客户端一输入 `/xxx` 就掉线。权威字节见 `refs/ProbeCommandRequest.java`（Cloudburst v766） |
+| PATCH-007 | `crates/protocol/src/version/v712/enums/item_stack_request_action_type.rs`（`V766` 实际用这一份；`v662` 的同名文件同步改了保持一致） | `CraftCreative`：`creative_item_network_id` 由 `i32`(zigzag) 改 **`u32`(无符号 varint)**，`number_of_requested_crafts` 改 `u8` | 上游用 zigzag 解 `creativeItemNetworkId`（id=128 会读成 -64），且 `V766` 走的是 v712 那份枚举。宽度由 `refs/ProbeCraftCreative.java` 反推：id=128 → `8001`（无符号）、crafts=127/128 → `7f`/`80`（1 字节）、crafts=300 被截成 `2c` |
+
+升级上游时**必须重放这 7 个补丁**，否则会出现“能连上但玩家状态怪异”的回归。
+
+#### 5. 怎么验证
+
+##### 5.1 字节级（不需要客户端，CI 友好）
+
+```sh
+cargo test -p mchprs_network bedrock --features bedrock
+```
+
+两条测试把“最贵的知识”钉死成断言：
+
+- `set_actor_data_matches_geyser_codec`：玩家初始元数据（含 `BREATHING` 标志位）的完整字节；
+- `update_abilities_matches_geyser_codec`：创造模式 + 飞行 + 无限资源的能力字节。
+
+参考字节来自 **Geyser 自带的 Cloudburst v766 codec**（`tryEncode` 出来的负载），
+不是我们编的。改动 `protocol.rs` 里任何数值都会让测试失败。
+
+##### 5.2 真机（需要一个 Bedrock 1.21.51 客户端）
+
+```sh
+cargo run -p mchprs_network --example bedrock_server --features bedrock
+```
+
+然后在客户端里连 `<本机 IP>:19132`。预期：能进世界、能看到石头地面、点方块有反应；
+服务端侧会打印 `[S3] << 方块交互 action=StartDestroyBlock pos=...`。
+
+原理上这只是协议层的“最小世界”（一层石头 + 空气），用于隔离“是协议问题还是世界数据问题”；
+正式接入时这份世界会被 `crates/world` 的真实数据替换。
+
+#### 6. 还没做的（下一步接入点）
+
+1. **真实世界数据**：`session.rs` 现在下发的是写死的最小世界（石头地面 + 空气），
+   要换成 `crates/world` 的方块数据 → `LevelChunk`。
+   注意两套坐标差 64：本服务端 `y ∈ 0..383`，Bedrock 主世界 `y ∈ -64..319`，全局 `y -= 64`。
+2. **方块映射表**：本服务端约 100 多种方块 → Bedrock 运行时 state id。
+3. **交互回传**：`PlayerAuthInput.player_block_actions` 的坐标要落到 `crates/core` 的红石事件里；
+   地块坐标同样要 `+64` 换回。
+4. **节流**：Bedrock 客户端对高频方块更新敏感，必须按 `world_send_rate` 合并下发。
+5. ~~**创造背包物品表**~~：已接入 Geyser 的 `creative_items.1_21_50.json`（1712 条全量面板），
+   见 BEDROCK.md 的「R1 全量面板实现」。
+
+#### 7. 约束（来自项目要求，改代码时别破坏）
+
+- **平台无关**：不得依赖 JVM / Geyser / ViaProxy，也不得写死 Android 路径。
+- **单文件产物**：最终二进制不依赖第三方运行时；数据表（物品/方块/生物群系）一律编译进二进制。
+- **正确性优先**：任何二进制编码改动，先用开源参考实现（Cloudburst codec）逐字节校验再提交。
+
+
+### 10.2 维护须知（写给以后接手的人 / AI）
+
+> 原 `docs/mchprsio/BEDROCK-AGENT-NOTES.md`，2026-11-05 并入本台账。
+
+> 这份文件是**给接手基岩版开发的 AI / 人喂的**，不是给玩家看的文档。
+> 每次基岩版开工前先读一遍；每次收工前把「§9 未结清单」更新掉。
+> 台账 `docs/backlog/BACKLOG.md` 是契约（BUG-032 章节 + §9.x），这里只做**地图与边界**，不重复抄台账。
+
+---
+
+#### 1. 角色边界（先读这条）
+
+- **我只负责基岩版（Bedrock）**。MCHPRS 的核心（红石引擎、Java 协议、WorldEdit、存储器、
+  io.txt、脚本协议）**不属于我的范围**，不要顺手改。
+- 允许碰 `crates/core` 的唯一方式：**加 Bedrock 分支 / 加语义化推送方法**，
+  Java 行为必须保持字节级不变。凡是会改变 Java 行为的地方，见 §4 的白名单，逐条都在台账里。
+- `vendor/bedrock-rs` 是上游 bedrock-rs 的**完整副本**（自带独立 workspace，
+  根 `Cargo.toml` 里 `exclude = ["vendor/bedrock-rs"]`）。我们对它有 9 处本地补丁
+  （PATCH-001…009，清单见 §3.4），改它要单独记账。
+- 权威来源只有两个：**Geyser 源码**（`D:\computer\mchprs\bedrock\refs\Geyser-<hash>`）
+  和 **Cloudburst v766 codec**（`refs/geyser-deps` 里的 jar）。二者都**在 MCHPRS_IO 之外**，
+  只作取证参考，**绝不进入构建/运行依赖**。猜出来的常量一律不许进代码。
+
+---
+
+#### 2. 目录地图（基岩版相关）
+
+```
+crates/network/src/bedrock/        ← 基岩版全部协议/会话代码（我的主战场）
+  mod.rs            bedrock_block_state / mchprs_item_id / bedrock_item_id 三个换算入口
+  session.rs        登录链路 + 主循环（收包、限流日志、各 BedrockCommand 分发）
+  translate.rs      入站 Bedrock 包 → Java 入站包（命令/聊天/移动/挥手/写牌…）
+  bridge.rs         BedrockEvent / BedrockCommand / BedrockPlayerLink（双向桥）
+  protocol.rs       Bedrock 出站包编码器（含 9 个逐字节对拍测试）
+  chunk.rs          区块负载编码（子区块/生物群系/边界/方块实体流）
+  block_entity.rs   告示牌 NBT：BlockActorData + 区块尾部 NBT 流 + 反解客户端写牌
+  entity.rs         其它玩家（PlayerList/AddPlayer/MovePlayer/MobEquipment/Animate）
+  inventory.rs      背包容器包（ContainerOpen/InventoryContent/ContainerClose）+ 丢物品判定
+  scoreboard.rs     右侧计分板（SetDisplayObjective/SetScore/RemoveScore）
+  commands.rs       命令树（AvailableCommands）+ 软枚举（UpdateSoftEnum）
+  commands_gen.rs   由 generators/gen_commands.py 生成，不要手改
+  creative.rs       R1 创造背包（CreativeContent，1540 条）
+  creative_gen.rs / items_gen.rs / block_map.rs / item_map.rs   ← 生成数据，不要手改
+  text.rs           聊天（TextPacket）
+  data/*.dat        BiomeDefinitionList / AvailableActorIdentifiers 的载荷（include_bytes 内嵌）
+crates/core/src/       ← 只允许"加 Bedrock 分支"；改动清单见 §4
+crates/text/src/lib.rs ← 新增 to_legacy_text（JSON 组件 → § 码），纯新增
+crates/network/examples/bedrock_server.rs ← 本地起 Bedrock 端点的最小示例
+本台账 §10.1、本台账 §10.4 ← 早期设计/踩坑记录（历史，可参考）
+generators/            ← 只在改映射/命令表时用，产物是上面的 *_gen.rs
+```
+
+---
+
+#### 3. 我对仓库改了什么（vs 基岩接入前）
+
+查看真实差异（自己跑，不要凭记忆）：
+
+```powershell
+git diff --stat origin/main..HEAD -- . ":(exclude)vendor"   # 非 vendored 的全部改动
+git diff --stat origin/main..HEAD -- vendor                 # vendored 副本（整包新增 + 9 处补丁）
+```
+
+##### 3.1 纯新增（不影响任何既有行为）
+
+- `crates/network/src/bedrock/**` 整个模块（约 1.4 万行，含生成数据）
+- `crates/network/src/lib.rs`：`+ pub mod bedrock;`
+- `crates/network/Cargo.toml`：加 `bedrock`（vendored）、`tokio`、`nbtx`、`uuid` 依赖
+- `crates/text/src/lib.rs`：`+122` 行，新增 `ColorCode::code_char` / `nearest_code_for_hex` /
+  `TextComponent::to_legacy_text`（把 Java JSON 文本降级成 `§` 码，给计分板/告示牌/聊天用）
+- `crates/network/examples/bedrock_server.rs`、`generators/*`、`docs/*`
+- `Cargo.toml`：`exclude = ["vendor/bedrock-rs"]`
+
+##### 3.2 新增字段 / 配置（默认值保持原行为）
+
+- `crates/core/src/config.rs`：`+ bedrock: i64 = 19132`（UDP 监听端口，与 Java `bind_address` 分开）
+
+##### 3.3 core 里的接线（**Java 行为不变**）
+
+| 文件 | 改动 | 说明 |
+| --- | --- | --- |
+| `crates/core/src/player.rs` | `+364` | `PlayerBackend::{Java,Bedrock}` 枚举 + 一串**语义化推送方法**（`send_sidebar` / `send_chat` / `send_players` / `send_chunks` / `send_block_update(s)` / `send_abilities` / `send_teleport` / `send_swing` / `send_game_mode` / `send_sign` / `send_open_sign` / `send_inventory` / `send_soft_enum`）。Java 分支照旧发 Java 包（`send_open_sign` 的 Java 分支与改动前字节相同，只是搬到方法里） |
+| `crates/core/src/plot/mod.rs` | `+766` | `enter_plot` 里给 Bedrock 推软枚举/背包/游戏模式；区块流送（`stream_bedrock_chunks`）、玩家快照（`send_bedrock_player_sync`）、登录快照（`build_bedrock_snapshot`）、告示牌（`bedrock_signs_in_chunk` / `push_bedrock_sign`）、`sign_rows_to_legacy` 等。**全部由 `player.client.is_bedrock()` 守卫** |
+| `crates/core/src/server.rs` | `+188` | 起 Bedrock UDP 监听线程、`BedrockEvent` 处理、Bedrock 玩家注册（`handle_bedrock_register`）、`PrivMessage` 新增变体。Java 监听路径未改 |
+| `crates/core/src/plot/packet_handlers.rs` | `+54` | 新增 `BedrockInventoryUpdate` 的排空应用（必须先于收包处理）；`handle_swing_arm` 里附加一次 `client.send_swing()`（Java 侧是空实现） |
+| `crates/core/src/plot/scoreboard.rs` | `+39` | 新增 `bedrock_sidebar()`，在 `add_player`/`set_lines`/`set_line` 处一起推给 Bedrock |
+| `crates/core/src/plot/commands.rs` / `coord.rs` | 小 | `//save`、`//schem`、`/coord`（含 undo/redo）之后重推软枚举；`file_candidates` 等改 `pub(super)` |
+| `crates/core/src/plot/data.rs` | `+2` | `PlotWorld` 新增字段 `pending_bedrock_signs` 的初始化 |
+| `crates/core/src/interaction.rs` | `±24` | 放告示牌改成 `client.send_open_sign(...)`（Java 分支等价）；`on_use` 新增"点已有牌子打开编辑框"，**带 `is_bedrock()` 守卫**，Java 不走 |
+| `crates/core/src/plot/packet_handlers.rs` 等 | — | 见上 |
+
+##### 3.4 会改变 Java 行为的地方（**只有这几条，全部是 bug 修复/等价重构，已在台账）**
+
+1. `plot/mod.rs::leave_plot` —— 修 panic（BUG-032 第 41 条）：原来按玩家下标删
+   `packet_senders`，但那个列表只装 Java 玩家。现在只在 Java 玩家身上按"前面有几个
+   Java 玩家"定位。**Java 侧受益**（以前场上有 Bedrock 玩家时会崩服）。
+2. `interaction.rs::place_block` —— 把 `COpenSignEditor` 的构造搬到
+   `PlayerBackend::send_open_sign`，Java 分支发出的内容与改动前一致。
+3. 其余为纯新增或 `is_bedrock()` 守卫内。
+
+> 换句话说：**Java 侧唯一的可见变化，是"基岩玩家在场时离开 plot 不再崩"**。
+
+##### 3.5 vendored 补丁（在 `vendor/bedrock-rs` 里）
+
+PATCH-001 `level/src/greedy.rs`（AVX-2 cfg 守卫）、PATCH-002/003
+`v662/packets/start_game.rs`（`player_property_data` 手写 newtype + NBT 编码）、
+PATCH-004 `player_permission_level.rs`（`enum_repr(i8)`）、PATCH-005 `data_item_type.rs`
+（`Int64` 改 `u64`，LONG 元数据是无符号 varint）、PATCH-006 `command_origin_data.rs`
+（去掉 `read_to_end` 的 run-on 解码）、PATCH-007 `item_stack_request_action_type.rs`
+（`CraftCreative` 字段宽度）、PATCH-008 `item_stack_response_info.rs`
+（去掉 run-on 解码，多条目才能解；容器本来就装在 `ItemStackNetResult::Success(..)` 里）、
+PATCH-009 `available_commands.rs`（`EnumDataEntry` 字段改 pub）。
+
+---
+
+#### 4. 不变量（真机验证过的，别随手动）
+
+- **坐标**：`Bedrock y = MCHPRS y − 64`（`chunk::Y_OFFSET`）；`NetworkBlockPosition.y` 是
+  `u32`，负高度按 32 位二补数写。
+- **眼睛高度**：客户端上报的 `player_position` / `MovePlayer` / `Respawn` 是**眼睛**
+  （脚 + 1.62），`AddPlayer` 是脚。差 1.62 会表现为"两个客户端互相看差两格"。
+- **实体 FLAGS**：客户端的**低位区**比 Cloudburst `EntityFlag` 序号后移一位
+  （`SNEAKING = bit2`、`SPRINTING = bit4`），**高区位号与 codec 一致**
+  （`CAN_SHOW_NAME 15`、`SILENT 18`、`CAN_CLIMB 20`、`BREATHING 36`、`HAS_COLLISION 49`、
+  `HAS_GRAVITY 50`）。千万别再"整体 +1"（第 42 条：会导致降落变慢）。
+- **告示牌 NBT 键**：`x/y/z/id="Sign"/FrontText/BackText/IsWaxed`，
+  每面 `Text`（四行 `\n` 拼、去尾部换行）/`SignTextColor`/`IgnoreLighting`。
+  **必须发 `OpenSign` 包客户端才会弹编辑框**（它不会自己开）。
+- **背包**：`StartGame.enable_item_stack_net_manager = false`（客户端权威）。
+  → 任何 `InventoryContent` 都可能覆盖玩家真实物品；开背包**只发 `ContainerOpen`**（第 45 条）。
+  服务端只知道"选中槽/最近同步的槽"，其余槽位一律不要假设。
+- **丢物品**：`InventoryTransaction(NORMAL)` + 两条 action，`actions[0]` 来源是
+  `WorldInteraction`；判据用"那一格数量变小"，别只信 flag 值。
+- **区块尾部**：边界方块计数（1 字节 `0`）之后是**裸网络 NBT 串**（无数量/长度前缀，
+  Cloudburst `NbtUtils.createNetworkWriter` 的写法）。生物群系段固定 24 段。
+- **字节级对拍**：`crates/network/src/bedrock/protocol.rs` / `scoreboard.rs` / `inventory.rs` /
+  `chunk.rs` / `block_entity.rs` 里的 `*_matches_*_bytes` 测试就是护栏，动常量前先跑。
+
+---
+
+#### 5. 构建 / 测试 / 运行
+
+```powershell
+# 编译（先停服务端，否则 target\debug\mchprs.exe 被占用会失败）
+# 基岩版默认不编译（BEDROCK.md 第 55 条：插座 / 插头）
+cargo build --features bedrock
+cargo test -p mchprs_network bedrock --features bedrock   # 基岩版单测，当前 69 条
+cargo test --workspace
+
+# 运行（run/ 里有 Config.toml / io.txt / world / schems，被 .gitignore 忽略）
+Set-Location run; & ..\target\debug\mchprs.exe *> D:\computer\mchprs\bedrock\logs\<名字>.log
+```
+
+- Java 端口 `25565`（TCP），Bedrock 端口 `19132`（UDP，`Config.toml` 的 `bedrock` 字段）。
+- 收包失败/断线/panic 都打标准输出，重定向到日志文件即可事后看。
+- **不要用 PowerShell 读写 `.rs`**：`Get-Content` 按 GBK 解码再按 UTF-8 写回会把中文变乱码
+  （历史上真把 `session.rs` 写坏过一次）。用编辑器（edit/write 工具），UTF-8 无 BOM、LF。
+- `cargo`/`rustfmt` 在这个 shell 里即使成功也可能回报 `[exit code: 1]`，看输出内容。
+
+##### 5.1 调试开关（平时全关，排查时改常量再编译）
+
+`crates/network/src/bedrock/debug.rs` 顶部三个写死的常量：
+
+| 常量 | 作用 | 平时 |
+| --- | --- | --- |
+| `PACKETS` | 逐包收发摘要 `[PKT] << 包名` / `[PKT] >> 包名 (N B)` | `false` |
+| `PACKET_HEX` | 出站包 hex（截断 160 字节），查字节布局用 | `false` |
+| `VERBOSE` | 明细日志 `[--]/[S3]/[R5]/[A2]/[R7]/[R8]/[R10]`（逐事件、量大） | `false` |
+
+开法：把要看的常量改成 `true` → `cargo build` → 起服务，日志里就会出现对应行。
+调用点：入站 `dump_in(&batch)`、每个 `conn.send(&packets)` 之前 `dump_out(&packets)`；
+明细日志用宏 `crate::bedrock_verbose!(...)`（等价 `if VERBOSE { println!(...) }`）。
+**收工前记得改回 `false`**（否则日志会被刷爆）。
+
+---
+
+#### 6. 单独拿出 `MCHPRS_IO` 还能不能跑基岩版？
+
+**能，而且已经实测过**（2026-11-01）：
+
+- 把 `MCHPRS_IO` 拷到 `D:\computer\mchprs\bedrock\tmp\standalone-test\`（排除 `target`/`.git`/`run`），
+  在副本里 `cargo build --offline` **通过**。
+- 依赖都在仓库内或 crates.io/缓存里：`vendor/bedrock-rs` 是相对路径依赖；
+  `nbtx` 是 git 依赖（首次构建需要网络或 cargo 缓存）；`crates/network/src/bedrock/data/*.dat`
+  用 `include_bytes!` 内嵌；映射表（`block_map.rs`/`item_map.rs`/`creative_gen.rs`）都是生成进源码的。
+- **仓库里没有任何指向仓库外的绝对路径**（`git grep -n -E "D:\\\\|refs/" -- . ":(exclude)vendor"` 只命中
+  `docs/backlog/BACKLOG.md` 里的**历史取证记录**，不是代码/构建依赖）。
+- Geyser 源码、`refs/geyser-deps`、`Probe*.java`、`_patch_*.ps1` **全在仓库外**，
+  只在取证时用；`MCHPRS_IO` 的构建与运行都不看它们。
+
+---
+
+#### 7. 取证通道（仓库外，别入库）
+
+**完整流程与命令见 `本台账 §10.3`**（C7 固化后唯一入口）。速记：
+
+1. **Cloudburst 探针**：`refs\tools\probe.ps1`（一条命令编译+运行，别再手拼 classpath）：
+   `& refs\tools\probe.ps1 ProbeSign`、`... -List`、`... -WithGeyserClasses`（要 Geyser 自己的类时）。
+   源码在 `refs\probes\`，产物在 `refs\out\`。
+2. **Geyser packet-spy 抓包**：改 `refs/Geyser-<hash>` 的 checkout（**只在 Geyser 侧**），
+   细节写在 `docs/backlog/BACKLOG.md` §9.1 附近；用来对照"真实 Geyser 会发什么"。
+3. 探针产出（结论都已写进台账 + `#[test]`）：`ProbeEntityFlagOrder`、
+   `ProbeInventory`/`ProbeCraftCreative`/`ProbeItemRequest`、`ProbeScoreboard`、`ProbeSoftEnum`、
+   `ProbeGeyserChunk`、`ProbeSign`、`ProbeChunkNbt`、`ProbeItemStackResponse`。
+4. 排错小工具 `refs/tools/check_state.js`（不在仓库内）：给一个 Java 方块状态 id 或
+   Bedrock 运行时 id，反查方块名+属性。用法：
+
+   ```powershell
+   $env:NODE_PATH="D:\computer\mchprs\bedrock\tools\node_modules"
+   node D:\computer\mchprs\bedrock\refs\tools\check_state.js 4317   # java state
+   node D:\computer\mchprs\bedrock\refs\tools\check_state.js 9214   # bedrock runtime id
+   ```
+
+
+---
+
+#### 8. 状态与已知限制（指针，细节看台账）
+
+- 已真机验收：R1 创造背包、R2 出生点、R3 计分板、R4 命令、B3 命令树、B4 软枚举、
+  第 22 条（看见别的玩家）、第 26/19 条（增量区块流送）、A1/A3/A5/A-t1/A-t2、
+  第 38~42 条、第 44/45 条（丢物品镜像、开背包不清空）。
+- 已知限制（**不是 bug，别当 bug 修**）：告示牌超宽行不裁剪、富文本不转 `§` 码、
+  `item_map` 只有 135 条（表外物品显示空手）、旁观者登录瞬间按创造、
+  计分板一定会显示分数数字、创造面板换物品后未切栏前别人看你手里还是旧的。
+- 明确**不做**（用户裁决，别自己开工）：A4/A6/A7/A8、B2、B5/B6/B7、C1–C6。
+
+#### 9. 未结清单（每轮开工先看这里）
+
+| 项 | 状态 | 线索 |
+| --- | --- | --- |
+| BUG-032 第 43 条（区块携带的牌子字） | ✅ 功能上关闭（2026-11-01）：进 plot 补推 ±3 区块内最多 64 块牌子 | 台账 §9.28/§9.29；区块内 NBT 仍照发（离线解析证明几何正确），但客户端不吃，所以不依赖它 |
+| 告示牌文字颜色 | **不写 `SignTextColor`**（客户端默认色）+ `IgnoreLighting=0` | 血泪史：写 `0xFF000000` 真机看不见、写白变灰；要发光只改 `IgnoreLighting=1`（§9.29.2） |
+| 诊断日志（`[R7] 快照区块`/`告示牌包 hex`/`[A2] 解析后`） | 已挂到 `debug::VERBOSE` | 开 `VERBOSE` 才打（§5.1） |
+| B1（PATCH-008 `ItemStackResponse`） | ✅ 已修（2026-11-01，待编译） | 台账 §9.27.1；`refs\ProbeItemStackResponse.java` + 测试 `item_stack_response_decodes_cloudburst_bytes` |
+| C7（抓包基础设施固化） | ✅ 已做（2026-11-01） | 台账 §9.27.2；`refs\tools\probe.ps1` + `本台账 §10.3` |
+
+
+### 10.3 取证与抓包
+
+> 原 `docs/mchprsio/BEDROCK-CAPTURE.md`，2026-11-05 并入本台账。
+
+> 配套：`docs/backlog/BACKLOG.md` 的 BUG-032 / §9.x（结论）、`本台账 §10.2`（边界与地图）。
+> 本文只讲**怎么取证**：遇到"客户端表现和我们的预期不一致"时，证据从哪来、怎么落地。
+> 所有工具都在仓库外（`D:\computer\mchprs\bedrock\refs\`），**不进仓库、不进构建**。
+
+#### 0. 顺序（别跳步）
+
+1. 先读 **Geyser 源码**（`refs\Geyser-<hash>\core\src\main\java`）看它怎么做 —— 唯一权威；
+2. 再跑 **Cloudburst 探针**拿"权威字节"（离线、秒级）；
+3. 需要"真实客户端/真实服务端"时，才上 **Geyser packet-spy 抓包**；
+4. 结论写进 `docs/backlog/BACKLOG.md`（BUG-032 第 N 条 / §9.x），**并把关键字节固化成 `#[test]`**，
+   免得下次又要重新取证。
+
+#### 1. 通道 A：Cloudburst 探针（离线、权威字节）
+
+**为什么可信**：`refs\geyser-deps` 里就是 Geyser 自己用的 Cloudburst v766 codec，
+`tryEncode` 出来的字节和真实 Bedrock 服务端一致（本项目多次逐字节对拍验证过）。
+
+**一键编译运行**（唯一入口，别再手拼 217 个 jar）：
+
+```powershell
+$probe = "D:\computer\mchprs\bedrock\refs\tools\probe.ps1"
+& $probe -List                                   # 有哪些探针
+& $probe ProbeSign                               # 编译 + 运行
+& $probe ProbeItemStackResponse                  # 同上
+& $probe ProbeGeyserChunk -WithGeyserClasses     # 需要 Geyser 自己的类时加这个开关
+& $probe ProbeSign -NoRun                        # 只编译不运行
+```
+
+新增探针：在 `refs\probes\` 写一个 `public class ProbeXxx { public static void main(...) }`，
+用 `Bedrock_v766.CODEC.tryEncode(...)`（或 `tryDecode`）打印 hex，然后 `& $probe ProbeXxx`。
+
+**已知探针产出**（结论都在台账，代码里引用了它们）：
+
+| 探针 | 用来钉住什么 |
+| --- | --- |
+| `ProbeEntityFlagOrder` | 实体 `FLAGS` 的位号（配合真机验证低位区 +1） |
+| `ProbeInventory` / `ProbeCraftCreative` / `ProbeItemRequest` | 背包容器包、创造取物、`ItemStackRequest` 字段宽度 |
+| `ProbeScoreboard` | 侧边栏 `SetDisplayObjective` / `SetScore` 的排序与分数编码 |
+| `ProbeSoftEnum` | 软枚举参数符号 `0x04100000 \| 下标` |
+| `ProbeGeyserChunk` | 单值子区块 / 生物群系段的字节 |
+| `ProbeSign` | `BlockActorData`（牌子）字节 |
+| `ProbeChunkNbt` | 区块尾部是**裸网络 NBT 串**（无长度前缀） |
+| `ProbeItemStackResponse` | `ItemStackResponsePacket`：`result \| requestId \| containers` 顺序、`Success` 才带容器 |
+
+#### 2. 通道 B：Geyser packet-spy 抓包（真机、对照）
+
+用于"我方实现和 Geyser 行为不一致"的时候：让同一个客户端走 Geyser，抓 Geyser 实际发什么。
+
+- Geyser 源码 checkout：`refs\Geyser-<hash>`（**只在它自己的目录里改**，用 `refs\patches` 里的补丁思路）；
+  补丁细节与历史记录见 `docs/backlog/BACKLOG.md` §9.1 附近。
+- 运行目录：`run-capture\`（Geyser 的 config 副本）、`run756\`。
+- **抓完立刻把原始日志/hex 结论摘进台账**，日志文件本身放 `logs\`（会被归档，不进仓库）。
+
+#### 3. 证据落地规矩
+
+- 任何"客户端接受/拒绝某字节"的结论，必须能指向：探针输出 + `#[test]`（最好）或真机日志行。
+- 逐字节回归测试放 `crates/network/src/bedrock/protocol.rs`（或其他对应模块的 `tests`），
+  命名 `*_matches_cloudburst_bytes` / `*_decodes_cloudburst_bytes`。
+- **不写"猜"的常量**；探针还拿不到就上真机，真机和 codec 冲突时**以真机为准并记账**
+  （例：`FLAGS` 低位区偏移，见 `protocol.rs::CLIENT_LOW_FLAG_SHIFT`）。
+
+
+### 10.4 spike 验收记录
+
+> 原 `docs/mchprsio/BEDROCK-SPIKE-STATUS.md`，2026-11-05 并入本台账。
+
+> 本文件由 spike 工程拷贝进仓库，作为 **BUG-032** 的验收证据留存。
+> 原始工程在仓库外（Windows 侧 `D:\computer\mchprs\bedrock\bedrock\spike`），
+> 正式代码已并入 `crates/network/src/bedrock/`，说明见 `本台账 §10.1`。
+> 文中 `~/bedrock/...` 是 spike 侧的路径写法，不要按它去找本仓库的文件。
+
+---
+#### 阶段一（Bedrock spike）进度报告
+
+> 更新：2026-10-29 22:2x
+> 代码：`~/bedrock/spike/`（Rust，独立 crate，未触碰主仓库）
+> 上游：`~/bedrock/bedrock-rs`（本地副本，打过 5 处补丁，见 `HANDOFF.md` §8）
+>
+> ⚠️ **历史文档**（2026-10-29 的 Termux 时期记录）。`~/bedrock/*` 这些路径已作废：
+> 2026-11-01 工作区已拍平，仓库在 `D:\computer\mchprs\bedrock\MCHPRS_IO`，
+> 取证材料在 `D:\computer\mchprs\bedrock\refs\`。看当前状态请读
+> `本台账 §10.2` 与 `docs/backlog/BACKLOG.md` 的 BUG-032 / §9.x。
+
+---
+
+#### 1. 结论速览
+
+| 里程碑 | 状态 | 证据 |
+|---|---|---|
+| A1 源码落地 | ✅ | 1035 文件 sha256 清单 |
+| A2 编译闸门 | ✅ | `cargo build` 通过（aarch64，需 2 处上游补丁） |
+| A3 端口就绪 | ✅ | UDP 19132 监听 |
+| **B1 协议号** | ✅ **实测 766** | 客户端 `RequestNetworkSettings` 报 766 |
+| B2 加密登录 | ✅ | 握手 + AES 加密后正常收发包 |
+| B3 资源包 | ✅ | 客户端 `ResourcePackStackFinished` |
+| **B4 进入世界** | ✅ | 客户端离开加载界面，能看到天空与云 |
+| C1 区块半径 | ✅ | 客户端 `RequestChunkRadius(12)`，回 8 |
+| **C2 看到方块** | ✅ **已解决** | 根因是 `NetworkChunkPublisherUpdate` 半径单位是**方块**，见 §0 |
+| C3 多区块 | ✅ | 已发 17×17=289 区块 |
+| C4 30 秒稳定 | ✅ | 多次会话保持连接，客户端主动退出前无掉线 |
+| D1 收输入 | ✅ | 收到 `MovePlayer`/`PlayerAuthInput` 持续上报（含坐标） |
+| **D0 玩家状态** | ✅ **已解决** | 空氧气条 + 移动变慢的根因是缺 `BREATHING` 标志位，见 §0.2 |
+| **D2/D3 方块交互** | ✅ **已通** | 客户端点方块 → 服务端收到 `PlayerAuthInput.player_block_actions`，含 `action_type=StartDestroyBlock`、`pos=(0,80,2)`、`facing=5`；人类实测“点方块有反应” |
+| D4 connect 序列齐备 | ✅ | 8 个剩余包已补齐并与 codec 逐字节一致，见 §0.3 |
+
+---
+
+#### 0. C2（方块不渲染）已解决 —— 2026-10-29
+
+**根因**：`NetworkChunkPublisherUpdate.new_view_radius` 的单位是**方块**，不是区块。
+我们原先发 `4`（≈0.25 个区块），客户端认为没有可渲染区域，于是方块有碰撞、有选中框、但完全不出几何体。
+
+**正确做法**（照 Geyser `ChunkUtils.updateChunkPosition`）：
+```java
+radius = ceil((serverRenderDistance + 1) * sqrt(2)) << 4
+```
+即 8 格视距 → `ceil(9*1.4142)=13` → `13*16 = 208` 个方块。
+
+**同时修正**：`ChunkRadiusUpdated` 由 4 改为 8；区块数量随之 81 → 289。
+
+**排除掉的错误方向（别再试）**：
+1. ❌ “block state id 与 1.21.51 不匹配” —— 用 Geyser 内置的 BDS 原始调色板 `bedrock/block_palette.1_21_50.nbt` 验证：stone=2403、air=11996、glass=11468，与 minecraft-data 完全一致；当时看到的“半砖/石墙/玻璃”恰好对应调色板里 2404/2405(slab)、100/1000(wall)、2400(glass)。
+2. ❌ 子区块版本 8 vs 9 —— 两种都能工作。最终采用**版本 9 + subchunk index**（负段用补码，-4→0xFC），与 Geyser `GeyserChunkSection` 一致。
+3. ❌ 发送时序（spawn 前/后）—— 改成 `SetLocalPlayerAsInitialized` 之后发送仍然必须配合正确的 publisher 半径。
+
+**交叉验证方法（可复用）**：直接调用 Geyser jar 里的序列化类导出参考字节：
+`org.geysermc.geyser.level.chunk.GeyserChunkSection.writeToNetwork(...)`。
+当时我们生成的整块负载与 Geyser 等价输出**逐字节一致**（111 字节），证明数据层无问题，问题在会话参数。
+
+---
+
+#### 0.2 「空氧气条 + 移动变慢」已解决 —— 2026-10-29
+
+**现象**（人类描述）：能进世界、方块正常、天空正常、**没有水底滤镜**，但底部氧气条一直在且不下降，走路明显比 Geyser 慢。
+
+**根因（两条，都靠参考实现定死，没有试错）**：
+
+1. 玩家实体元数据里的 `FLAGS`（元数据 id 0，LONG）缺少 **`BREATHING`（第 36 位）**。
+   Geyser `SessionPlayerEntity.setAirSupply()` 的源码注释原话：
+   > *"Seemingly required to be sent as of Bedrock 1.21. Otherwise, bubbles will appear as empty"*
+   只发 `AIR_SUPPLY=300 / AIR_SUPPLY_MAX=300` 是不够的，两者相等时客户端仍然因为“不在呼吸”而画空氧气条。
+2. bedrock-rs 把 LONG 型元数据按 **zigzag** 编码，而 Bedrock 线上是**无符号** varint → 整数值翻倍、标志位全部错位（PATCH-005）。
+
+**修法**：出生后下发与 Geyser `Entity.initializeMetadata() + SessionPlayerEntity.setAirSupply(getMaxAir())` 等价的元数据：
+
+| id | 类型 | 值 | 字段 |
+|---|---|---|---|
+| 38 | FLOAT | 1.0 | SCALE |
+| 3 | BYTE | 0 | COLOR |
+| 42 | SHORT | 300 | AIR_SUPPLY_MAX |
+| 7 | SHORT | 300 | AIR_SUPPLY |
+| 54 | FLOAT | 1.8 | HEIGHT |
+| 53 | FLOAT | 0.6 | WIDTH |
+| 0 | LONG | 位集 | FLAGS |
+| 92 | LONG | 位集 | FLAGS_2 |
+
+`FLAGS` 置位：`CAN_SHOW_NAME(15) | SILENT(18) | CAN_CLIMB(20) | BREATHING(36) | HAS_COLLISION(49) | HAS_GRAVITY(50)`；
+`FLAGS_2` 置位：`HIDDEN_WHEN_INVISIBLE(26)`。
+
+**位号怎么来的**（可复用方法，别再数枚举序号）：写 `refs/ProbeFlagBits.java`，用 Geyser jar 里的 Cloudburst `Bedrock_v766.CODEC` 把**单个** `EntityFlag` 序列化成字节，再按 varint 还原置位位置。codec 是权威，枚举序号不是。
+
+**验收**：`bedrock-spike --selftest=meta` 打出的字节与 codec 参考输出**逐字节一致**：
+
+```
+010826030000803f0300002a012c0107012c0136036666e63f35039a99193f
+00078080d280808280035c0780808020000000
+```
+
+人类实测：氧气条消失、移动恢复正常。
+
+**排除掉的方向（别再试）**：
+- ❌ 只补 `AIR_SUPPLY/AIR_SUPPLY_MAX` —— 实测“没变化”。
+- ❌ 以为客户端认为身体在水里 —— 没有水底滤镜，且 `AirSupply == AirSupplyMax` 时气泡条不该出现，现象与“溺水”无关。
+- ❌ 以为要补 `Respawn(SERVER_READY)` —— 抓包里的那条是 Java 后端“设置玩家位置”被翻译出来的，不是 connect 流程的一环。
+
+---
+
+#### 0.3 connect() 剩余包已补齐 —— 2026-10-29
+
+方法同 §0.2：写 `refs/ProbeSpawnPackets.java`，用 Cloudburst `Bedrock_v766.CODEC` 序列化出权威字节，Rust 侧用 `--selftest=spawn` 对拍，**8 个包全部逐字节一致**：
+
+| 包 | 参考字节（十六进制） | 我们的取值 |
+|---|---|---|
+| `SetDifficulty` | `01` | difficulty=1 |
+| `PlayerHotbar` | `000001` | slot=0, container=0, select=true |
+| `TrimData` | `0000` | 空表（合法） |
+| `UnlockedRecipes` | `0100000000` | action=INITIALLY_UNLOCKED(1)，空表 |
+| `CraftingData` | `0000000001` | 4 个空表 + clean_recipes=true |
+| `ItemComponent` | `00` | 空表（纯原版无自定义物品） |
+| `CreativeContent` | `00` | 空表（创造背包列表待补数据） |
+| `AvailableCommands` | `0000000000000000` | 8 个空表 |
+
+**实机证据**（`logs/run-windows-26.log`）：登录→出生全程无报错，发送顺序与 Geyser 一致：
+
+```
+PlayerList(REMOVE) → DimensionData → StartGame → ChunkRadiusUpdated → PlayStatus(PlayerSpawn)
+→ UpdateAttributes → UpdateAdventureSettings → UpdateAbilities → SetActorData → MovePlayer
+→ SetDifficulty → PlayerHotbar → TrimData → CraftingData → AvailableCommands → UnlockedRecipes
+→ ItemComponent → BiomeDefinitionList → AvailableActorIdentifiers → CameraPresets
+→ CreativeContent → GameRulesChanged → NetworkChunkPublisherUpdate → 区块
+```
+
+**S3 证据**（同一次会话，人类在游戏里点了一下脚下的方块）：
+
+```
+[S3] << 方块交互 action=StartDestroyBlock pos=Some(BlockPos { x: 0, y: 80, z: 2 }) facing=Some(5)
+```
+
+即：方块交互事件带着**方块坐标和面**到达了服务端，阶段一 S3 的协议前提成立。
+
+---
+
+#### 0.4 创造模式 + 飞行已对齐 —— 2026-10-29
+
+MCHPRS 只支持创造/旁观，所以 spike 也必须跑在创造模式。改动三处：
+
+1. `LevelSettings.game_type` 与 `StartGame.player_game_type`：`Survival` → `Creative`。
+2. `UpdateAbilities` 的 `ability_values`：`0x000F` → **`0x0FBF`**。
+3. `UpdateAbilities.abilities_set` 保持 `0x0007_FFFF`（后端声明“支持全部能力”）。
+
+**位号来源**：`refs/ProbeCreativeAbilities.java` 用 Cloudburst v766 codec 逐个能力单独序列化后反解：
+
+```
+BUILD=0 MINE=1 DOORS_AND_SWITCHES=2 OPEN_CONTAINERS=3 ATTACK_PLAYERS=4 ATTACK_MOBS=5
+OPERATOR_COMMANDS=6 TELEPORT=7 INVULNERABLE=8 FLYING=9 MAY_FLY=10 INSTABUILD=11
+```
+
+创造模式集合 = 上面除 `OPERATOR_COMMANDS` 外的 11 项 = `0x0FBF`。
+
+**验收**：`--selftest=abilities` 输出与 codec 参考**逐字节一致**：
+
+```
+0100000000000000 0100010100 ffff0700 bf0f0000 cdcc4c3d cdcccc3d
+```
+
+人类实测：无血条/饥饿条、双击跳跃可飞、空中能悬停。
+
+---
+
+#### 2. 已核实的关键事实（都带证据）
+
+1. 客户端协议 **766**，与 `V766` 定义一致。
+2. `StartGame` 必须逐字节符合 766 规范，用 `minecraft-data` + `bedrock-protocol` 做参考实现逐字节比对后修正：
+   - `experimental_gameplay_override` 是 **普通 bool**（1 字节），不是 `Option<bool>`；
+   - `#[nbt]` 字段**没有长度前缀**，且字符串长度用 **varint**（不是 u16）；
+   - `experiments` 的长度是 **固定 i32 LE**（4 字节），不是 varint。
+3. 区块负载结构（照 PMMP `ChunkSerializer`）：
+   - 子区块 v8/v9 均可，按"从世界底部向上堆叠"；
+   - 层头 `(bits<<1)|1` = 运行时 ID，单值时随后一个 zigzag varint state id；
+   - 之后是**全部 24 段**生物群系；
+   - 末尾必须有 **边界方块计数**(varint 0) 和 **方块实体数组**(varint 长度 0)。
+4. `StartGame.item_list` 必须下发完整物品表（1.21.50 共 1788 条），否则手机会出问题——已补齐。
+5. 运行时 ID：`stone=2403`、`air=11996`、`glowstone=5588`（minecraft-data 1.21.50）。
+
+---
+
+#### 3. 下一阶段入口（原「方块不渲染」已关闭，见 §0 与 §0.2）
+
+出生阶段的可见问题已经清零：方块渲染、玩家状态（氧气条/移动速度）、输入上报都正常。
+
+还没做的（按 Geyser `GeyserSession.connect()` 的抓包顺序，属于**非必需**但「抄全」清单）：
+
+| 包 | 现状 | 说明 |
+|---|---|---|
+| `SyncEntityProperty` ×3 | ⬜ | creaking / bee / armadillo 属性；数据源不在 Geyser 源码里，需从抓包反推 NBT |
+| `PlayerList(ADD)` | ⬜ | 需要 `SerializedSkin`，体积较大 |
+| `CreativeContent` 实际内容 | ⬜ | 现在是合法空表；创造背包要能搜索物品就得填 1788 条（每条的 `block_runtime_id` 需要 物品→默认方块状态 的映射表） |
+| `CraftingData` 实际配方 | ⬜ | 现在是空表 + clean=true |
+| `AvailableCommands` 实际命令 | ⬜ | 现在是空表 |
+
+---
+
+#### 4. 工程产出
+
+```
+~/bedrock/
+├── bedrock-rs/          上游副本（5 处本地补丁，见 HANDOFF §8）
+├── spike/               本工程
+│   ├── src/main.rs      登录链路 + 区块下发 + 玩家元数据 + 自测
+│   ├── src/world.rs     区块负载编码（Runtime / Persistent 两种模式）
+│   └── src/items_gen.rs 自动生成的 1788 条物品表
+├── refs/                参考实现源码 + Java 探针（ProbeFlagBits / ProbeMeta / ProbeAbilityPacket …）
+├── tools/               Node 参考实现（minecraft-data / bedrock-protocol / prismarine-chunk）
+├── docs/                计划、交接、可行性、补丁记录
+└── logs/                每次会话的包级日志
+```
+
+**自测入口**（不需要客户端）：
+```sh
+cd ~/bedrock/spike
+./target/debug/bedrock-spike --selftest          # StartGame + 区块构造
+./target/debug/bedrock-spike --selftest=meta     # 玩家元数据 SetActorData 字节（与 codec 对拍用）
+./target/debug/bedrock-spike --selftest=spawn    # connect 阶段 8 个包负载字节（与 codec 对拍用）
+./target/debug/bedrock-spike --selftest=7        # StartGame 序列化往返
+./target/debug/bedrock-spike --selftest=9 <path> # 导出 StartGame 原始字节
+```
+
+**参考实现校验**（这也是这次踩坑的最大教训）：
+```sh
+cd ~/bedrock/tools
+node ref_parse3.js ~/bedrock/logs/startgame.bin   # 用官方 schema 解析我们的包
+```
+
+---
+
+#### 5. 教训（写进流程）
+
+第一次出现"破损的数据包"时就该搭参考实现做逐字节 diff，而不是"改一个字段 → 让人试一次"。
+后者的代价：人类白试了 5 次，总耗时多出约 40 分钟。
+**新规则：任何自定义二进制编码，先有参考实现校验，再接客户端。**
+

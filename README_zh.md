@@ -21,7 +21,7 @@ MCHPRS_IO 是 [MCHPRS](https://github.com/MCHPR/MCHPRS) 的一个分支，用来
 | `app/` | 把服务端打包成独立 Android APK —— [`app/README.md`](app/README.md) |
 | `run/` | 示例运行目录（`Config.toml`、`io.txt`、`memory/`、`world/`） |
 | `tests/` | 集成测试，`cargo test` 运行 |
-| `BACKLOG.md` | 项目台账：设计决策、未结项、已知问题 |
+| `docs/backlog/BACKLOG.md` | 项目台账：设计决策、未结项、已知问题 |
 
 ## 快速开始
 
@@ -91,7 +91,7 @@ width = 2
 ```
 
 `/io reload` 可以不重启直接重读。完整语法与校验规则见
-[docs/file-formats_zh.md](docs/file-formats_zh.md)。
+[docs/Instruction-manual-zh.md](docs/Instruction-manual-zh.md)。
 
 ### 5. 从外部驱动
 
@@ -104,21 +104,20 @@ POUT lamps                             → OUTPUT lamps <tick> 0a
 TICK NOW                               → NOW <tick>
 ```
 
-完整参考：**[docs/protocol_zh.md](docs/protocol_zh.md)**。
+完整参考：**[docs/Instruction-manual-zh.md](docs/Instruction-manual-zh.md)**。
 
 ### 6. 自动验证电路（可选）
 
 [`python/`](python/README.md) 里有三个脚本，直接走自动化协议，用你写的一行 Python 函数当"标准答案"验电路：
 
-| 脚本 | 判什么 |
+| 模式 | 判什么 |
 | --- | --- |
-| `correctness.py` | 只判结果对不对，不看 tick、不抓毛刺 |
-| `timing.py` | 每条输入只允许一条 `OUTPUT`，且必须晚 `delay` 个 tick 到 |
-| `pipeline.py` | 流水输入（需 `/tick seq`）间隔恒定、不阻塞 |
+| `MODE = "correctness"` | 只判结果对不对，顺带打印延迟统计 |
+| `MODE = "pipeline"` | 流水输入（需 `/tick seq`）间隔恒定、不阻塞 |
 
 ```bash
 cd python
-python3 correctness.py      # 先改文件顶部的配置区
+python3 main.py             # 先改 MODE 和文件顶部的配置区
 ```
 
 ### 7. 常见问题
@@ -167,7 +166,7 @@ width = 2
 - 键：`origin`、`clk`（`0` 表示无时钟，否则必须是按钮）、`width`（= 点数）。模电组还要写 `rs_width`（点数），且 `width = rs_width × 4`。
 - 坐标：`x, y, z`、`x, y, z, +2x, 4`（元件通常隔一格摆一个，所以坐标步长是 2），或 `matrix: ...` 表示网格与屏幕。
 
-完整语法、校验规则与示例见 **[docs/file-formats_zh.md](docs/file-formats_zh.md)**。
+完整语法、校验规则与示例见 **[docs/Instruction-manual-zh.md](docs/Instruction-manual-zh.md)**。
 
 ## 存储器
 
@@ -191,7 +190,7 @@ width = 8
 00: 0f 3c 69 00 00 00 00 00
 ```
 
-首行版本必须为 0.5.0 或更新；每个端口列表第一项是 `width = N`；RAM 在玩家退出、关服、`/redpiler reset`、编译崩溃和 `/memory reload` 时落盘。细节见 **[docs/file-formats_zh.md](docs/file-formats_zh.md)**。
+首行版本必须为 0.5.0 或更新；每个端口列表第一项是 `width = N`；RAM 在玩家退出、关服、`/redpiler reset`、编译崩溃和 `/memory reload` 时落盘。细节见 **[docs/Instruction-manual-zh.md](docs/Instruction-manual-zh.md)**。
 
 ## 自动化协议
 
@@ -206,7 +205,7 @@ TICK NOW                      → NOW <tick>
 RADV <x>                      → OK RADV <x> <tick>
 ```
 
-两种模式：**普通模式**（默认）与**时序控制模式**（`/tick seq`，冻结电路、锁定一个脚本、允许带偏移的 `INPUT`，用于流水线电路）。完整说明见 **[docs/protocol_zh.md](docs/protocol_zh.md)**。
+两种模式：**普通模式**（默认）与**时序控制模式**（`/tick seq`，冻结电路、锁定一个脚本、允许带偏移的 `INPUT`，用于流水线电路）。完整说明见 **[docs/Instruction-manual-zh.md](docs/Instruction-manual-zh.md)**。
 
 ## 命令
 
@@ -231,12 +230,12 @@ RADV <x>                      → OK RADV <x> <tick>
 
 ## 文档
 
-- [docs/file-formats_zh.md](docs/file-formats_zh.md) —— `io.txt` 与存储器文件参考（[English](docs/file-formats.md)）
-- [docs/protocol_zh.md](docs/protocol_zh.md) —— 自动化协议（[English](docs/protocol.md)）
-- [docs/Redpiler.md](docs/Redpiler.md)、[docs/RIL.md](docs/RIL.md)、[docs/Adding_a_block.md](docs/Adding_a_block.md) —— 编译器内部（英文）
-- [python/README.md](python/README.md) —— 协议测试脚本（`correctness` / `timing` / `pipeline`）
+- [docs/Instruction-manual-zh.md](docs/Instruction-manual-zh.md) —— `io.txt` 与存储器文件参考（[English](docs/Instruction-manual.md)）
+- [docs/Instruction-manual-zh.md](docs/Instruction-manual-zh.md) —— 自动化协议（[English](docs/Instruction-manual.md)）
+- [docs/upstream/Redpiler.md](docs/upstream/Redpiler.md)、[docs/upstream/RIL.md](docs/upstream/RIL.md)、[docs/upstream/Adding_a_block.md](docs/upstream/Adding_a_block.md) —— 编译器内部（英文）
+- [python/README.md](python/README.md) —— 协议测试脚本（`correctness` / `pipeline`）
 - [app/README.md](app/README.md) —— 把服务端打包成独立 Android APK 的工程
-- [BACKLOG.md](BACKLOG.md) —— 项目台账与设计决策
+- [docs/backlog/BACKLOG.md](docs/backlog/BACKLOG.md) —— 项目台账与设计决策
 
 ## 衍生版声明
 

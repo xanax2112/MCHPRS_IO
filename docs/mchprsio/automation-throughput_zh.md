@@ -1,6 +1,6 @@
 # 自动化测试速度：从 80 组/秒 到 25 万组/秒
 
-> ⚠ **本文所有数字已作废（2026-11-04 21:44 用户判定，见 `BACKLOG.md` 文首声明）**
+> ⚠ **本文所有数字已作废（2026-11-04 21:44 用户判定，见 `docs/backlog/BACKLOG.md` 文首声明）**
 > 文中引用的实测值（80 / 4,527 / 250,567 / 95,719 / 130,991 组/s、0.221 ms、0.155 s 等）
 > 全部标记为不可信，**不得再作依据**，需要按新口径重测。
 > 保留下来的只有**机制解释**（线程模型、批量预约、采样缓存、回复量），这部分与具体数字无关，仍然成立。
@@ -8,7 +8,7 @@
 > 对象：MCHPRS_IO 的自动化桥（`crates/core/src/automation.rs`、`crates/core/src/plot/mod.rs`）
 > 测试电路：`add_in`（17 位）→ `add_out`（9 位）加法器，延迟 4 tick
 > 配置：`io_mode = exact`、`/tick seq`、`RADV`，每组间隔 2 tick
-> 数据来源：`BACKLOG.md` §9.1 / §9.2 / §9.3 的实测记录（2026-11-03 / 11-04）
+> 数据来源：`docs/backlog/BACKLOG.md` §9.1 / §9.2 / §9.3 的实测记录（2026-11-03 / 11-04）
 
 ---
 
@@ -125,7 +125,7 @@ fn automation_pump(&mut self) {
 **(b) 回复不回 5 ms 队列。** `poll_automation()` 处理完请求**立刻 flush**：
 
 ```rust
-// 等 5 ms 片再发，就是给每次往返加 5 ms 地板（BACKLOG.md/§9.1）
+// 等 5 ms 片再发，就是给每次往返加 5 ms 地板（docs/backlog/BACKLOG.md/§9.1）
 if !self.automation_busy {
     server.flush();
 }
@@ -307,7 +307,7 @@ nice -n 10 ./target/release/mchprs /storage/emulated/0/termux/MCHPRS_IO
 /tick seq
 
 # 3. 跑批（total / batch 在脚本顶部配置区改）
-python3 python/pipeline.py        # 每组判值 + 判间隔，报告 组/s、tick/s
+python3 python/main.py            # MODE = "pipeline"；每组判值 + 判间隔，报告 组/s、tick/s
 ```
 
 `Config.toml` 关键项：`io_port = 25585`、`io_mode` 默认 `exact`、`betterio = true`。

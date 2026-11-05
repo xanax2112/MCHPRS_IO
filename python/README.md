@@ -1,12 +1,10 @@
 # MCHPRS_IO Python 测试工具 · 使用手册
 
-三个测试脚本，配合 MCHPRS_IO 的自动化协议（默认 `127.0.0.1:25585`）验证红石电路。
+一个入口，用 `mode` 选两种模式之一，配合 MCHPRS_IO 的自动化协议（默认 `127.0.0.1:25585`）验证红石电路。
 
 ```
 python/
-├── correctness.py   无时序正确性：只验证结果对不对
-├── timing.py        时序精确：验证延迟与毛刺
-├── pipeline.py      流水时序精确 + 吞吐：验证间隔并报告 组/s、tick/s
+├── main.py          入口：mode 选 correctness / pipeline
 └── core/            内部实现，不用打开
 ```
 
@@ -17,15 +15,15 @@ python/
 1. **服务器在跑**（App 里启动，或 Termux 里跑 `~/mchprs/mchprs`）。
 2. **电路已编译**：游戏里执行 `/redpiler compile`。未编译时 `HELLO` 不带 tick，脚本会直接提示退出。
 3. **推进速度**：建议 `/rtps 5000`（脚本没有改 rtps 的权限，只会在启动时检查并提示）。
-4. **`pipeline.py` 额外要求**：先执行 `/tick seq`（独占脚本、`rtps` 自动变 0）。
-   每次重跑 `pipeline.py` 前都要重新 `/tick seq`。
+4. **`mode = "pipeline"` 额外要求**：先执行 `/tick seq`（独占脚本、`rtps` 自动变 0）。
+   每次重跑前都要重新 `/tick seq`。
 
-> `correctness.py` / `timing.py` 只能在普通模式（`rtps > 0`）下跑；
+> `mode = "correctness"` 只能在普通模式（`rtps > 0`）下跑；
 > 在 `/tick seq` 冻结状态（`rtps = 0`）下电路不自己走，结果会全错。
 
 ---
 
-## 二、配置区（每个 main 文件顶部）
+## 二、配置区（`main.py` 顶部：全局区 + 两个模式区）
 
 ```python
 PIN = "add_in"        # 输入组名（io.txt 里 input 的名字）
@@ -46,51 +44,41 @@ def test(x):
 - 输入按 `IN_BITS` 裁剪，期望值按 `OUT_BITS` 裁剪，hex 编解码由程序完成。
 - 组名、端口、位宽都不写死在代码里，换电路只改这一段。
 
-### CONFIG 常用项
+### 配置项（`main.py` 顶部，全部是普通变量）
 
-| 键 | 含义 | 默认 |
+| 变量 | 含义 | 默认 |
 | --- | --- | --- |
+| `mode` | `correctness` / `pipeline` | `correctness` |
 | `host` / `port` | 服务器地址 | `127.0.0.1` / `25585` |
-| `rtps` | 期望推进速度，只做启动检查 | `5000` |
-| `coverage` | `random` 随机 / `full` 全量 / `specified` 指定 | `random` |
-| `random_count` | `random` 模式的样本数 | 500 |
-| `specified` | `specified` 模式的输入列表 | 示例值 |
-| `progress_every` | 每多少个数据打印一次进度 | 50 |
-| `delay` | 元件延迟（tick），`timing`/`pipeline` 用 | 4 |
-| `glitch_wait` | 收到第一条后再等多久查第二条（秒） | 0.005 |
-| `interval` | 流水输入间隔（tick，≥2） | 3 |
-| `batch` | 流水每批多少个数据（同时决定吞吐样本量） | 2000 |
-| `wait_seconds` | `correctness` 每组等待（秒） | 0.005 |
-| `drain_seconds` | `correctness` 查前读空管道的时长（秒） | 0.002 |
+| `total` | 总共跑多少组 | `2**20` |
+| `batch` | 每批多少组（预约表上限 65536），同时是进度打印间隔 | `32768` |
+| `coverage` | `random` / `full`（从 `start_value` 起连续）/ `specified` | `random` |
+| `seed` / `start_value` / `specified` | 随机种子 / full 起始值 / 指定列表 | `0` / `0` / `[]` |
+| `wait_seconds` | `correctness`：每组等待；`pipeline`：批内空闲超时 + 批末等尾巴的时长 | `0.05` |
+| `delay` | 元件延迟（tick） | `27` |
+| `interval` | 相邻输入间隔（tick，≥2） | `3` |
+| `svg` | `off` / `error` / `True` | `off` |
+
+> `pipeline` 的批内超时是**空闲超时**：`WAIT_SECONDS` 内还有回复/输出就一直等，不会因为 `batch` 变大而误判。
 
 ---
 
-## 三、三个测试怎么判
+## 三、两个测试怎么判
 
-### 1. `correctness.py` — 无时序正确性
-
-```
-发 INPUT → 等 wait_seconds → 期间推送全部丢弃 → 发 POUT 查一次 → 只比值
-```
-
-- 不判 tick、不判毛刺。
-- 适合“电路功能对不对”的粗测。
-- 速度由 `wait_seconds` 决定，默认约 60 组/s。
-
-### 2. `timing.py` — 时序精确
+### 1. `mode = "correctness"` — 无时序正确性
 
 ```
-每条输入只允许 1 条 OUTPUT
-OUTPUT 的 tick 必须 = 输入生效 tick + delay − 1
-该 tick 上的值必须正确
-收到第 2 条 → 视为毛刺 → 失败
+发 INPUT → 开始计时 wait_seconds（期间只保留 OK INPUT 和最后一条 OUTPUT）
+→ 到点发 POUT 取当前值 → 判值
+→ 有那条 OUTPUT 时记 out_tick - in_tick + 1 作为本组 delay
 ```
 
-- 延迟是设计值：xor 门 1t、加法器 4t 等。
-- 一条 OUTPUT 都没收到时，用 `POUT` 确认一次再判（避免“值没变化”误判）。
-- 速度约 80 组/s。
+- 值一律以 POUT 为准；OUTPUT 只用来算延迟。
+- 判值为主，不要求“只允许一条推送”。
+- 结尾打印 `延迟统计：delay = lo ~ hi（中位 m），延迟固定 / 延迟随输入变化`。
+- 速度由 `wait_seconds` 决定。
 
-### 3. `pipeline.py` — 流水时序精确（仅 `/tick seq`）
+### 2. `mode = "pipeline"` — 流水时序精确（仅 `/tick seq`）
 
 ```
 按 interval 间隔连续预约输入 → RADV 推进 → 校验

@@ -362,6 +362,21 @@ impl Plot {
                 Ok(()) => crate::console::ok("Done."),
                 Err(code) => crate::console::error(&format!("ERR {}", code)),
             },
+            // `//update -p` (BUG-045): 世界编辑命令原本一律 NEEDS_PLAYER，
+            // 但整块 plot 的 `-p` 分支不需要玩家选择和坐标，控制台可以直接跑。
+            "/update" | "update" => {
+                if !args.contains(&"-p") || args.iter().any(|arg| *arg != "-p") {
+                    crate::console::error("Usage: //update -p (updates the entire plot)");
+                    return;
+                }
+                let start_time = Instant::now();
+                let (first_pos, second_pos) = self.world.get_corners();
+                worldedit::update(&mut self.world, first_pos, second_pos);
+                crate::console::ok(&format!(
+                    "Updated the entire plot. ({:?})",
+                    start_time.elapsed()
+                ));
+            }
             "version" => crate::console::ok(&get_version_string()),
             _ => crate::console::error(crate::console::NEEDS_PLAYER),
         }

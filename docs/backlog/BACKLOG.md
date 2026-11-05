@@ -2,11 +2,11 @@
 
 > 本文件记录本仓库相对**上游 MCHPRS** 的全部差异，按文件位置组织，只列"有什么"。
 > 上游基线：`~/mchprs/source/MCHPRS`（`master` @ `d492e43`，Minecraft 1.20.4 / 协议 765）。
-> 基岩版（Bedrock）不在本文件范围，见 `BEDROCK.md`。
+> 基岩版（Bedrock）不在本文件范围，见 `docs/backlog/BEDROCK.md`。
 > 图例：`✚` 新增 · `✎` 修改 · `✖` 移除。
 
 > ⚠ **数据可信度声明（2026-11-04 21:44 用户判定）**
-> 本文件在此时间点**之前**记录的所有实测数据与由其推出的结论（含 §9.1 / §9.2 / §9.3 的实测表、§14 里加法器的失败样例、`docs/automation-throughput_zh.md` 全文数字）**一律作废，不得再作依据**。原因不再追究，视同不存在。
+> 本文件在此时间点**之前**记录的所有实测数据与由其推出的结论（含 §9.1 / §9.2 / §9.3 的实测表、§14 里加法器的失败样例、`docs/mchprsio/automation-throughput_zh.md` 全文数字）**一律作废，不得再作依据**。原因不再追究，视同不存在。
 > 目前**唯一可信**的实测只有一次：
 >
 > | 项目 | 值 |
@@ -33,8 +33,8 @@
 
 **附加约定**
 
-- **台账按文件位置归属**（用户 2026-11-03 下达）：`crates/network/src/bedrock_api.rs`、`crates/network/src/bedrock/**`、`vendor/bedrock-rs/**` 记在 `BEDROCK.md`；其余（`crates/core`、根 `Cargo.toml`、`src/`、`app/`、`python/`、`docs/`、CI）记在本文件。
-- **本文件里的文件格式规则是契约**：`docs/file-formats*.md` 是面向用户的手册，两边内容必须一致；改了格式先改本文件，再同步文档。
+- **台账按文件位置归属**（用户 2026-11-03 下达，2026-11-05 补充）：`crates/network/src/bedrock_api.rs`、`crates/network/src/bedrock/**`、`vendor/bedrock-rs/**` 记在 `docs/backlog/BEDROCK.md`；**`python/**` 记在 `docs/backlog/PYTHON-BACKLOG.md`（与内核无关，不进本文件）**；其余（`crates/core`、根 `Cargo.toml`、`src/`、`app/`、`docs/`、CI）记在本文件。
+- **本文件里的文件格式规则是契约**：`docs/Instruction-manual*.md` 是面向用户的手册，两边内容必须一致；改了格式先改本文件，再同步文档。
 - 新条目先判断能否并入现有条目；同一机制就追加，不新开编号。
 - 临时文件一律放 `~/dsh/scratch/`。
 - 写含单引号的源码必须走 Python 脚本（`chr(39)` 构造）。
@@ -58,18 +58,23 @@
 
 ## 2. 仓库结构差异
 
+`✚` **文档布局（2026-11-05，用户定）**：所有说明类文档都在 `docs/` 下，按来源分三个子目录——
+`docs/upstream/`（上游自带：`Redpiler.md` / `RIL.md` / `Adding_a_block.md`）、
+`docs/mchprsio/`（本仓库新增：协议、文件格式、吞吐；基岩专题已并入 `docs/backlog/BEDROCK.md` §10）、
+`docs/backlog/`（三本台账：`BACKLOG.md` / `BEDROCK.md` / `PYTHON-BACKLOG.md`）。
+根目录的 `README.md` / `README_zh.md` 与 `python/`、`app/` 下的 `README.md` 属于工程说明，不放进 `docs/`。
+
 `✚` 上游没有、本仓库新增：
 
 | 路径 | 说明 |
 | --- | --- |
 | `app/` | Android APK 工程（Java，把 `mchprs` 打成独立 App，包名 `com.dsh.mchprs`） |
-| `python/` | 协议测试工具（`correctness.py` / `timing.py` / `pipeline.py` + `core/`），自带领 `PYTHON-BACKLOG.md` |
+| `python/` | 协议测试工具（`main.py` + `core/`），台账在 `docs/backlog/PYTHON-BACKLOG.md` |
 | `run/` | 服务端运行目录（`Config.toml` / `io.txt` / `logs/` / `world/`） |
-| `docs/protocol.md`、`docs/protocol_zh.md` | 自动化协议规格（中英） |
-| `docs/file-formats.md`、`docs/file-formats_zh.md` | `io.txt` 与存储器文件格式（中英） |
+| `docs/Instruction-manual.md`、`docs/Instruction-manual-zh.md` | 统一使用手册（中英）：构建运行、io.txt、存储器、自动化协议、测试工具、APK |
 | `.github/workflows/mchprs-io-ci.yml` | 本仓库自己的 CI（`test` + `build` 两个 job） |
 | `README_zh.md` | 中文 README（上游只有英文） |
-| `BEDROCK.md` | 基岩版台账（本文件不涉及） |
+| `docs/backlog/BEDROCK.md` | 基岩版台账（本文件不涉及） |
 
 `✖` 上游有、本仓库删除：
 
@@ -77,7 +82,7 @@
 | --- | --- |
 | `crates/core/src/profile.rs` | Mojang 玩家档案查询（`/whitelist add <name>` 用）；随白名单功能一起删除 |
 
-`✎` 上游有、本仓库改过（按 crate 归类）：`crates/core`（12 个文件）、`crates/redpiler`（10）、`crates/redstone`（2）、`crates/network`（2）、`crates/text`（1）、`crates/rilc`（2）、`tests/`（2）、`Cargo.toml`、`Dockerfile`、`README.md`、`docs/Redpiler.md`。
+`✎` 上游有、本仓库改过（按 crate 归类）：`crates/core`（12 个文件）、`crates/redpiler`（10）、`crates/redstone`（2）、`crates/network`（2）、`crates/text`（1）、`crates/rilc`（2）、`tests/`（2）、`Cargo.toml`、`Dockerfile`、`README.md`、`docs/upstream/Redpiler.md`。
 
 ---
 
@@ -90,7 +95,7 @@
 | `io_port` | `25585` | 自动化桥的 TCP 端口，**只绑 127.0.0.1**；绑定失败只警告、服务端继续跑 |
 | `performance` | `false` | `true` = 每 tick 批量采样（性能模式）；`false` = 逐 tick 精确采样 |
 | `betterio` | `false` | 打开 `betterio` 时序修正（见 §10） |
-| `bedrock` | `19132` | 基岩版 UDP 端口；`0` = 关闭；详见 `BEDROCK.md` |
+| `bedrock` | `19132` | 基岩版 UDP 端口；`0` = 关闭；详见 `docs/backlog/BEDROCK.md` |
 
 `✖` 移除：
 
@@ -99,7 +104,7 @@
 | `whitelist` | 白名单功能整体删除（连同 `/whitelist` 命令与 `profile.rs`） |
 | `auto_redpiler` | 自动编译功能删除（连同 `/toggleautorp`），只保留手动 `/redpiler compile` |
 
-`✎` 语义变化：`bind_address` 的 IP 现在也决定基岩版 UDP 绑哪个网卡（见 `BEDROCK.md` 第 54 条）。
+`✎` 语义变化：`bind_address` 的 IP 现在也决定基岩版 UDP 绑哪个网卡（见 `docs/backlog/BEDROCK.md` 第 54 条）。
 
 ---
 
@@ -107,7 +112,7 @@
 
 | 模块 | 行数 | 作用 | 规则 |
 | --- | --- | --- | --- |
-| `automation.rs` | 811 | 自动化桥：明文 TCP，让脚本驱动/观测端口 | 报文见 `docs/protocol.md` |
+| `automation.rs` | 811 | 自动化桥：明文 TCP，让脚本驱动/观测端口 | 报文见 `docs/Instruction-manual.md` |
 | `io.rs` | 715 | `io.txt`：数据端口组 | **§6** |
 | `memory.rs` | 2102 | 文件式 ROM / RAM | **§7** |
 | `plot/coord.rs` | 802 | `/coord`：把选区写进 io / 存储器文件 | 见 §8 |
@@ -444,7 +449,7 @@ width = 8
 - `✚` `rtps` 冻结/恢复：`freeze_rtps` / `unfreeze_rtps`，配合 `/tick step` 做单步调试。
 - `✚` **崩溃保存**：编译 panic 时 `crash_save` 落盘并退出（`panic_payload_message`）。
 - `✚` **控制台线程**：`server.rs` 启动时 `console::spawn`，stdin 与游戏内命令共用一套逻辑；需要玩家目标的命令会被拒绝并红字提示。
-- `✚` **自动化桥**（`automation.rs`）：纯文本 TCP，端口 `io_port`（默认 25585，只绑 `127.0.0.1`）；报文 `HELLO` / `INPUT` / `POUT` / `OUTPUT` / `READ` / `TICK` / `NOW` / `RADV`；版本串 `MCHPRS_IO 0.5.2-alpha`；规格见 `docs/protocol.md`。
+- `✚` **自动化桥**（`automation.rs`）：纯文本 TCP，端口 `io_port`（默认 25585，只绑 `127.0.0.1`）；报文 `HELLO` / `INPUT` / `POUT` / `OUTPUT` / `READ` / `TICK` / `NOW` / `RADV`；版本串 `MCHPRS_IO 0.5.2-alpha`；规格见 `docs/Instruction-manual.md`。
 - `✚` `Message` 扩展：`IoResponse`、`IoDataPortOutput`、`SeqModeChanged`、`ConsoleCommand`、`AutomationRequest`、`AutomationDisconnect`。
 
 ### 9.1 自动化协议下沉到 plot 线程（✅ 已完成，2026-11-04）
@@ -467,7 +472,7 @@ width = 8
 - `✚` **独占权自动续接（用户 2026-11-04 定，已写码）**：`/tick seq` 只需执行**一次**。先连上的脚本取得独占；脚本退出后服务器**保持武装**，下一个连上的脚本自动成为独占，不需要重新输入 `/tick seq`。
   - 现状（要改的）：`AutomationServer::drop_connection` 在独占脚本断开时把 `waiting` 置回 `false`，注释写的是"玩家必须重新 `/tick seq`"——这导致每跑一次脚本都要重敲一次命令，非常容易忘，是 `pipeline.py` 反复报"当前不是 /tick seq 模式"的直接原因。
   - 改法：断开时保留 `waiting = true`（`exclusive = None`），`accept_new` 已有"武装状态下第一个连接成为独占"的逻辑，无需新增。
-  - `docs/protocol.md` 需同步：`/tick seq` 的执行次数从"每次会话一次"改为"进入该模式一次，直到 `/rtps > 0`、重新编译或关服才解除"。
+  - `docs/Instruction-manual.md` 需同步：`/tick seq` 的执行次数从"每次会话一次"改为"进入该模式一次，直到 `/rtps > 0`、重新编译或关服才解除"。
 - `✚` **poll 周期 200 µs**：plot 在 tick 循环里按墙钟时间片非阻塞读 socket，保证普通模式往返延迟不回退。
 - `✚` **调度开销收敛**：用计数器驱动，每 64 个 tick 才取一次 `Instant::now()`——全速下每 tick 取表约 20~25 ns，270 万 tick/s 会吃掉约 5% CPU；无 automation 连接时直接跳过 poll（否则每秒 5000 次空问）。收敛后整套调度（时间检查 + poll）在 0.1% 以下。
 - `✎` **反压**：单连接 `MAX_PENDING` 1 MB → **16 MB**，另设全局 **32 MB** 上限，超限断连；`/tick seq` 只接受一个脚本。
@@ -486,7 +491,7 @@ width = 8
 - `✚` `pending` 建连时预留容量（约 256 KB），增长按 1 MB 步进，避免 16 MB 反复翻倍拷贝。
 - `✚` `io_port` 仍在主线程 bind，失败则禁用 automation 且不 panic；成功才移交 plot。
 - `✚` 重新编译后连接保留但绑定被清（`clear_io_state`），需主动推送 `ERR reset` 让脚本重新 `POUT`。
-- `✚` `READ x,y,z` 收窄属于行为变更，写进 `docs/protocol.md`。
+- `✚` `READ x,y,z` 收窄属于行为变更，写进 `docs/Instruction-manual.md`。
 - `✚` 主循环 5 ms 把玩家包刷新降到 200 Hz（有意取舍）。
 - `✚` 清理 `server.rs` 中 `IoResponse` / `IoDataPortOutput` / `SeqModeChanged` 与 `AutomationAction::Route` / `Disconnect` 的残留分支。
 
@@ -563,7 +568,7 @@ width = 8
   - 实现要点：plot 侧记 `pending_inputs: u32` 与 `last_input_at: Instant`，在已有的 5 ms 调度片里检查并回 OK；任何**非 INPUT** 请求（`RADV` / `TICK NOW` / `READ` / `POUT`）到达时先结算未回的批次，保证回复顺序；
   - 脚本流程：**灌完 → 等 `OK INPUT <name> <n>`（≤5 ms）→ 核对条数 → 再发 `RADV`**。用户 2026-11-04 明确：先校验条数再推进，不能把 `RADV` 和预约一起发出去；
   - 因此原先设想的“`RADV` 提前发”不再需要：那是为了掩盖逐条读 65536 个 `OK` 的等待，改成一条批次回复后没有可重叠的东西了；
-  - 普通模式（`rtps > 0`）**不变**，仍逐条回 `OK INPUT <name> <tick>`；`docs/protocol.md` 需写清“批次”概念与两种模式的回复差异。
+  - 普通模式（`rtps > 0`）**不变**，仍逐条回 `OK INPUT <name> <tick>`；`docs/Instruction-manual.md` 需写清“批次”概念与两种模式的回复差异。
   - `✚` **冻结时钟的响应性（写码时发现，一并改）**：`rtps 0` 时 `sleep_time_for_tps` 返回 50 ms，主循环每轮睡 50 ms，`TICK NOW` 和预约批的 5 ms 窗口全被这 50 ms 包住——实测“65536 条 `OK` 要 0.155 s”主要是这个，不是客户端解析慢。改法：有 automation 连接时把睡眠截到 **1 ms**（不推进 tick，只多花唤醒）。
   - `✚` **独占脚本断开时清预约表（写码时发现，一并改）**：自动续接后新脚本从 `HELLO` 给的 tick 重新计数，旧预约若留着会在新会话里凭空触发，所以断开时 `reservations.clear()` + `last_reservation_tick = 0`。
   - `✚` **断开后立刻重连会被拒（实测抓到，已修）**：日志里出现 `Refusing automation client …: a /tick seq exclusive session is active`——上一脚本的 EOF 要等下一次 poll 才被发现，这段时间里独占名额还占着，新脚本一连就被踢。改法：`accept_new` 收到新连接时先 `peek` 独占连接，对端已关就先 `drop_connection` 再接纳。背靠背两次连接已验证通过。
@@ -609,12 +614,12 @@ width = 8
 
 ## 11. 网络层（`crates/network`）
 
-除基岩版外（见 `BEDROCK.md`），与上游的差异只有三处：
+除基岩版外（见 `docs/backlog/BEDROCK.md`），与上游的差异只有三处：
 
 - `✚` **插座 / 插头**（2026-11-03）：基岩协议栈拆成接口层 `crates/network/src/bedrock_api.rs`
   （12 个数据类型 + `BedrockStack` / `ChunkEncoder` 两个 trait + 全局注册，常驻编译、只依赖 std）
   与实现层 `crates/network/src/bedrock/**`（`--features bedrock` 才编译，整个文件夹可删）。
-  core 侧只通过插座拿编码器/换算接口，不再引用实现模块。完整记录见 `BEDROCK.md` §9.41。
+  core 侧只通过插座拿编码器/换算接口，不再引用实现模块。完整记录见 `docs/backlog/BEDROCK.md` §9.41。
 - `✚` `clientbound.rs`：命令树参数类型新增 `GameMode`（`minecraft:gamemode`）。
 - `✚` `crates/text`：`ColorCode::code_char()` + `to_legacy_text()`，把文本组件降级成 `§` 颜色码。
 
@@ -631,11 +636,13 @@ width = 8
 
 ## 13. 文档与工具
 
-- `✚` `docs/protocol.md` / `protocol_zh.md`：自动化协议完整规格。
-- `✚` `docs/file-formats.md` / `file-formats_zh.md`：本文件 §5–§7 的面向用户版本（含示例）。
+- `✚` `docs/Instruction-manual.md` / `Instruction-manual-zh.md`（2026-11-05）：统一使用手册，
+  取代原来的 `protocol.md` / `protocol_zh.md` 与 `file-formats.md` / `file-formats_zh.md`；
+  内容覆盖构建运行、Config、游戏内命令、`io.txt`、存储器文件、自动化协议（含批量预约回复与空闲超时）、
+  Python 测试工具、APK 与常见问题。
 - `✚` README（中英）"快速开始"：依赖、构建运行、进服编译、io.txt、协议、python 工具、故障排查。
 - `✚` `python/`：协议测试工具（正确性、时序、流水线），自带台账。
-- `✚` **`python/` 目录结构（2026-11-04 清理）**：入口只有三个 —— `correctness.py` / `timing.py` / `pipeline.py`，它们只放配置区 + `test()`，逻辑全在 `core/` 里：
+- `✚` **`python/` 目录结构（2026-11-05 合并）**：入口只有 `main.py`，用 `mode` 选 `correctness` / `pipeline` 两种模式；它只放配置区 + `test()`，逻辑全在 `core/` 里（详见 `docs/backlog/PYTHON-BACKLOG.md` 的 PY-011/PY-016）：
   - `core/__init__.py`：包入口，只 re-export `run_correctness` / `run_timing` / `run_pipeline`；
   - `core/mchprs_io.py`：协议客户端，唯一跟服务器说话的地方（`Client`：HELLO / POUT / INPUT / READ / TICK NOW / RADV，hex 编解码，以及批次预约的 `reserve_batch` / `expect_batch_ok`）；
   - `core/runner.py`：三个测试的执行主体（日志 Tee、进度、失败明细、向量生成、判定逻辑）；
@@ -656,7 +663,7 @@ width = 8
 - `✚` **`pipeline.py` 计时口径修正（2026-11-04）**：原来每批把 `collect_seconds`（默认 0.5 s）也算进「模拟段」，
   131072 组切 4 批就是 2.0 s 纯等待，吞吐被算成 4.6 万组/s（真实约 15 万）。现在 `runner.py` 把 RADV 与收尾巴分开计时，
   吞吐只按 RADV 算，尾巴单独显示；`collect_seconds` 默认降到 **0.02**（输出保证先于 `OK RADV` 到达）。
-- `✚` `docs/automation-throughput_zh.md`：批测速度从 80 组/秒 到 25 万组/秒 的完整推导（调度往返 → 批量预约 → 每 tick 采样 → 回复量，四层瓶颈逐层拆解）。
+- `✚` `docs/mchprsio/automation-throughput_zh.md`：批测速度从 80 组/秒 到 25 万组/秒 的完整推导（调度往返 → 批量预约 → 每 tick 采样 → 回复量，四层瓶颈逐层拆解）。
 
 ---
 
@@ -709,6 +716,9 @@ width = 8
     → 失败与向量、与电路都无关，**只和"服务器重启后第一批从 tick 0 起跑"有关**（暖机后消失）。
   - 环境事实：加载的 `world/plots.db` 是 20:59 保存的旧编译结果，21:47、21:50 两次启动都**没有**重新 `redpiler compile`。
   - **状态：搁置（用户 2026-11-04）**。以上证据保留备查；重新捡起来时先看 §14 旧条目和 `--update` 那条线索。
+  - **2026-11-05 用户给出规避办法**：编译前先执行一次 `//update -p`（全 plot 刷一遍），
+    再 `/redpiler compile`；不刷就会踩这个冷启动 bug。已写进手册 §2 第 15 条、
+    §3.4、§5（编译选项后）与 §11.4 症状表。BUG-038 本身保持搁置。
 - [x] **BUG-039：`/coord in` 的 `io.txt` 补全在"第一次进入世界"时出不来（2026-11-05 修复，真机验证通过）**
   - 现象：刚进世界时输入 `/coord in` 按 Tab，`io.txt` 没有候选。
   - 涉及代码：`crates/core/src/plot/packet_handlers.rs:74` `handle_command_suggestions_request`
@@ -830,10 +840,38 @@ width = 8
   - 状态：代码已改，用户 20:11 自行编译（二进制 8,795,592 字节），20:13 打包为
     `Download/mchprs-0.6.1-java-statsmd.apk`（md5 `3fe6f1f68a6cc21d122301c49f908eca`，3,707,751 字节，不带 docs）。
 
+- [ ] **BUG-045：控制台支持 `//update -p`（2026-11-05 已写码、已编译、已打包，待真机验证）**
+  - 现象（用户 2026-11-05 23:18）：在服务器终端敲 `//update -p`，得到
+    `[console] This command needs a player and cannot be used from the console`。
+  - 原因：`handle_console_command` 没有世界编辑分支，所有 `//` 命令落到
+    `_ => NEEDS_PLAYER`；而 `execute_update` 的 `-p` 分支用的是 `ctx.plot.get_corners()`，
+    本来就不依赖玩家选区。
+  - 改动：
+    - `crates/core/src/plot/worldedit/mod.rs`：`update()` 改为 `pub(super)`。
+    - `crates/core/src/plot/commands.rs`：控制台新增 `"/update" | "update"` 分支，
+      只接受 `-p`（其它参数回 `Usage: //update -p (updates the entire plot)`），
+      成功后打印 `Updated the entire plot. (<耗时>)`。
+  - APK：`app/src/com/dsh/mchprs/MainActivity.java` 的快捷指令栏（`QUICK_CMDS` / `QUICK_FILL`）
+    加了一个 `//update -p` 小标签，点一下只填充输入框、不发送。
+  - 未做：不带 `-p` 的 `//update` 仍需要玩家选区，控制台依旧报 NEEDS_PLAYER。
+  - 编译：`cargo build --release`，2m 06s，二进制 8,795,600 字节（警告仍是存量 4 条）；
+    APK 重新打包（WITH_ASSETS=0）为 `Download/mchprs-0.6.1-java-joinmsg.apk`，
+    md5 `ddb8e909f721cba0483d4d4c8a21bb7e`，3,707,751 字节。
+
+- [ ] **BUG-046：玩家进入/离开没有全服提示（用户 2026-11-05 提出，当天已写码、已编译、已打包，待真机验证）**
+  - 现象：一个玩家进服时，已在线的其他玩家地上没有任何聊天栏提示；退出时同样没有。
+  - 对照结果：**上游 MCHPRS 也是这样**（`crates/core/src/server.rs` 上游 `Message::PlayerJoined` 只有
+    `info!("{}" joined the game")` 写日志 + 发 `PlayerJoinedInfo` 刷新 Tab 列表，
+    没有任何聊天广播），不是 fork 引入的回归。
+  - 实现（2026-11-05，用户选择“现在就改”）：
+    - `crates/core/src/server.rs::handle_message`：`Message::PlayerJoined` 在 `info!` 之后广播
+      `BroadcastMessage::Chat(uuid, &e<name> joined the game)`；`Message::PlayerLeft` 在取出玩家后
+      广播 `&e<name> left the game`。措辞与原版一致（黄色）。
+    - 已知差异：进服那个玩家自己看不到自己的“joined”（广播时他还没进 plot），原版是能看到的。
+
 - [ ] **Java 侧区块推送**：客户端视距 6 / 服务端按 8 推，空洞随机分布，发过不再补（用户 2026-11-02 决定暂不修）。
 - [ ] **模电 `matrix:`**：报 `a matrix: list cannot be analog`。
 - [ ] **上游 workflow 在 tag 上误报失败**：`build.yml` / `ci.yml` / `docker.yml` 监听 `v*`。
-- [ ] **`python/` 没有冒烟测试**：三个脚本目前靠人工跑。
 - [ ] **APK 609 的自动释放资源**需真机确认（`assets` 解包、覆盖策略）。
 - [ ] **基岩监听地址（第 54 条）**需真机复测重连行为。
 - [ ] **存量警告**（`is_running_behind`、`fetch_update`、`info` 导入等），用户 2026-11-03 决定不处理。

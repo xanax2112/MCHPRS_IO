@@ -1124,7 +1124,7 @@ fn schem_list(plot: &mut Plot, player_idx: usize) {
     ));
 }
 
-fn update(plot: &mut PlotWorld, first_pos: BlockPos, second_pos: BlockPos) {
+pub(super) fn update(plot: &mut PlotWorld, first_pos: BlockPos, second_pos: BlockPos) {
     for_each_block_mut_optimized(plot, first_pos, second_pos, |plot, pos| {
         let block = plot.get_block(pos);
         mchprs_redstone::update(block, plot, pos);

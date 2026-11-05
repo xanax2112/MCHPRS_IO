@@ -44,10 +44,9 @@ rm -rf "$ASS"
 if [ "$WITH_ASSETS" = "1" ]; then
     # 开 App 时由 Assets.java 释放到工作目录（只补缺、不覆盖）
     mkdir -p "$ASS/docs" "$ASS/python"
-    cp ../docs/protocol.md ../docs/protocol_zh.md \
-       ../docs/file-formats.md ../docs/file-formats_zh.md "$ASS/docs/"
+    cp ../docs/Instruction-manual.md ../docs/Instruction-manual-zh.md "$ASS/docs/"
     cp ../README.md ../README_zh.md "$ASS/"
-    cp ../python/correctness.py ../python/timing.py ../python/pipeline.py \
+    cp ../python/main.py \
        ../python/README.md "$ASS/python/"
     cp -r ../python/core "$ASS/python/core"
     rm -rf "$ASS/python/core/__pycache__"

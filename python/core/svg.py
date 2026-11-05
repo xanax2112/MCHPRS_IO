@@ -144,7 +144,7 @@ def maybe_write(records, cfg, kind):
     # 无论哪种模式都压缩到连续 tick，否则 5000 rtps 下组间隔会把图拉得极宽
     selected = _compact(selected)
 
-    signal = _build(selected, cfg["IN_BITS"], cfg["OUT_BITS"],
+    signal = _build(selected, cfg["in_bits"], cfg["out_bits"],
                     "%s · %s" % (kind, "errors" if mode not in (True, "all") else "all"))
     if signal is None:
         return None

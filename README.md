@@ -21,7 +21,7 @@ To lift them it adds built-in **ROM and RAM**, an **`io.txt`** file that declare
 | `app/` | packaging the server into a standalone Android APK — [`app/README.md`](app/README.md) |
 | `run/` | an example working directory (`Config.toml`, `io.txt`, `memory/`, `world/`) |
 | `tests/` | integration tests, run with `cargo test` |
-| `BACKLOG.md` | the project ledger: design decisions, open items, known issues |
+| `docs/backlog/BACKLOG.md` | the project ledger: design decisions, open items, known issues |
 
 ## Quick start
 
@@ -92,7 +92,7 @@ width = 2
 ```
 
 `/io reload` re-reads the file without restarting. Full syntax and validation rules:
-[docs/file-formats.md](docs/file-formats.md).
+[docs/Instruction-manual.md](docs/Instruction-manual.md).
 
 ### 5. Drive it from outside
 
@@ -106,22 +106,22 @@ POUT lamps                             → OUTPUT lamps <tick> 0a
 TICK NOW                               → NOW <tick>
 ```
 
-Full reference: **[docs/protocol.md](docs/protocol.md)**.
+Full reference: **[docs/Instruction-manual.md](docs/Instruction-manual.md)**.
 
 ### 6. Verify a circuit automatically (optional)
 
-[`python/`](python/README.md) contains three scripts that speak the automation protocol and compare
-your circuit against a truth table you write as a one-line Python function:
+[`python/`](python/README.md) contains a single entry script with two modes; it speaks the
+automation protocol and compares your circuit against a truth table you write as a one-line
+Python function:
 
-| Script | What it checks |
+| Mode | What it checks |
 | --- | --- |
-| `correctness.py` | results only — ignores tick timing and glitches |
-| `timing.py` | exactly one `OUTPUT` per input, arriving `delay` ticks later |
-| `pipeline.py` | pipelined inputs (needs `/tick seq`) keep a fixed interval and never stall |
+| `MODE = "correctness"` | results only, plus a delay summary |
+| `MODE = "pipeline"` | pipelined inputs (needs `/tick seq`) keep a fixed interval and never stall |
 
 ```bash
 cd python
-python3 correctness.py      # edit the config block at the top of the file first
+python3 main.py             # set MODE and edit the config blocks at the top first
 ```
 
 ### 7. Troubleshooting
@@ -170,7 +170,7 @@ width = 2
 - Keys: `origin`, `clk` (`0` = no clock, otherwise a button), `width` (= number of points). Analog groups also need `rs_width` (points), with `width = rs_width * 4`.
 - Coordinates: `x, y, z`, `x, y, z, +2x, 4` (components usually sit one block apart, so the step is 2), or `matrix: ...` for grids and screens.
 
-Full syntax, validation rules and examples: **[docs/file-formats.md](docs/file-formats.md)**.
+Full syntax, validation rules and examples: **[docs/Instruction-manual.md](docs/Instruction-manual.md)**.
 
 ## Memories
 
@@ -194,7 +194,7 @@ width = 8
 00: 0f 3c 69 00 00 00 00 00
 ```
 
-The header must be version 0.5.0 or newer; every port list starts with `width = N`; RAM flushes on player leave, shutdown, `/redpiler reset`, a compile crash and `/memory reload`. Details: **[docs/file-formats.md](docs/file-formats.md)**.
+The header must be version 0.5.0 or newer; every port list starts with `width = N`; RAM flushes on player leave, shutdown, `/redpiler reset`, a compile crash and `/memory reload`. Details: **[docs/Instruction-manual.md](docs/Instruction-manual.md)**.
 
 ## Automation protocol
 
@@ -209,7 +209,7 @@ TICK NOW                      → NOW <tick>
 RADV <x>                      → OK RADV <x> <tick>
 ```
 
-Two modes: **normal** (default) and **timing-control** (`/tick seq`), which freezes the plot, locks one script and allows `INPUT` with a future offset — meant for pipeline circuits. Full reference: **[docs/protocol.md](docs/protocol.md)**.
+Two modes: **normal** (default) and **timing-control** (`/tick seq`), which freezes the plot, locks one script and allows `INPUT` with a future offset — meant for pipeline circuits. Full reference: **[docs/Instruction-manual.md](docs/Instruction-manual.md)**.
 
 ## Commands
 
@@ -234,12 +234,11 @@ The same commands work from the server console; commands needing a player are re
 
 ## Documentation
 
-- [docs/file-formats.md](docs/file-formats.md) — `io.txt` and memory file reference ([中文](docs/file-formats_zh.md))
-- [docs/protocol.md](docs/protocol.md) — automation protocol ([中文](docs/protocol_zh.md))
-- [docs/Redpiler.md](docs/Redpiler.md), [docs/RIL.md](docs/RIL.md), [docs/Adding_a_block.md](docs/Adding_a_block.md) — compiler internals
-- [python/README.md](python/README.md) — protocol test scripts (`correctness` / `timing` / `pipeline`)
+- [docs/Instruction-manual.md](docs/Instruction-manual.md) — the full manual: build/run, `io.txt`, memory files, automation protocol, test tools ([中文](docs/Instruction-manual-zh.md))
+- [docs/upstream/Redpiler.md](docs/upstream/Redpiler.md), [docs/upstream/RIL.md](docs/upstream/RIL.md), [docs/upstream/Adding_a_block.md](docs/upstream/Adding_a_block.md) — compiler internals
+- [python/README.md](python/README.md) — protocol test scripts (`correctness` / `pipeline`)
 - [app/README.md](app/README.md) — standalone Android APK that bundles the server
-- [BACKLOG.md](BACKLOG.md) — project ledger and design decisions
+- [docs/backlog/BACKLOG.md](docs/backlog/BACKLOG.md) — project ledger and design decisions
 
 ## Derivative notice
 

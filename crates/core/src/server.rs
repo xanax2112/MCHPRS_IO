@@ -645,6 +645,16 @@ impl MinecraftServer {
         match message {
             Message::PlayerJoined(player) => {
                 info!("{} joined the game", player.username);
+                // BUG-046: 上游只在日志里记一条，别的玩家看不到任何提示。
+                // 这条广播走和玩家聊天同一条路，发给所有已加载 plot 里的玩家
+                // （正在进服的这个玩家此时还没进 plot，所以自己收不到）。
+                self.broadcaster.broadcast(BroadcastMessage::Chat(
+                    player.uuid,
+                    TextComponent::from_legacy_text(&format!(
+                        "&e{} joined the game",
+                        player.username
+                    )),
+                ));
                 // Send player info to plots
                 let player_join_info = PlayerJoinInfo {
                     username: player.username.clone(),
@@ -660,6 +670,15 @@ impl MinecraftServer {
             Message::PlayerLeft(uuid) => {
                 if let Some((_, player)) = self.online_players.remove_entry(&uuid) {
                     info!("{} left the game", player.username);
+                    // BUG-046: 与进服提示对称；此时玩家自己已经下线，
+                    // 这条只会送到还留在 plot 里的人。
+                    self.broadcaster.broadcast(BroadcastMessage::Chat(
+                        uuid,
+                        TextComponent::from_legacy_text(&format!(
+                            "&e{} left the game",
+                            player.username
+                        )),
+                    ));
                 }
                 // Bedrock 玩家离开时把身份表里的句柄一起清掉，否则同名玩家再也连不上。
                 self.bedrock_players.remove(&uuid);
