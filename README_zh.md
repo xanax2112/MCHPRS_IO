@@ -3,18 +3,19 @@
 # MCHPRS_IO
 
 > **0.6.2-beta 已发布 · 正式公测** —— 到 [Releases](https://github.com/xanax2112/MCHPRS_IO/releases)
-> 下载最新版（`mchprs-0.6.2-beta-java.apk`、`mchprs-0.6.2-beta-bedrock.apk` 与两份 aarch64 二进制）。
+> 下载最新版：两个 APK（带基岩 / 不带基岩）与 Linux、Windows、macOS 各平台二进制，压缩包里附带使用手册与 Python 工具。
 >
 > 本版更新：
 >
 > - 协议基本稳定，正式公测
+> - 性能大提升：自动化测试吞吐从 80 组/秒 到 25 万组/秒
 > - Python 测试代码更加完善
 > - 基岩版作为可选功能，默认不编译；APK 分为带基岩版和不带基岩版两个版本
 > - 修复若干 bug
 
-MCHPRS_IO 是 [MCHPRS](https://github.com/MCHPR/MCHPRS) 的一个分支，用来解决红石的两大痛点：**电路无法快速调试与验证**，以及**电路无法与外部程序沟通**。
+MCHPRS_IO 是 [MCHPRS](https://github.com/MCHPR/MCHPRS) 的一个分支，用来解决红石的三大痛点：**电路无法快速调试与验证**、**电路无法与外部程序沟通**，以及**红石电路没办法高效存储、读写大量数据**。
 
-为此它内置了 **ROM 与 RAM**、用**接近 HDL 的语法**声明方块 IO 坐标的 **`io.txt`**，以及一套纯文本的**自动化协议**，让外部程序直接驱动并观察电路。
+为此它内置了 **ROM 与 RAM**（在红石里直接存取大量数据）、用**接近 HDL 的语法**声明方块 IO 坐标的 **`io.txt`**，以及一套纯文本的**自动化协议**，让外部程序直接驱动并观察电路。
 
 > 仓库里暂不附带演示世界 —— 下面的快速开始几分钟就能从零跑到能进服。
 
@@ -240,8 +241,7 @@ RADV <x>                      → OK RADV <x> <tick>
 
 ## 文档
 
-- [docs/Instruction-manual-zh.md](docs/Instruction-manual-zh.md) —— `io.txt` 与存储器文件参考（[English](docs/Instruction-manual.md)）
-- [docs/Instruction-manual-zh.md](docs/Instruction-manual-zh.md) —— 自动化协议（[English](docs/Instruction-manual.md)）
+- [docs/Instruction-manual-zh.md](docs/Instruction-manual-zh.md) —— 完整手册：编译运行、`io.txt`、存储器文件、自动化协议、测试工具（[English](docs/Instruction-manual.md)）
 - [docs/upstream/Redpiler.md](docs/upstream/Redpiler.md)、[docs/upstream/RIL.md](docs/upstream/RIL.md)、[docs/upstream/Adding_a_block.md](docs/upstream/Adding_a_block.md) —— 编译器内部（英文）
 - [python/README.md](python/README.md) —— 协议测试脚本（`correctness` / `pipeline`）
 - [app/README.md](app/README.md) —— 把服务端打包成独立 Android APK 的工程
@@ -249,8 +249,10 @@ RADV <x>                      → OK RADV <x> <tick>
 
 ## 衍生版声明
 
-本项目是 [MCHPRS](https://github.com/MCHPR/MCHPRS) 的**衍生版（fork）**。
+本项目是 [MCHPRS](https://github.com/MCHPR/MCHPRS) 的**衍生版（fork）**：上游是把红石编译成图、
+只模拟这张图的服务器；本仓库在它之上加了 IO / 自动化层、`io.txt` 与存储器文件格式、
+基岩版支持（可选 feature）以及 Android APK 打包。
 
 - 原项目地址：<https://github.com/MCHPR/MCHPRS>
 - 原项目协议：**MIT** — Copyright (c) 2020 Ojas Landge
-- 本衍生版同样采用 **MIT 协议**（见 [LICENSE](./LICENSE)）。
+- 本衍生版同样采用 **MIT 协议**（见 [LICENSE](./LICENSE)），对上游代码的修改与新增部分也按 MIT 发布。

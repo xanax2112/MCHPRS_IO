@@ -4,18 +4,19 @@
 
 > **0.6.2-beta is out — public beta.** Download the latest build from
 > [Releases](https://github.com/xanax2112/MCHPRS_IO/releases)
-> (`mchprs-0.6.2-beta-java.apk`, `mchprs-0.6.2-beta-bedrock.apk` and the two aarch64 binaries).
+> two APKs (with and without Bedrock) plus Linux, Windows and macOS binaries, each archive bundling the manual and the Python tooling.
 >
 > In this release:
 >
 > - the protocol is essentially stable; this is the public beta
+> - a large speed-up: automation throughput went from 80 groups/s to 250,000 groups/s
 > - the Python test tooling is more complete
 > - Bedrock is optional and off by default; the APK ships in two flavours, with and without Bedrock
 > - assorted bug fixes
 
-MCHPRS_IO is a fork of [MCHPRS](https://github.com/MCHPR/MCHPRS). It removes two limits that make redstone hard to work with: **you cannot debug or verify a circuit quickly**, and **the circuit cannot talk to anything outside Minecraft**.
+MCHPRS_IO is a fork of [MCHPRS](https://github.com/MCHPR/MCHPRS). It removes three limits that make redstone hard to work with: **you cannot debug or verify a circuit quickly**, **the circuit cannot talk to anything outside Minecraft**, and **there is no efficient way to store and read large amounts of data in redstone**.
 
-To lift them it adds built-in **ROM and RAM**, an **`io.txt`** file that declares block IO coordinates in a small HDL-like syntax, and a plain-text **automation protocol** for external programs.
+To lift them it adds built-in **ROM and RAM** (bulk data storage and access, in-game), an **`io.txt`** file that declares block IO coordinates in a small HDL-like syntax, and a plain-text **automation protocol** for external programs.
 
 > No ready-made demo world ships with this repo yet — the quick start below gets you from zero to a running server in a few minutes.
 
@@ -253,8 +254,12 @@ The same commands work from the server console; commands needing a player are re
 
 ## Derivative notice
 
-This project is a **derivative (fork) of [MCHPRS](https://github.com/MCHPR/MCHPRS)**.
+This project is a **derivative (fork) of [MCHPRS](https://github.com/MCHPR/MCHPRS)**: upstream
+compiles redstone into a graph and simulates only that graph; this fork adds the IO / automation
+layer, the `io.txt` and memory file formats, optional Bedrock support behind a feature flag, and
+Android APK packaging.
 
 - Upstream: <https://github.com/MCHPR/MCHPRS>
 - Upstream license: **MIT** — Copyright (c) 2020 Ojas Landge
-- This derivative is licensed under the **MIT License** (see [LICENSE](./LICENSE)).
+- This derivative is licensed under the **MIT License** (see [LICENSE](./LICENSE)); modifications
+  and additions on top of upstream are released under the same terms.
