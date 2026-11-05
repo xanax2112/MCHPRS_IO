@@ -141,6 +141,9 @@ pub struct Plot {
     /// Highest tick any reservation asked for since the queue was last cleared.
     /// A request below it is rejected with `ERR order`.
     last_reservation_tick: u32,
+    /// The reservations accepted but not yet acknowledged with one
+    /// `OK INPUT <name> <count>` line (BACKLOG.md/ §9.3).
+    pending_input_batch: Option<PendingInputBatch>,
     /// `/tick seq` is active: the plot is in reservation mode and the single
     /// exclusive script may reserve ticks (BACKLOG.md).
     seq_mode: bool,
@@ -205,6 +208,23 @@ struct Reservation {
     tick: u32,
     group: String,
     bits: Vec<bool>,
+}
+
+/// A run of `INPUT <name> <offset> <hex>` lines whose single `OK INPUT` line
+/// has not been written yet (BACKLOG.md/ §9.3).
+///
+/// There is no per-line reply in reservation mode: the batch ends after 5 ms
+/// without a new reservation (checked on the automation slice) or as soon as a
+/// request that is not a reservation arrives, and then one
+/// `OK INPUT <name> <count>` per group is sent.
+struct PendingInputBatch {
+    /// The exclusive script that sent the reservations.
+    conn_id: u64,
+    /// One entry per group, in the order the groups first appeared, holding the
+    /// number of accepted reservations. A normal batch has exactly one entry.
+    groups: Vec<(String, u32)>,
+    /// Wall clock of the last accepted reservation.
+    last_input_at: Instant,
 }
 
 /// Formats the empty-container compile warning (BACKLOG.md): one red
@@ -535,11 +555,89 @@ impl Plot {
             self.automation_last_poll = now;
             self.poll_automation();
         }
+        // A reservation batch that has been quiet for 5 ms is over; its single
+        // `OK INPUT` is written and flushed right away so the script can move on
+        // to `RADV` (BACKLOG.md/ §9.3).
+        self.settle_idle_input_batch(now);
         if now.duration_since(self.automation_last_flush).as_millis() >= 5 {
             self.automation_last_flush = now;
             if let Some(server) = self.automation.as_mut() {
                 server.flush();
             }
+        }
+    }
+
+    /// Whether any automation script is attached to this plot.
+    ///
+    /// With a script connected the main loop shortens its sleep to 1 ms, so a
+    /// frozen `rtps 0` plot does not put a 50 ms floor under every request
+    /// (BACKLOG.md/ §9.3).
+    fn automation_has_clients(&self) -> bool {
+        self.automation
+            .as_ref()
+            .is_some_and(AutomationServer::has_clients)
+    }
+
+    /// Counts one accepted reservation into the open batch, opening a new one
+    /// when the connection changed.
+    fn note_input_accepted(&mut self, conn_id: u64, name: &str, now: Instant) {
+        // `as_ref` first: settling below borrows all of `self`, which would not
+        // be allowed while a `&mut` into the field is alive.
+        let same_conn = self
+            .pending_input_batch
+            .as_ref()
+            .is_some_and(|batch| batch.conn_id == conn_id);
+        if !same_conn {
+            // Either nobody is waiting for a reply or it is another connection:
+            // answer that batch first so replies stay in request order.
+            self.settle_input_batch();
+            self.pending_input_batch = Some(PendingInputBatch {
+                conn_id,
+                groups: vec![(name.to_string(), 1)],
+                last_input_at: now,
+            });
+            return;
+        }
+        let Some(batch) = self.pending_input_batch.as_mut() else {
+            return;
+        };
+        batch.last_input_at = now;
+        match batch.groups.iter_mut().find(|(group, _)| group == name) {
+            Some((_, count)) => *count += 1,
+            None => batch.groups.push((name.to_string(), 1)),
+        }
+    }
+
+    /// Answers the open reservation batch, if any: one
+    /// `OK INPUT <name> <count>` line per group.
+    fn settle_input_batch(&mut self) {
+        let Some(batch) = self.pending_input_batch.take() else {
+            return;
+        };
+        let PendingInputBatch {
+            conn_id, groups, ..
+        } = batch;
+        if let Some(server) = self.automation.as_mut() {
+            for (name, count) in groups {
+                server.push_input_batch(conn_id, &name, count);
+            }
+        }
+    }
+
+    /// Ends a batch that has gone 5 ms without a new reservation and flushes the
+    /// answer immediately: waiting for the 5 ms slice would add another slice of
+    /// latency on top of the batch window.
+    fn settle_idle_input_batch(&mut self, now: Instant) {
+        let idle = self
+            .pending_input_batch
+            .as_ref()
+            .is_some_and(|batch| now.duration_since(batch.last_input_at).as_millis() >= 5);
+        if !idle {
+            return;
+        }
+        self.settle_input_batch();
+        if let Some(server) = self.automation.as_mut() {
+            server.flush();
         }
     }
 
@@ -555,6 +653,20 @@ impl Plot {
             self.pout_bindings.remove(&conn_id);
             if self.exclusive == Some(conn_id) {
                 self.exclusive = None;
+                // The script that scheduled these ticks is gone; a new script
+                // starts counting from the tick its `HELLO` reports, so leaving
+                // the old schedule behind would fire inputs nobody asked for
+                // (BACKLOG.md/ §9.1).
+                self.reservations.clear();
+                self.last_reservation_tick = 0;
+            }
+            // Nobody is left to confirm: the batch dies with its connection.
+            if self
+                .pending_input_batch
+                .as_ref()
+                .is_some_and(|batch| batch.conn_id == conn_id)
+            {
+                self.pending_input_batch = None;
             }
         }
         for (conn_id, request) in poll.requests {
@@ -1179,6 +1291,13 @@ impl Plot {
         if request.exclusive {
             self.exclusive = Some(conn_id);
         }
+        // Anything that is not a reservation ends the open `INPUT` batch first,
+        // so its own reply is queued behind the batch's `OK INPUT` lines: the
+        // client must never see `OK RADV` before the count it is about to check
+        // (BACKLOG.md/ §9.3).
+        if !matches!(&request.kind, RequestKind::Input { offset: Some(_), .. }) {
+            self.settle_input_batch();
+        }
         match request.kind {
             RequestKind::Hello => self.handle_hello(),
             RequestKind::Bind { name } => self.handle_bind(conn_id, &name),
@@ -1298,6 +1417,13 @@ impl Plot {
 
         let absolute = self.tick.wrapping_add(offset.unwrap_or(1));
         match self.reserve_input(name, bits, absolute) {
+            // A reservation is answered once per batch, with the count of the
+            // lines the batch accepted (BACKLOG.md/ §9.3); only the immediate
+            // form answers on its own.
+            Ok(()) if offset.is_some() => {
+                self.note_input_accepted(conn_id, name, Instant::now());
+                AutomationResponse::CommandOk
+            }
             Ok(()) => AutomationResponse::Input {
                 name: name.to_string(),
                 tick: absolute,
@@ -1532,6 +1658,7 @@ impl Plot {
         self.seq_mode = true;
         self.reservations.clear();
         self.last_reservation_tick = 0;
+        self.pending_input_batch = None;
         self.exclusive = None;
         self.apply_rtps(Tps::Limited(0.0));
         if let Some(server) = self.automation.as_mut() {
@@ -1801,11 +1928,12 @@ impl Plot {
 
     fn start_redpiler(&mut self, options: CompilerOptions, source: Option<usize>) {
         debug!("Starting redpiler");
-        // Every compile updates the whole plot first, silently: `--update`
-        // runs `mchprs_redstone::update` over every non-empty section after the
-        // graph is built (BACKLOG.md).
-        let mut options = options;
-        options.update = true;
+        // `--update` is no longer forced on (BACKLOG.md BUG-042): whether the
+        // world gets refreshed is the player's call now, and the recommended
+        // way is running `//update -p` before compiling. Passing `--update`
+        // explicitly still works, but it only takes effect when the *previous*
+        // circuit is torn down, because `Compiler::reset` consumes the options
+        // stored by the last compile.
         // `betterio` is a runtime timing switch, not a compile option
         // (BACKLOG.md): push the Config value into the backend
         // before every compile so a restart is all it takes.
@@ -1946,6 +2074,9 @@ impl Plot {
         self.pout_bindings.clear();
         self.reservations.clear();
         self.last_reservation_tick = 0;
+        // A compile drops every reservation, so there is nothing to confirm:
+        // the batch is thrown away instead of being answered (BACKLOG.md/ §9.3).
+        self.pending_input_batch = None;
         self.exclusive = None;
         // A new compile always ends reservation mode (BACKLOG.md).
         if self.seq_mode {
@@ -1959,6 +2090,27 @@ impl Plot {
             group.reason = None;
             group.reset_edges();
         }
+    }
+
+    /// Compiles the plot and writes the full in/out-degree report of the
+    /// resulting graph into `logs/` (BACKLOG.md BUG-043).
+    ///
+    /// The compile runs first, so `/redpiler stats` works without a prior
+    /// `/redpiler compile`. Nothing is written when the compile fails.
+    fn compile_and_write_stats(&mut self, source: Option<usize>) -> Result<(), &'static str> {
+        self.reset_redpiler();
+        self.start_redpiler(CompilerOptions::default(), source);
+        self.publish_world();
+        let now = chrono::Local::now();
+        let timestamp = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        let Some(report) = self.redpiler.degree_report(&timestamp) else {
+            return Err("compile");
+        };
+        let dir = Path::new("logs");
+        std::fs::create_dir_all(dir).map_err(|_| "io")?;
+        let path = dir.join(format!("redpiler_stats_{}.md", now.format("%Y%m%d_%H%M%S")));
+        std::fs::write(path, report).map_err(|_| "io")?;
+        Ok(())
     }
 
     /// Redpiler needs to reset implicitly in the case of any block changes done by a player. This
@@ -2928,6 +3080,7 @@ impl Plot {
             pout_bindings: FxHashMap::default(),
             reservations: VecDeque::new(),
             last_reservation_tick: 0,
+            pending_input_batch: None,
             seq_mode: false,
             exclusive: None,
             automation,
@@ -3038,7 +3191,16 @@ impl Plot {
             let delta = Instant::now().duration_since(before);
 
             if delta < self.sleep_time {
-                let sleep_time = self.sleep_time - delta;
+                let mut sleep_time = self.sleep_time - delta;
+                // A frozen plot (`rtps 0`, i.e. `/tick seq`) sleeps 50 ms per
+                // loop, which would become the latency of every automation
+                // request and of the 5 ms reservation batch window. While a
+                // script is attached, come back at least once a millisecond:
+                // no tick advances, so this costs a wakeup, not simulation
+                // time (BACKLOG.md/ §9.3).
+                if self.automation_has_clients() {
+                    sleep_time = sleep_time.min(Duration::from_millis(1));
+                }
                 thread::sleep(sleep_time);
             } else {
                 thread::yield_now();

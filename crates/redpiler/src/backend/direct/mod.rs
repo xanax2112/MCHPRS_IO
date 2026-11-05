@@ -2,6 +2,7 @@
 
 mod compile;
 mod node;
+mod stats;
 mod tick;
 mod update;
 

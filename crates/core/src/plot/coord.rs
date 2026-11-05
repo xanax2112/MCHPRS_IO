@@ -253,6 +253,14 @@ impl Plot {
         for word in &words[..words.len().saturating_sub(1)] {
             start += word.len() + 1;
         }
+        // Typing exactly `/coord in` (or `new` / `add`) leaves the cursor
+        // inside the literal subcommand node. Most clients complete that
+        // locally, but when one does ask, filtering by the literal itself
+        // returns nothing — answer for the *next* argument instead
+        // (BACKLOG.md BUG-039).
+        let at_literal_end = words.len() == 1 && matches!(words[0], "in" | "new" | "add");
+        let current = if at_literal_end { "" } else { current };
+        let start = if at_literal_end { text.len() } else { start };
         let filter = |candidates: Vec<String>| -> Vec<String> {
             candidates
                 .into_iter()

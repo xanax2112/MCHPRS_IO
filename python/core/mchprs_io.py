@@ -7,6 +7,8 @@
 - 无 clk 的输出组只在任一位变化时推送 OUTPUT。
 - `OK INPUT` 的 tick 是输入生效 tick；`OUTPUT` 的 tick 是采样 tick；
   项目写法：真实延迟 = 输出 tick - 输入 tick + 1。
+- `/tick seq` 模式下预约是**批量**的：整批只回一条
+  `OK INPUT <名字> <条数>`，绝对 tick 由客户端自己算（`reserve_batch`）。
 """
 
 import socket
@@ -122,14 +124,71 @@ class Client:
         return self.version, self.tick
 
     def input(self, group, value, bits, timeout=None, offset=None):
-        """INPUT 整组；返回输入生效的绝对 tick。offset 仅 /tick seq 模式可用。"""
+        """INPUT 整组；返回输入生效的绝对 tick。
+
+        `offset` 形式只在 `/tick seq` 模式下可用，属于批量预约，服务器不会
+        逐条回复，所以这里直接拒绝——请用 `reserve_batch`。
+        """
+        if offset is not None:
+            raise ValueError("带 offset 的 INPUT 走批次回复，请用 Client.reserve_batch()")
         hx = encode_hex(value, bits)
-        if offset is None:
-            self.send("INPUT %s %s" % (group, hx))
-        else:
-            self.send("INPUT %s %d %s" % (group, offset, hx))
+        self.send("INPUT %s %s" % (group, hx))
         line = self.expect("OK INPUT", timeout)
         return int(line.split()[-1])
+
+    def reserve_batch(self, group, values, bits, interval, timeout=None):
+        """一次发完一整批预约，确认条数无误后才返回。
+
+        `/tick seq` 模式下服务器不再逐条回 `OK INPUT`：整批只回一条
+        `OK INPUT <group> <条数>`（连续 5 ms 没有新预约即视为批结束，
+        BACKLOG.md/ §9.3）。因此必须按「先取基准 tick → 灌入 → 核对条数 →
+        才允许发 RADV」的顺序来，否则无法判断有没有丢预约。
+
+        返回每条输入生效的绝对 tick 列表；核对失败抛 ProtocolError，
+        一直缺确认抛 TimeoutError。
+        """
+        if not values:
+            return []
+        # 基准 tick 由服务器给（TICK NOW 同时会结算上一批），
+        # 这样绝对 tick 不依赖客户端自己的计数是否同步。
+        base = self.tick_now(timeout)
+        lines = [
+            "INPUT %s %d %s" % (group, 1 + i * interval, encode_hex(value, bits))
+            for i, value in enumerate(values)
+        ]
+        self.send("\n".join(lines))
+        self.expect_batch_ok(group, len(lines), timeout)
+        return [base + 1 + i * interval for i in range(len(values))]
+
+    def expect_batch_ok(self, group, expected, timeout=None):
+        """收 `OK INPUT <group> <n>`，累加到 expected 为止，返回收到的总条数。
+
+        服务器可能把一批拆成多条回复（发送中途停顿超过 5 ms，或多组交错），
+        所以按“累加”判断而不是“收到一条就完事”。其它推送行（`OUTPUT`）
+        与批次无关，这里丢弃。
+        """
+        limit = self.timeout if timeout is None else timeout
+        deadline = time.monotonic() + limit
+        total = 0
+        while total < expected:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                raise TimeoutError(
+                    "只确认了 %d/%d 条预约，检查是否忘了 /tick seq" % (total, expected)
+                )
+            line = self._recv_line(remain)
+            if line.startswith("ERR"):
+                raise ProtocolError(line)
+            parts = line.split()
+            if len(parts) == 4 and parts[0] == "OK" and parts[1] == "INPUT":
+                if parts[2] != group:
+                    raise ProtocolError("预约确认的组名不符：%r" % line)
+                total += int(parts[3])
+                if total > expected:
+                    raise ProtocolError(
+                        "预约确认条数超过发送条数：%d > %d" % (total, expected)
+                    )
+        return total
 
     def pout(self, group, timeout=None):
         """POUT 订阅并取当前值；返回 (tick, value)。重复 POUT 也会再取一次。"""

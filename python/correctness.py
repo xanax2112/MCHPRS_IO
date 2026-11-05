@@ -8,18 +8,17 @@
 from core import run_correctness
 
 # ======================== 配置区 ========================
-PIN = "add_in"
-POUT = "add_out"
-IN_BITS = 17
-OUT_BITS = 9
+PIN = "mul_in"
+POUT = "mul_out"
+IN_BITS = 32
+OUT_BITS = 32
 
 
 def test(x):
     """17 位输入：bit16=进位输入，bit15..8=A，bit7..0=B；输出 9 位：cout|sum。"""
-    cin = (x >> 16) & 1
-    a = (x >> 8) & 0xFF
-    b = x & 0xFF
-    return a + b + cin
+    a = (x >> 16) & 0xFFFF
+    b = x & 0xFFFF
+    return a * b
 
 
 CONFIG = {
@@ -30,15 +29,19 @@ CONFIG = {
     # （脚本没有改 rtps 的权限，这里只做启动检查与提示）
     "rtps": 5000,
 
-    "wait_seconds": 0.005,
-    "drain_seconds": 0.002,
+    "wait_seconds": 0.05,
+
+    # 等推送的"精确变化 tick"最多多久（秒）。读到了就能算出本组的 delay，
+    # 结尾会打印 delay 的分布；读不到就退回 POUT 只判值（该组不计入统计）。
+    "tick_timeout": 0.2,
+    "drain_seconds": 0.02,
 
     "coverage": "random",
-    "random_count": 500,
+    "random_count": 100,
     "seed": 0,
     "specified": [0x00000, 0x1FFFF, 0x08000, 0x10000],
 
-    "drain": True,
+    "drain": "off",
     # SVG 波形： "off" 不画 / "error" 只画错误组 / True 画全部
     "svg": "off",
 

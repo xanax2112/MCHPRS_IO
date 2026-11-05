@@ -53,7 +53,9 @@ CONFIG = {
     "specified": [],
 
     # RADV 跑完后再收多久的尾巴（秒），兜住最后几条迟到的输出。
-    "collect_seconds": 0.5,
+    # 输出保证先于 OK RADV 到达（同一队列），所以这里只需要很小——
+    # 设成 0.5 会让每批多等半秒，131072 组切 4 批就白等 2 秒。
+    "collect_seconds": 0.02,
 
     # SVG 波形："off" 不画 / "error" 只画错误组 / True 画全部
     "svg": "off",

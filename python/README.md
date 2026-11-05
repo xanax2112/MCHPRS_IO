@@ -7,7 +7,6 @@ python/
 ├── correctness.py   无时序正确性：只验证结果对不对
 ├── timing.py        时序精确：验证延迟与毛刺
 ├── pipeline.py      流水时序精确 + 吞吐：验证间隔并报告 组/s、tick/s
-├── bench_batch.py   批量吞吐 + 逐条正确性（独立小脚本，同上要求 /tick seq）
 └── core/            内部实现，不用打开
 ```
 

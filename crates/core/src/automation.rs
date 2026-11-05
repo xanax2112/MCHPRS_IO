@@ -10,7 +10,13 @@
 //! HELLO MCHPRS_IO 0.5.2-alpha               (not compiled: no tick field)
 //!
 //! INPUT <name> <hex>            -> OK INPUT <name> <absolute tick>
-//! INPUT <name> <offset> <hex>   -> OK INPUT <name> <absolute tick>   [seq mode only]
+//! INPUT <name> <offset> <hex>   -> OK INPUT <name> <count>           [seq mode only]
+//!
+//! In `/tick seq` mode the server answers a whole run of `INPUT` lines with a
+//! single `OK INPUT <name> <count>` once 5 ms pass without a new reservation
+//! (or the moment any other request arrives). `count` is how many reservations
+//! of that group the batch accepted, so a script can check that nothing was
+//! lost before it sends `RADV` (BACKLOG.md/ §9.3).
 //!
 //! POUT <name>                   -> OUTPUT <name> <tick> <hex>        (bind + current value)
 //! OUTPUT <name> <tick> <hex>                                         (push)
@@ -115,6 +121,10 @@ pub enum AutomationResponse {
     Output { name: String, tick: u32, hex: String },
     /// `OK INPUT <name> <tick>`.
     Input { name: String, tick: u32 },
+    /// `OK INPUT <name> <count>`: one reply for a whole run of reservations
+    /// (BACKLOG.md/ §9.3). Carries the number of accepted `INPUT` lines of that
+    /// group instead of a tick, so a 65536-line batch costs one line back.
+    InputBatch { name: String, count: u32 },
     /// `OK READ <target> <tick> <power>`.
     Read { target: String, tick: u32, power: u8 },
     /// `NOW <tick>`.
@@ -200,6 +210,15 @@ impl AutomationServer {
             inbox: Vec::new(),
             closed: Vec::new(),
         })
+    }
+
+    /// Whether any script is connected right now.
+    ///
+    /// The plot uses this to keep its loop responsive: while a script is
+    /// attached the main loop must not sleep for a whole frozen tick period,
+    /// otherwise every request pays that sleep as latency (BACKLOG.md/ §9.3).
+    pub fn has_clients(&self) -> bool {
+        !self.connections.is_empty()
     }
 
     /// Accepts new connections, reads and parses every pending request line,
@@ -342,6 +361,9 @@ impl AutomationServer {
             AutomationResponse::Input { name, tick } => {
                 format!("OK INPUT {} {}\n", name, tick)
             }
+            AutomationResponse::InputBatch { name, count } => {
+                format!("OK INPUT {} {}\n", name, count)
+            }
             AutomationResponse::Read {
                 target,
                 tick,
@@ -375,6 +397,20 @@ impl AutomationServer {
         self.queue_line(conn_id, format!("OUTPUT {} {} {}\n", name, tick, hex));
     }
 
+    /// Answers a whole `INPUT` batch with one `OK INPUT <name> <count>` line.
+    ///
+    /// The plot thread owns the batch state; this only formats and queues it,
+    /// so the wire format stays in one place ([`AutomationServer::handle_reply`]).
+    pub fn push_input_batch(&mut self, conn_id: u64, name: &str, count: u32) {
+        self.handle_reply(
+            conn_id,
+            AutomationResponse::InputBatch {
+                name: name.to_string(),
+                count,
+            },
+        );
+    }
+
     /// Player ran `/tick seq` (`on`) or left reservation mode with `/rtps > 0`
     /// (`off`, docs/protocol.md/ BUG-005).
     ///
@@ -404,6 +440,19 @@ impl AutomationServer {
         loop {
             match self.listener.accept() {
                 Ok((stream, addr)) => {
+                    // A script that exited a moment ago is still registered
+                    // until the next read notices its EOF. Peek at it: refusing
+                    // a newcomer because of a dead session is what makes
+                    // back-to-back runs fail for no reason (BACKLOG.md/ §9.1).
+                    if let Some(exclusive) = self.exclusive {
+                        let dead = self
+                            .connections
+                            .get(&exclusive)
+                            .is_none_or(is_peer_closed);
+                        if dead {
+                            self.drop_connection(exclusive);
+                        }
+                    }
                     // While an exclusive script holds the plot, everyone else
                     // is refused outright (docs/protocol.md).
                     if self.exclusive.is_some() {
@@ -492,11 +541,12 @@ impl AutomationServer {
         }
         debug!("Automation connection {} closed", conn_id);
         if self.exclusive == Some(conn_id) {
-            // The only writer is gone: unlock, but do not hand the session to
-            // the next connection; the player has to run `/tick seq` again
-            // (docs/protocol.md).
+            // The only writer is gone, but the session stays armed: the next
+            // script to connect becomes the exclusive one, so `/tick seq` has
+            // to be typed once per session instead of once per run
+            // (BACKLOG.md/ §9.1).
             self.exclusive = None;
-            self.waiting = false;
+            self.waiting = true;
         }
         self.closed.push(conn_id);
     }
@@ -756,6 +806,20 @@ enum ReadOutcome {
 }
 
 /// Reads every complete line currently available on the connection.
+/// Whether the peer has already closed the connection.
+///
+/// Uses `peek`, so buffered request data is left where it is: a connection that
+/// is merely slow must never be mistaken for a dead one.
+fn is_peer_closed(conn: &AutomationConn) -> bool {
+    let mut probe = [0u8; 1];
+    match conn.writer.peek(&mut probe) {
+        Ok(0) => true,
+        Err(err) if err.kind() == ErrorKind::WouldBlock => false,
+        Err(_) => true,
+        Ok(_) => false,
+    }
+}
+
 fn read_lines(conn: &mut AutomationConn, lines: &mut Vec<Vec<u8>>) -> ReadOutcome {
     loop {
         let buf = match conn.reader.fill_buf() {

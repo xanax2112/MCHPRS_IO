@@ -162,6 +162,18 @@ impl Compiler {
         }
     }
 
+    /// Full in/out-degree report of the compiled graph as Markdown
+    /// (BACKLOG.md BUG-043). `None` while nothing is compiled.
+    pub fn degree_report(&self, timestamp: &str) -> Option<String> {
+        let backend = self.backend.as_ref()?;
+        if !self.is_active {
+            return None;
+        }
+        match backend {
+            BackendDispatcher::DirectBackend(backend) => Some(backend.degree_report(timestamp)),
+        }
+    }
+
     /// Switches the currently active backend to the one specified by `backend`.
     /// Requires recompilation to take effect.
     pub fn use_backend(&mut self, backend: BackendDispatcher) {

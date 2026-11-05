@@ -16,6 +16,12 @@ fi
 # NO_BINARY=1 时跳过内置 mchprs，只打界面壳（用于快速预览 UI）
 NO_BINARY="${NO_BINARY:-0}"
 
+# WITH_ASSETS=1 才把 docs/ 与 python/ 打进 APK（开 App 时由 Assets.java 释放）。
+# 默认 0：版本没稳定期间不携带任何附带文件（用户 2026-11-04 定，台账 §13）。
+# 理由：Assets.java 只补缺不覆盖，带的旧文件会把工作目录里的新脚本顶掉不了、
+# 反而让人以为在测新代码，实际跑的是包里那份。
+WITH_ASSETS="${WITH_ASSETS:-0}"
+
 echo "[1/7] 准备原生二进制"
 rm -rf "$OUT"
 mkdir -p "$OUT/classes" "$OUT/dex" "$OUT/lib/arm64-v8a"
@@ -32,18 +38,24 @@ else
 fi
 
 echo "[2/7] 编译资源"
-# 把文档与 python 工具打进 APK：开 App 时由 Assets.java 释放到工作目录
 ASS="$OUT/assets"
+ASSET_ARGS=()
 rm -rf "$ASS"
-mkdir -p "$ASS/docs" "$ASS/python"
-cp ../docs/protocol.md ../docs/protocol_zh.md \
-   ../docs/file-formats.md ../docs/file-formats_zh.md "$ASS/docs/"
-cp ../README.md ../README_zh.md "$ASS/"
-cp ../python/correctness.py ../python/timing.py ../python/pipeline.py \
-   ../python/README.md "$ASS/python/"
-cp -r ../python/core "$ASS/python/core"
-rm -rf "$ASS/python/core/__pycache__"
-echo "  内置: $(find "$ASS" -type f | wc -l) 个文件（docs / README / python）"
+if [ "$WITH_ASSETS" = "1" ]; then
+    # 开 App 时由 Assets.java 释放到工作目录（只补缺、不覆盖）
+    mkdir -p "$ASS/docs" "$ASS/python"
+    cp ../docs/protocol.md ../docs/protocol_zh.md \
+       ../docs/file-formats.md ../docs/file-formats_zh.md "$ASS/docs/"
+    cp ../README.md ../README_zh.md "$ASS/"
+    cp ../python/correctness.py ../python/timing.py ../python/pipeline.py \
+       ../python/README.md "$ASS/python/"
+    cp -r ../python/core "$ASS/python/core"
+    rm -rf "$ASS/python/core/__pycache__"
+    ASSET_ARGS=(-A "$ASS")
+    echo "  内置: $(find "$ASS" -type f | wc -l) 个文件（docs / README / python）"
+else
+    echo "  WITH_ASSETS=0，不携带 docs/python（版本未稳定，附随文件手动同步）"
+fi
 
 RES_INPUT=()
 if [ -d res ]; then
@@ -57,7 +69,7 @@ fi
 echo "[3/7] aapt2 link"
 mkdir -p "$OUT/gen"
 aapt2 link -o "$OUT/base.apk" -I "$AJ" --manifest AndroidManifest.xml \
-    -A "$ASS" \
+    "${ASSET_ARGS[@]}" \
     --java "$OUT/gen" \
     --min-sdk-version 24 --target-sdk-version 28 "${RES_INPUT[@]}"
 

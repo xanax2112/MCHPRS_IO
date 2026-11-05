@@ -95,9 +95,27 @@ impl ServerBoundPacketHandler for Plot {
             return;
         }
 
-        if !packet.text.starts_with("//load ") {
+        // `//schem load` / `//schem save` redirect to `//load` / `//save` in the
+        // command tree, so the client sends the text it actually typed; both
+        // spellings have to match (BACKLOG.md BUG-040).
+        const FILE_PREFIXES: [&str; 4] = ["//load ", "//save ", "//schem load ", "//schem save "];
+        let Some(prefix_len) = FILE_PREFIXES
+            .iter()
+            .find(|prefix| packet.text.starts_with(*prefix))
+            .map(|prefix| prefix.len())
+        else {
+            // Never drop a request silently: the client waits on this
+            // transaction id, and no answer looks exactly like "tab does
+            // nothing" (BACKLOG.md BUG-039 / BUG-040).
+            let res = CCommandSuggestionsResponse {
+                id: packet.transaction_id,
+                start: packet.text.len() as i32,
+                length: 0,
+                matches: Vec::new(),
+            };
+            self.players[player_idx].send_packet(&res.encode());
             return;
-        }
+        };
 
         let mut path = PathBuf::from("./schems");
         if CONFIG.schemati {
@@ -105,10 +123,10 @@ impl ServerBoundPacketHandler for Plot {
             path.push(HyphenatedUUID(uuid).to_string());
         }
 
-        let current = &packet.text[7..];
+        let current = &packet.text[prefix_len..];
         let mut res = CCommandSuggestionsResponse {
             id: packet.transaction_id,
-            start: 7,
+            start: prefix_len as i32,
             length: current.len() as i32,
             matches: Vec::new(),
         };
@@ -120,6 +138,7 @@ impl ServerBoundPacketHandler for Plot {
                     error!("There was an error completing //load");
                     error!("{}", err);
                 }
+                self.players[player_idx].send_packet(&res.encode());
                 return;
             }
         };

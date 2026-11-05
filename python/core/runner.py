@@ -167,7 +167,11 @@ def _check_rtps(client, cfg):
 
 @_logged("correctness")
 def run_correctness(cfg):
-    """无时序正确性：INPUT → 等 → 丢弃推送 → POUT 查一次 → 只判值。"""
+    """无时序正确性：INPUT → 等 → 读推送拿真实变化 tick → 只判值，顺带统计延迟。
+
+    推送到不了（值没变 / 太慢）时退回 `POUT` 读一次当前值：值照旧判定，
+    但那一组没有精确 tick，不计入延迟统计。
+    """
     try:
         client = _open(cfg)
     except OSError as err:
@@ -192,6 +196,7 @@ def run_correctness(cfg):
         start = time.monotonic()
         prev = None
         records = []
+        delays = []
 
         for index, value in enumerate(vectors, 1):
             want = _expect(cfg, value)
@@ -200,9 +205,23 @@ def run_correctness(cfg):
             try:
                 in_tick = client.input(cfg["PIN"], value, in_bits)
                 time.sleep(wait)
-                if cfg.get("drain", True):
-                    client.drain(cfg.get("drain_seconds", 0.005))
-                out_tick, got = client.pout(cfg["POUT"], cfg.get("timeout", 3.0))
+                # 推送携带的是输出**真的变化**那个 tick；POUT 返回的只是
+                # 采样时刻，只能当上界。所以优先读推送，读不到再退回 POUT。
+                out_tick, got, exact = None, None, False
+                deadline = time.monotonic() + cfg.get("tick_timeout", 0.2)
+                while True:
+                    remain = deadline - time.monotonic()
+                    if remain <= 0:
+                        break
+                    push = client.wait_output(cfg["POUT"], remain)
+                    if push is None:
+                        break
+                    if push[0] >= in_tick:      # 属于这一组，不是上一组迟到的
+                        out_tick, got = push
+                        exact = True
+                        break
+                if got is None:
+                    out_tick, got = client.pout(cfg["POUT"], cfg.get("timeout", 3.0))
             except ProtocolError as err:
                 print("协议错误：%s" % err)
                 return 2
@@ -216,6 +235,8 @@ def run_correctness(cfg):
                 _print_progress(index, total, passed, failed, start, every)
                 continue
 
+            if exact:
+                delays.append(out_tick - in_tick + 1)
             cur = {"desc": desc,
                    "want": _fmt(want, out_bits),
                    "got": _fmt(got, out_bits)}
@@ -232,6 +253,17 @@ def run_correctness(cfg):
 
         print("\n完成：%d 组，通过 %d，失败 %d，耗时 %.1fs"
               % (total, passed, failed, time.monotonic() - start))
+        if delays:
+            ordered = sorted(delays)
+            lo, hi = ordered[0], ordered[-1]
+            print("延迟统计：%d 组拿到精确变化 tick，delay = %d ~ %d（中位 %d），%s"
+                  % (len(delays), lo, hi, ordered[len(ordered) // 2],
+                     "延迟固定" if lo == hi else "延迟随输入变化"))
+            if lo != hi:
+                print("  ⚠ 延迟不固定：pipeline.py 的固定 delay 判定不适用；"
+                      "要么 delay 填最大值，要么就用本脚本只判值")
+        else:
+            print("延迟统计：没有一组拿到精确变化 tick（检查组名/位宽/POUT 是否绑定成功）")
         svg.maybe_write(records, cfg, "correctness")
         return 0 if failed == 0 else 1
     finally:
@@ -421,47 +453,55 @@ def run_pipeline(cfg):
 
         vectors = list(_pipeline_vectors(cfg, total))
         total = len(vectors)
-        digits = (in_bits + 3) // 4
         rounds = (total + chunk - 1) // chunk
 
         passed = failed = gaps = 0
         detail_shown = 0
         records = []
         sim_elapsed = 0.0
+        tail_elapsed = 0.0
         sim_ticks = 0
         got_total = 0
         index = 0
 
         for r in range(rounds):
             part = vectors[r * chunk:(r + 1) * chunk]
-            outgoing = [
-                "INPUT %s %d %0*x" % (cfg["PIN"], 1 + i * interval, digits, value)
-                for i, value in enumerate(part)
-            ]
-            client.send("\n".join(outgoing))
-
-            in_ticks = []
+            # 预约是批量的：服务器只回一条 `OK INPUT <name> <条数>`，
+            # 这里核对条数通过后才发 RADV（BACKLOG.md/ §9.3）。
             try:
-                for _ in range(len(outgoing)):
-                    line = client.expect("OK INPUT", timeout)
-                    in_ticks.append(int(line.split()[-1]))
+                in_ticks = client.reserve_batch(
+                    cfg["PIN"], list(part), in_bits, interval, timeout
+                )
             except ProtocolError as err:
                 if "mode" in str(err):
                     print("当前不是 /tick seq 模式：先在游戏或终端执行 /tick seq")
                     return 2
                 print("协议错误：%s" % err)
                 return 2
+            except TimeoutError as err:
+                print("预约未被确认：%s" % err)
+                return 2
 
             span = len(part) * interval + delay + 2
-            sim_start = time.monotonic()
+            # 只把 RADV 本身计入"模拟段"：尾巴是固定等待，混进来会把吞吐
+            # 算成 批大小 / (RADV + 尾巴)，每批都要被 0.5 s 拖一次
+            # （131072 组切 4 批时，2.0 s 纯等待占了 2.86 s 的七成）。
+            radv_start = time.monotonic()
             try:
                 outs = client.radv_collect(span, cfg["POUT"], timeout)
-                outs += client.collect_outputs(cfg["POUT"], cfg.get("collect_seconds", 0.5))
             except (TimeoutError, ProtocolError) as err:
                 print("RADV 失败：%s" % err)
                 return 2
-            elapsed = time.monotonic() - sim_start
-            sim_elapsed += elapsed
+            radv_secs = time.monotonic() - radv_start
+            tail_start = time.monotonic()
+            try:
+                outs += client.collect_outputs(cfg["POUT"], cfg.get("collect_seconds", 0.02))
+            except (TimeoutError, ProtocolError) as err:
+                print("RADV 失败：%s" % err)
+                return 2
+            tail_secs = time.monotonic() - tail_start
+            sim_elapsed += radv_secs
+            tail_elapsed += tail_secs
             sim_ticks += span
             got_total += len(outs)
 
@@ -511,15 +551,15 @@ def run_pipeline(cfg):
                         _report_failure(index, cur, prev)
                 prev = cur
 
-            print("  第 %d/%d 批：%d 组，本批 %.3fs -> %.0f 组/s；累计通过 %d 失败 %d"
-                  % (r + 1, rounds, len(part), elapsed, len(part) / elapsed,
-                     passed, failed))
+            print("  第 %d/%d 批：%d 组，RADV %.3fs -> %.0f 组/s（尾巴 %.3fs）；累计通过 %d 失败 %d"
+                  % (r + 1, rounds, len(part), radv_secs, len(part) / radv_secs,
+                     tail_secs, passed, failed))
 
         print("\n完成：%d 组，通过 %d，失败 %d；推送 %d 条，间隔异常 %d"
               % (total, passed, failed, got_total, gaps))
         if sim_elapsed > 0:
-            print("模拟段总耗时 %.3fs：%.0f 组/s，%.0f tick/s"
-                  % (sim_elapsed, total / sim_elapsed, sim_ticks / sim_elapsed))
+            print("模拟段总耗时 %.3fs：%.0f 组/s，%.0f tick/s（另加收尾巴合计 %.3fs，不计入吞吐）"
+                  % (sim_elapsed, total / sim_elapsed, sim_ticks / sim_elapsed, tail_elapsed))
         if detail_shown >= MAX_DETAIL and failed > detail_shown:
             print("（只打印了前 %d 条错误明细，其余省略）" % MAX_DETAIL)
         svg.maybe_write(records, cfg, "pipeline")

@@ -188,6 +188,10 @@ impl Plot {
 
                 debug!("Compile took {:?}", start_time.elapsed());
             }
+            "stats" => match self.compile_and_write_stats(Some(player)) {
+                Ok(()) => self.players[player].send_system_message("Done."),
+                Err(code) => self.players[player].send_error_message(&format!("ERR {}", code)),
+            },
             "inspect" | "i" => {
                 let player = &self.players[player];
                 let pos = worldedit::ray_trace_block(
@@ -380,6 +384,11 @@ impl Plot {
                         self.start_redpiler(options, None);
                         self.publish_world();
                         Ok(())
+                    }
+                    "stats" => {
+                        // Compiles first (same path as `compile`), then writes
+                        // the report; the console only prints Done./ERR.
+                        self.compile_and_write_stats(None)
                     }
                     "reset" | "r" => {
                         self.reset_redpiler();
@@ -1272,7 +1281,7 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
             // 44: /redpiler
             Node {
                 flags: CommandFlags::LITERAL.bits() as i8,
-                children: vec![46, 47, 48], // Children are compile, inspect, reset
+                children: vec![46, 47, 48, 90], // Children are compile, inspect, reset, stats
                 redirect_node: None,
                 name: Some("redpiler"),
                 parser: None,
@@ -1689,6 +1698,15 @@ pub static DECLARE_COMMANDS: LazyLock<PacketEncoder> = LazyLock::new(|| {
                 children: vec![],
                 redirect_node: None,
                 name: Some("redo"),
+                parser: None,
+                suggestions_type: None,
+            },
+            // 90: /redpiler stats
+            Node {
+                flags: (CommandFlags::LITERAL | CommandFlags::EXECUTABLE).bits() as i8,
+                children: vec![],
+                redirect_node: None,
+                name: Some("stats"),
                 parser: None,
                 suggestions_type: None,
             },
