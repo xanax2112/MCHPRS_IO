@@ -904,6 +904,20 @@ width = 8
     `mchprs-0.6.2-beta-bedrock.apk`（§5,155,196 B）；aarch64 二进制交给 tag 触发的 CI 编译。
     README（中英）标题下方已加发布公告 + 本版更新说明；提交 `748c2e6` 已推送。
 
+- [ ] **BUG-048：CI 的 `publish` 作业会因为 Release 已存在而失败（2026-11-06 发现）**
+  - 现象：推 `v0.6.2-beta` tag 后 `Build` 的 7 个编译作业全部 success，
+    但 `publish` 作业挂在第 6 步 `Create release`——因为它用的是
+    `gh release create "$tag" --generate-notes dist/*`，而该 tag 的 Release 已经存在（手动建过）。
+    它**不会**追加文件到现有 Release。
+  - 处理（2026-11-06 00:12）：用 API 下载 workflow 产物，在每个包的根目录里
+    加入文档与 python（`docs/Instruction-manual*.md`、`python/main.py`、`python/README.md`、
+    `python/core/**/*.py`、`README*.md`，共 20 个文件），重新打包后手动上传到
+    `v0.6.2-beta`。最终 Release 共 9 个附件：2 个 APK + 7 个平台包
+    （x86_64/aarch64 Linux、x86_64/aarch64 Windows、x86_64/aarch64/universal macOS）。
+  - 待改（未动代码）：`build.yml` 的 `Create release` 一步应改成“存在就 `gh release upload`，
+    不存在才 `gh release create`”，否则以后手动发布的 Release 永远预期带着这一个失败。
+  - 顺带：`build.yml` 编的二进制都是**不带基岩**的（没加 `--features bedrock`）。
+
 - [ ] **Java 侧区块推送**：客户端视距 6 / 服务端按 8 推，空洞随机分布，发过不再补（用户 2026-11-02 决定暂不修）。
 - [ ] **模电 `matrix:`**：报 `a matrix: list cannot be analog`。
 - [ ] **上游 workflow 在 tag 上误报失败**：`build.yml` / `ci.yml` / `docker.yml` 监听 `v*`。
