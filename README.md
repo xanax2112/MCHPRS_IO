@@ -18,7 +18,7 @@ MCHPRS_IO is a fork of [MCHPRS](https://github.com/MCHPR/MCHPRS). It removes thr
 
 To lift them it adds built-in **ROM and RAM** (bulk data storage and access, in-game), an **`io.txt`** file that declares block IO coordinates in a small HDL-like syntax, and a plain-text **automation protocol** for external programs.
 
-> No ready-made demo world ships with this repo yet — the quick start below gets you from zero to a running server in a few minutes.
+> A beginner tutorial video is in the works — stay tuned.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -37,28 +37,44 @@ To lift them it adds built-in **ROM and RAM** (bulk data storage and access, in-
 
 ## Quick start
 
-### 1. What you need
+### 1. Download and play (recommended)
 
-| | |
-| --- | --- |
-| Build | a Rust toolchain (`rustup`, stable). The Bedrock stack is **opt-in**: `cargo build --release --features bedrock` (omit the feature for a Java-only server) |
-| Play | Minecraft **Java Edition 1.20.4** (protocol 765) |
-| Automate (optional) | Python 3.8+ for the test scripts in [`python/`](python/README.md) |
+Grab the latest build from **[Releases](https://github.com/xanax2112/MCHPRS_IO/releases)** — no Rust
+toolchain, no build step.
 
-### 2. Build and start
+**Android**: install `mchprs-0.6.2-beta-java.apk` (no Bedrock) or `mchprs-0.6.2-beta-bedrock.apk`
+(with Bedrock). Grant the storage permission on first launch: the app then unpacks the manual and the
+Python tooling into its working directory `/storage/emulated/0/termux/MCHPRS_IO` (once only — your
+edits are never overwritten). Tap **Start** on the main screen to bring the server up; the console lives
+in the same screen, and `/` commands can be typed right there. `Config.toml`, `io.txt`, `world/` and
+`logs/` all live in that working directory.
+
+**Linux / Windows / macOS**: download the archive for your platform, unpack it and run `mchprs`
+(`mchprs.exe` on Windows). It reads and writes `Config.toml`, `world/` and `logs/` **relative to the
+current working directory**, so start it from an empty directory:
 
 ```bash
-# Java + Bedrock (default server build)
-cargo build --release --features bedrock
-
-# Java only — the whole `crates/network/src/bedrock/` tree is not compiled
-# cargo build --release
-
-# run the server in its own directory: everything it reads/writes is
-# relative to the working directory, so keep it out of the source tree
 mkdir -p ~/mchprs-server && cd ~/mchprs-server
-~/MCHPRS_IO/target/release/mchprs
+/path/to/mchprs
 ```
+
+Client: Minecraft **Java Edition 1.20.4** (protocol 765), connect to `<host>:25565`. The Bedrock build
+additionally accepts Bedrock 1.21.51 (protocol 766).
+
+### 2. Build it yourself (optional)
+
+Only needed if you change the code or want your own Bedrock build.
+
+```bash
+# Java only
+cargo build --release
+
+# Bedrock: the feature is off by default and must be enabled explicitly
+cargo build --release --features bedrock
+```
+
+The binary lands in `target/release/mchprs`. Running it in its own directory is still recommended,
+otherwise `world/` and `logs/` end up inside the source tree.
 
 The first start creates everything with defaults:
 
@@ -251,6 +267,25 @@ The same commands work from the server console; commands needing a player are re
 - [python/README.md](python/README.md) — protocol test scripts (`correctness` / `pipeline`)
 - [app/README.md](app/README.md) — standalone Android APK that bundles the server
 - [docs/backlog/BACKLOG.md](docs/backlog/BACKLOG.md) — project ledger and design decisions
+
+## Follow us
+
+- **Developer**: Xanax21 — Bilibili <https://b23.tv/SJ6cg8m>, GitHub [@xanax2112](https://github.com/xanax2112)
+- **Testing & outreach**: FishYuDuoDuo — GitHub [@FISHduoduo123](https://github.com/FISHduoduo123), Bilibili <https://b23.tv/kZae7Xw>
+- **95's Redstone Cat Home** — QQ group **784478204**
+- **Advanced Redstone & Digital Logic Study Group (ARS)** — QQ group **1076278498**
+
+## Credits
+
+- Upstream [MCHPRS](https://github.com/MCHPR/MCHPRS): the entire redstone compiler and simulator foundation
+- Bedrock protocol stack: [bedrock-rs](https://github.com/bedrock-crustaceans/bedrock-rs) (a **vendored
+  full copy** with 5 local patches — see [`docs/backlog/BEDROCK.md`](docs/backlog/BEDROCK.md)) and
+  [nbtx](https://github.com/bedrock-crustaceans/nbtx) (NBT codec)
+- Networking and async: [tokio](https://github.com/tokio-rs/tokio),
+  [CloudburstMC](https://github.com/CloudburstMC) RakNet and protocol implementations (used as
+  references), [Geyser](https://github.com/GeyserMC/Geyser) (codec cross-checks)
+- NBT for Java save data: [hematite-nbt](https://github.com/StackDoubleFlow/hematite_nbt)
+- Plus the rest of the [Rust ecosystem](https://crates.io) we lean on (`serde`, `flate2`, `tokio`, `uuid`, …)
 
 ## Derivative notice
 

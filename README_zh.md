@@ -17,7 +17,7 @@ MCHPRS_IO 是 [MCHPRS](https://github.com/MCHPR/MCHPRS) 的一个分支，用来
 
 为此它内置了 **ROM 与 RAM**（在红石里直接存取大量数据）、用**接近 HDL 的语法**声明方块 IO 坐标的 **`io.txt`**，以及一套纯文本的**自动化协议**，让外部程序直接驱动并观察电路。
 
-> 仓库里暂不附带演示世界 —— 下面的快速开始几分钟就能从零跑到能进服。
+> 新手教程视频正在制作中，敬请期待。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -36,30 +36,40 @@ MCHPRS_IO 是 [MCHPRS](https://github.com/MCHPR/MCHPRS) 的一个分支，用来
 
 ## 快速开始
 
-### 1. 需要什么
+### 1. 下载即玩（推荐）
 
-| | |
-| --- | --- |
-| 构建 | Rust 工具链（`rustup` stable）。基岩版**默认不编译**：`cargo build --release --features bedrock`；只要纯 Java 服务器就去掉这个 feature |
-| 游玩 | Minecraft **Java 版 1.20.4**（协议 765） |
-| 自动化（可选） | Python 3.8+，跑 [`python/`](python/README.md) 里的测试脚本 |
+到 **[Releases](https://github.com/xanax2112/MCHPRS_IO/releases)** 下载最新版即可，**不需要 Rust 工具链，也不用自己编译**。
 
-### 2. 构建与启动
+**Android**：装 `mchprs-0.6.2-beta-java.apk`（不带基岩）或 `mchprs-0.6.2-beta-bedrock.apk`（带基岩）。
+打开 App 先给存储权限，首次启动会把使用手册与 Python 工具释放到工作目录
+`/storage/emulated/0/termux/MCHPRS_IO`（只解压一次，之后不再覆盖你的改动）；回到主界面点「启动」起服务，
+控制台就在同一个界面里，`/` 开头的命令可以直接敲。`Config.toml`、`io.txt`、`world/`、`logs/` 都在那个工作目录下。
+
+**Linux / Windows / macOS**：下载对应平台的压缩包，解压后直接运行 `mchprs`（Windows 是 `mchprs.exe`）。
+它在**当前工作目录**读写 `Config.toml`、`world/`、`logs/`，所以先建一个空目录再跑：
 
 ```bash
-# Java + 基岩版（正式构建用这个）
-cargo build --release --features bedrock
-
-# 只要 Java 版 —— 整个 `crates/network/src/bedrock/` 都不参与编译
-# cargo build --release
-
-# 在独立目录里跑：服务端读写的一切都相对工作目录，
-# 放在源码目录里会把 git 工作区弄脏
 mkdir -p ~/mchprs-server && cd ~/mchprs-server
-~/MCHPRS_IO/target/release/mchprs
+/path/to/mchprs
 ```
 
-首次启动会自动生成默认文件：
+客户端用 Minecraft **Java 版 1.20.4**（协议 765），连 `<主机>:25565`；带基岩的构建另外支持基岩版 1.21.51（协议 766）。
+
+### 2. 自己编译（可选）
+
+只有要改代码、或者要自己开基岩版时才用得上。
+
+```bash
+# 只要 Java 版
+cargo build --release
+
+# 需要基岩版：feature 默认关闭，必须显式打开（会把 vendor/bedrock-rs 一起编进来）
+cargo build --release --features bedrock
+```
+
+产物在 `target/release/mchprs`。同样建议在独立目录里跑，否则 `world/`、`logs/` 会写进源码树。
+
+首次启动会在工作目录生成默认文件：
 
 ```text
 .
@@ -246,6 +256,25 @@ RADV <x>                      → OK RADV <x> <tick>
 - [python/README.md](python/README.md) —— 协议测试脚本（`correctness` / `pipeline`）
 - [app/README.md](app/README.md) —— 把服务端打包成独立 Android APK 的工程
 - [docs/backlog/BACKLOG.md](docs/backlog/BACKLOG.md) —— 项目台账与设计决策
+
+## 关注我们
+
+- **开发者**：Xanax21 —— 哔哩哔哩 <https://b23.tv/SJ6cg8m>，GitHub [@xanax2112](https://github.com/xanax2112)
+- **测试与宣传**：FishYuDuoDuo —— GitHub [@FISHduoduo123](https://github.com/FISHduoduo123)，哔哩哔哩 <https://b23.tv/kZae7Xw>
+- **95 的红石喵窝** —— QQ 群 **784478204**
+- **先进红石数电技术研讨组（ARS）** —— QQ 群 **1076278498**
+
+## 致谢
+
+- 上游 [MCHPRS](https://github.com/MCHPR/MCHPRS)：红石编译器与模拟器的全部基础
+- 基岩版协议栈：[bedrock-rs](https://github.com/bedrock-crustaceans/bedrock-rs)（**vendored 完整副本**，
+  带 5 处本地补丁，见 [`docs/backlog/BEDROCK.md`](docs/backlog/BEDROCK.md)）、
+  [nbtx](https://github.com/bedrock-crustaceans/nbtx)（NBT 编解码）
+- 网络与异步：[tokio](https://github.com/tokio-rs/tokio)、
+  [CloudburstMC](https://github.com/CloudburstMC) 的 RakNet 与协议实现（作对照参考）、
+  [Geyser](https://github.com/GeyserMC/Geyser)（编解码对照）
+- Java 版存档 NBT：[hematite-nbt](https://github.com/StackDoubleFlow/hematite_nbt)
+- 还有 [Rust 生态](https://crates.io) 里其余一堆库（`serde`、`flate2`、`tokio`、`uuid` 等）
 
 ## 衍生版声明
 
