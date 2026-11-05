@@ -284,7 +284,7 @@ width = 2
 | `analog_output` | 电路 → 脚本 | 没有其他东西驱动的红石线点 |
 
 `io.txt` 的**文件首行**可以是可选的版本戳，两种写法等价：完整形式
-`v0.6.1-alpha hex words addressed`，或裸形式 `v0.6.1-alpha`。低于 0.5.0 的版本戳会让整个文件失效；
+`v0.6.2-beta hex words addressed`，或裸形式 `v0.6.2-beta`。低于 0.5.0 的版本戳会让整个文件失效；
 没有版本戳时按当前格式解析。
 
 ### 6.3 必填键
@@ -398,7 +398,7 @@ matrix: 0, 64, 30, +2x, 3, +3z, 2
 ### 7.1 文件头与结构
 
 ```text
-v0.6.1-alpha hex words addressed
+v0.6.2-beta hex words addressed
 origin = 0
 clk = 0
 
@@ -415,7 +415,7 @@ width = 8
 00: 0f 3c 69 00 00 00 00 00
 ```
 
-- 版本戳接受 ≥ 0.5.0 的任意版本；`hex words addressed` 后缀可省略，裸 `v0.6.1-alpha` 等价。
+- 版本戳接受 ≥ 0.5.0 的任意版本；`hex words addressed` 后缀可省略，裸 `v0.6.2-beta` 等价。
 - `origin` 与 `clk` 是文件级键；`origin` 会加到每个端口坐标上（含 `clk`）。
 - 每个端口列表以 `width = N` 开头，展开后必须正好 N 个点。
 - 键行到数据段开始为止（第一行 `地址:` 或 hex 字）。
@@ -485,7 +485,7 @@ RAM 在运行时不写盘。触发回写的时机：有玩家退出、收到 SIG
 ### 7.7 例子
 
 ```text
-v0.6.1-alpha hex words addressed
+v0.6.2-beta hex words addressed
 origin = 0
 clk = 20, 64, 0
 
@@ -520,8 +520,8 @@ read enable = -8, 64, 6
 ### 8.1 连接
 
 ```text
-HELLO MCHPRS_IO 0.6.1-alpha 1234      ← 已编译，当前 tick 1234
-HELLO MCHPRS_IO 0.6.1-alpha           ← 还没编译
+HELLO MCHPRS_IO 0.6.2-beta 1234      ← 已编译，当前 tick 1234
+HELLO MCHPRS_IO 0.6.2-beta           ← 还没编译
 ```
 
 - 动词**必须大写**，小写会被拒。
@@ -641,7 +641,7 @@ A=1 B=0 C=1 D=1  →  1011  →  b
 
 ```text
 $ nc 127.0.0.1 25585
-HELLO MCHPRS_IO 0.6.1-alpha 0
+HELLO MCHPRS_IO 0.6.2-beta 0
 POUT display
 OUTPUT display 0 00
 INPUT switches b
@@ -722,12 +722,21 @@ host, port = "127.0.0.1", 25585
 
 ```bash
 cd app
-bash build.sh                      # 默认 WITH_ASSETS=0：包内不带 docs/python
-WITH_ASSETS=1 bash build.sh        # 同时内置 docs/ 与 python/（首次启动释放到工作目录）
+bash build.sh              # 内置不带基岩的 ~/mchprs/mchprs，出 mchprs.apk（versionCode 610）
+BEDROCK=1 bash build.sh    # 内置带基岩的 ~/mchprs/mchprs-bedrock，出 mchprs-bedrock.apk（611）
 ```
 
-环境变量可覆盖：`ANDROID_JAR`、`KEYSTORE`、`MCHPRS_BIN`（默认 `~/mchprs/mchprs`）、
-`NO_BINARY=1` 只打界面壳。
+两个 APK 的包名都是 `com.dsh.mchprs`，同一台手机上只能装一个。
+
+包内默认附带（`WITH_ASSETS=1`）：`docs/` 顶层的两份手册、`python/`（`main.py`、
+`README.md`、`core/`）与根目录的 `README.md` / `README_zh.md`；**不带** `docs/backlog/`
+（台账）、`docs/upstream/` 与 `docs/mchprsio/`。
+
+这些文件只在**第一次启动**时释放到工作目录，之后 App 不再碰它们；想重新释放，
+删掉工作目录里的 `.apk-assets-done` 再启动。释放本身也只补缺、不覆盖已有文件。
+
+环境变量可覆盖：`ANDROID_JAR`、`KEYSTORE`、`MCHPRS_BIN`、`VERSION_CODE`；
+`NO_BINARY=1` 只打界面壳（`ui-preview.apk`），`WITH_ASSETS=0` 不内置任何文件。
 
 App 启动服务器时工作目录是 `/storage/emulated/0/termux/MCHPRS_IO`，所以 `Config.toml`、
 `io.txt`、`memory/`、`world/`、`logs/` 都在那里。
@@ -760,7 +769,7 @@ App 启动服务器时工作目录是 `/storage/emulated/0/termux/MCHPRS_IO`，�
 - 协议没有版本协商：客户端只从 `HELLO` 里读版本串，服务端不因版本拒绝连接。
   批量预约回复 `OK INPUT <名字> <条数>` 是本仓库 0.6.1-alpha 起才有的，
   老客户端在大批次上会误判——这也是自带 Python 客户端要求"先核对条数再 `RADV`"的原因。
-- 本手册对应 `0.6.1-alpha`。
+- 本手册对应 `0.6.2-beta`。
 
 ### 11.4 症状对照表
 

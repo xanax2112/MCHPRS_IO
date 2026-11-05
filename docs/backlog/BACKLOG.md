@@ -869,6 +869,37 @@ width = 8
       广播 `&e<name> left the game`。措辞与原版一致（黄色）。
     - 已知差异：进服那个玩家自己看不到自己的“joined”（广播时他还没进 plot），原版是能看到的。
 
+- [ ] **BUG-047：版本升到 0.6.2-beta、双二进制 / 双 APK、内置 docs+python（用户 2026-11-05 23:43）**
+  - 需求：版本号升到 `0.6.2-beta`；这次编译**两份二进制**（带基岩 / 不带基岩）；
+    APK 内置 python 代码与文档（**不含台账与上游文档**）；并且内置文件
+    **只在第一次启动时解压一次**，之后不再碰；另外要打**两个 APK**。
+  - 改动：
+    - `Cargo.toml`、`app/AndroidManifest.xml`：`0.6.1-alpha` → `0.6.2-beta`，versionCode 609 → 610。
+    - `app/build.sh`：`BEDROCK=1` 时改用 `~/mchprs/mchprs-bedrock`、产出 `mchprs-bedrock.apk`、
+      `--version-code 611`；默认产出 `mchprs.apk`、`--version-code 610`。
+      `VERSION_NAME=0.6.2-beta` 由脚本传给 `aapt2 link`。
+    - `WITH_ASSETS` 默认从 0 改为 1：打包 `docs/` 顶层两份手册、`python/`、根 `README*.md`；
+      不打包 `docs/backlog/`、`docs/upstream/`、`docs/mchprsio/`。
+    - `app/src/com/dsh/mchprs/Assets.java`：改成标记文件 `工作目录/.apk-assets-done`，
+      没有标记时解压一次并写下标记，之后启动直接跳过；解压本身仍只补缺、不覆盖。
+      想重新解压：删掉标记后再启动。
+    - `python crates/network/generators/gen_commands.py` 重跑一次（本次要编基岩版），
+      `commands_gen.rs` 没有实质变化（24 命令）。
+    - 两份手册与 `README*` 里的版本字符串改为 `0.6.2-beta`；
+      "since 0.6.1-alpha" 这类历史陈述保留。
+    - 手册 §10 重写：两个 APK 的构建方式、内置范围、首启解压与标记文件。
+  - 产物/结果（2026-11-05 23:54）：
+    - `cargo build --release` 3m 30s → `~/mchprs/mchprs`，8,795,640 字节，`--version` 回 `0.6.2-beta`。
+    - `cargo build --release --features bedrock` 3m 59s → `~/mchprs/mchprs-bedrock`，12,849,016 字节。
+    - APK：`app/mchprs.apk`（versionCode 610，3,787,132 B，内置 java-only 二进制）；
+      `app/mchprs-bedrock.apk`（versionCode 611，5,155,196 B，内置基岩版二进制）。
+      两份 APK 都含 assets：`docs/Instruction-manual*.md`、`python/`、`README*.md`
+      （无 docs/backlog、docs/upstream、docs/mchprsio）。
+    - 副本到 `Download/`：`mchprs-0.6.2-beta-java.apk`（md5 e983190e…）、
+      `mchprs-0.6.2-beta-bedrock.apk`（md5 bab7b709…）、`mchprs-0.6.2-beta-aarch64-java`（md5 1bd13a83…）、
+      `mchprs-0.6.2-beta-aarch64-bedrock`（md5 3e358593…）。
+  - 已知：`BEDROCK` 版与普通版**包名相同**，手机上只能同时存在一个；安装另一个会覆盖。
+
 - [ ] **Java 侧区块推送**：客户端视距 6 / 服务端按 8 推，空洞随机分布，发过不再补（用户 2026-11-02 决定暂不修）。
 - [ ] **模电 `matrix:`**：报 `a matrix: list cannot be analog`。
 - [ ] **上游 workflow 在 tag 上误报失败**：`build.yml` / `ci.yml` / `docker.yml` 监听 `v*`。
@@ -882,7 +913,8 @@ width = 8
 
 | 版本 | 状态 | 要点 |
 | --- | --- | --- |
-| `0.6.1-alpha` | ✅ 当前 | 日志英文化、基岩日志收口、监听地址跟随 `bind_address`、插座/插头拆分 |
+| `0.6.2-beta` | ✅ 当前 | 双二进制（含基岩）、双 APK、内置 docs/python 仅首启解压 |
+| `0.6.1-alpha` | ✅ | 日志英文化、基岩日志收口、监听地址跟随 `bind_address`、插座/插头拆分 |
 | `0.5.4-alpha` | ✅ | `width = 0` 时钟端口；删 `manual.md`，`file-formats` 增时钟章节 |
 | `0.5.2-alpha` | ✅ | 模电 `matrix:`、日志去重、文件版本兼容；自动化协议定型 |
 | `0.5.1-alpha` | ✅ | 模电双键（`rs_width` + `width`）、动词大写 |

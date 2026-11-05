@@ -2,6 +2,17 @@
 
 # MCHPRS_IO
 
+> **0.6.2-beta is out — public beta.** Download the latest build from
+> [Releases](https://github.com/xanax2112/MCHPRS_IO/releases)
+> (`mchprs-0.6.2-beta-java.apk`, `mchprs-0.6.2-beta-bedrock.apk` and the two aarch64 binaries).
+>
+> In this release:
+>
+> - the protocol is essentially stable; this is the public beta
+> - the Python test tooling is more complete
+> - Bedrock is optional and off by default; the APK ships in two flavours, with and without Bedrock
+> - assorted bug fixes
+
 MCHPRS_IO is a fork of [MCHPRS](https://github.com/MCHPR/MCHPRS). It removes two limits that make redstone hard to work with: **you cannot debug or verify a circuit quickly**, and **the circuit cannot talk to anything outside Minecraft**.
 
 To lift them it adds built-in **ROM and RAM**, an **`io.txt`** file that declares block IO coordinates in a small HDL-like syntax, and a plain-text **automation protocol** for external programs.
@@ -100,7 +111,7 @@ The automation port (`io_port`, default `25585`) listens on **loopback only** an
 One message per line, upper-case verbs only:
 
 ```text
-HELLO MCHPRS_IO 0.6.1-alpha <tick>     ← sent by the server on connect
+HELLO MCHPRS_IO 0.6.2-beta <tick>     ← sent by the server on connect
 INPUT switches 1                       → OK INPUT switches <tick>
 POUT lamps                             → OUTPUT lamps <tick> 0a
 TICK NOW                               → NOW <tick>

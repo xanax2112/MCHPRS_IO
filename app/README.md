@@ -4,8 +4,9 @@
 装上就能跑。
 
 - **包名**：`com.dsh.mchprs`
-- **版本**：`0.6.1-alpha`，versionCode **609**
-- **APK**：`mchprs.apk`（约 4.8 MB，内含 aarch64 原生二进制约 12.7 MB 未压缩）
+- **版本**：`0.6.2-beta`，versionCode **610**（不带基岩）/ **611**（带基岩）
+- **APK**：`mchprs.apk` 与 `mchprs-bedrock.apk`；包内默认内置 `docs/` 顶层手册与 `python/`，
+  首次启动释放到工作目录（写 `.apk-assets-done` 标记，之后不再解压）
 - **最低系统**：Android 7.0（minSdk 24）；目标 SDK 28
 
 ## 目录结构

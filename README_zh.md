@@ -2,6 +2,16 @@
 
 # MCHPRS_IO
 
+> **0.6.2-beta 已发布 · 正式公测** —— 到 [Releases](https://github.com/xanax2112/MCHPRS_IO/releases)
+> 下载最新版（`mchprs-0.6.2-beta-java.apk`、`mchprs-0.6.2-beta-bedrock.apk` 与两份 aarch64 二进制）。
+>
+> 本版更新：
+>
+> - 协议基本稳定，正式公测
+> - Python 测试代码更加完善
+> - 基岩版作为可选功能，默认不编译；APK 分为带基岩版和不带基岩版两个版本
+> - 修复若干 bug
+
 MCHPRS_IO 是 [MCHPRS](https://github.com/MCHPR/MCHPRS) 的一个分支，用来解决红石的两大痛点：**电路无法快速调试与验证**，以及**电路无法与外部程序沟通**。
 
 为此它内置了 **ROM 与 RAM**、用**接近 HDL 的语法**声明方块 IO 坐标的 **`io.txt`**，以及一套纯文本的**自动化协议**，让外部程序直接驱动并观察电路。
@@ -98,7 +108,7 @@ width = 2
 自动化端口（`io_port`，默认 `25585`）**只监听回环**，且没有鉴权。一行一条报文，动词全大写：
 
 ```text
-HELLO MCHPRS_IO 0.6.1-alpha <tick>     ← 连上后服务端先发
+HELLO MCHPRS_IO 0.6.2-beta <tick>     ← 连上后服务端先发
 INPUT switches 1                       → OK INPUT switches <tick>
 POUT lamps                             → OUTPUT lamps <tick> 0a
 TICK NOW                               → NOW <tick>

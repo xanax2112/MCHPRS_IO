@@ -11,27 +11,55 @@ import java.io.OutputStream;
 /**
  * 把打进 APK 的文档与 Python 工具释放到工作目录（用户 2026-11-02 需求）。
  *
- * 覆盖策略（用户 2026-11-03 要求：**绝不覆盖工作目录里已有的文件**）：
- * - 只补缺：目标文件已存在就跳过，不再覆盖；
- * - 想更新某份文档或脚本，删掉它再启动 App 即可补回；
- * - 原因：python/core 被覆盖会把用户在 Termux 里改好的工具冲掉，
- *   表现为"改了没生效/日志里没有新功能"。
+ * 释放策略（用户 2026-11-05 要求：**只在第一次启动时解压一次，之后不管**）：
+ * - 工作目录里没有 {@link #MARKER} 时做一次释放；
+ * - 释放完写下标记文件，以后启动直接跳过，工作目录里的文件怎么改都不再碰；
+ * - 想重新释放一次：删掉工作目录里的 `.apk-assets-done` 再启动 App；
+ * - 释放时仍然只补缺（目标已存在就跳过），避免把用户改过的文件冲掉。
  */
 public final class Assets {
 
     private Assets() {
     }
 
-    /** 释放全部内置资源，返回写出的文件数。失败只静默跳过，不影响 App 使用。 */
+    /** 标记文件：它在工作目录里就表示内置资源已经释放过，不再重复解压。 */
+    private static final String MARKER = ".apk-assets-done";
+
+    /** 写进标记文件的内容，只用于排查是哪一版释放的。 */
+    private static final String BUNDLE_VERSION = "0.6.2-beta";
+
+    /** 释放全部内置资源，返回写出的文件数。已经释放过（有标记）时直接返回 0。 */
     public static int extract(Context c, String root) {
-        AssetManager am = c.getAssets();
         File base = new File(root);
+        File marker = new File(base, MARKER);
+        if (marker.isFile()) {
+            return 0;
+        }
+        AssetManager am = c.getAssets();
         int n = 0;
         n += tree(am, "docs", new File(base, "docs"), false);
         n += tree(am, "python/core", new File(base, "python" + File.separator + "core"), false);
         n += flat(am, "python", new File(base, "python"), false);
         n += flat(am, "", base, true);
+        writeMarker(marker);
         return n;
+    }
+
+    /** 写下"已释放"标记；失败也不影响 App 使用，只是下次启动会再扫一遍。 */
+    private static void writeMarker(File marker) {
+        OutputStream os = null;
+        try {
+            File dir = marker.getParentFile();
+            if (dir != null && !dir.isDirectory() && !dir.mkdirs()) {
+                return;
+            }
+            os = new FileOutputStream(marker);
+            os.write(BUNDLE_VERSION.getBytes("UTF-8"));
+            os.flush();
+        } catch (Exception ignored) {
+        } finally {
+            close(os);
+        }
     }
 
     /** 递归复制一个 assets 目录。 */

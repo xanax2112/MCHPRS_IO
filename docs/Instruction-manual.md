@@ -311,7 +311,7 @@ Header `<role> <name> = [`, block ends at `]`.
 | `analog_output` | circuit → script | redstone dust dots nothing else drives |
 
 The **first line of the file** may carry an optional version stamp, in either the full form
-`v0.6.1-alpha hex words addressed` or the bare form `v0.6.1-alpha`. A stamp older than 0.5.0
+`v0.6.2-beta hex words addressed` or the bare form `v0.6.2-beta`. A stamp older than 0.5.0
 disables the whole file; no stamp means "current format".
 
 ### 6.3 Required keys
@@ -428,7 +428,7 @@ Logisim compatible.
 ### 7.1 Header and layout
 
 ```text
-v0.6.1-alpha hex words addressed
+v0.6.2-beta hex words addressed
 origin = 0
 clk = 0
 
@@ -446,7 +446,7 @@ width = 8
 ```
 
 - The stamp accepts any version 0.5.0 or newer; the `hex words addressed` suffix is optional,
-  so a bare `v0.6.1-alpha` is equivalent.
+  so a bare `v0.6.2-beta` is equivalent.
 - `origin` and `clk` are file-level keys; `origin` is added to every port coordinate.
 - Every port list starts with `width = N` and expands to exactly N points.
 - Key lines end where the data section begins (first `addr:` line or hex words).
@@ -523,7 +523,7 @@ writes back.
 ### 7.7 Examples
 
 ```text
-v0.6.1-alpha hex words addressed
+v0.6.2-beta hex words addressed
 origin = 0
 clk = 20, 64, 0
 
@@ -559,8 +559,8 @@ its own line.
 ### 8.1 Connecting
 
 ```text
-HELLO MCHPRS_IO 0.6.1-alpha 1234      ← compiled, current tick 1234
-HELLO MCHPRS_IO 0.6.1-alpha           ← nothing compiled yet
+HELLO MCHPRS_IO 0.6.2-beta 1234      ← compiled, current tick 1234
+HELLO MCHPRS_IO 0.6.2-beta           ← nothing compiled yet
 ```
 
 - Verbs are **upper case**; lowercase is rejected.
@@ -694,7 +694,7 @@ Limits: one line at most 65 536 bytes; a connection whose unread output exceeds 
 
 ```text
 $ nc 127.0.0.1 25585
-HELLO MCHPRS_IO 0.6.1-alpha 0
+HELLO MCHPRS_IO 0.6.2-beta 0
 POUT display
 OUTPUT display 0 00
 INPUT switches b
@@ -780,12 +780,22 @@ sources with `javac`, dexes them with `d8`, links resources with `aapt2`, packs 
 
 ```bash
 cd app
-bash build.sh                      # WITH_ASSETS=0 by default: no docs/python inside
-WITH_ASSETS=1 bash build.sh        # also bundle docs/ and python/ (extracted on first start)
+bash build.sh              # bundles ~/mchprs/mchprs (no bedrock) -> mchprs.apk (versionCode 610)
+BEDROCK=1 bash build.sh    # bundles ~/mchprs/mchprs-bedrock      -> mchprs-bedrock.apk (611)
 ```
 
-Environment overrides: `ANDROID_JAR`, `KEYSTORE`, `MCHPRS_BIN` (default `~/mchprs/mchprs`),
-`NO_BINARY=1` for a UI-only shell.
+Both APKs use the package name `com.dsh.mchprs`, so only one can be installed at a time.
+
+By default (`WITH_ASSETS=1`) the package carries the two manuals from the top of `docs/`,
+`python/` (`main.py`, `README.md`, `core/`) and the root `README.md` / `README_zh.md`.
+It does **not** carry `docs/backlog/` (ledgers), `docs/upstream/` or `docs/mchprsio/`.
+
+Those files are released into the work directory on the **first launch only**; after that the
+app never touches them. To release them again, delete `.apk-assets-done` in the work directory
+and start the app. The release itself only fills in missing files and never overwrites.
+
+Environment overrides: `ANDROID_JAR`, `KEYSTORE`, `MCHPRS_BIN`, `VERSION_CODE`;
+`NO_BINARY=1` builds the UI shell only (`ui-preview.apk`), `WITH_ASSETS=0` bundles nothing.
 
 The app starts the server with the working directory `/storage/emulated/0/termux/MCHPRS_IO`,
 so `Config.toml`, `io.txt`, `memory/`, `world/` and `logs/` all live there.
@@ -823,7 +833,7 @@ so `Config.toml`, `io.txt`, `memory/`, `world/` and `logs/` all live there.
   the server does not refuse connections by version. Batched reservation replies
   (`OK INPUT <name> <count>`) exist since this fork's 0.6.1-alpha, so older clients misjudge big
   batches — which is exactly why the bundled Python client verifies the count before `RADV`.
-- This manual describes `0.6.1-alpha`.
+- This manual describes `0.6.2-beta`.
 
 ### 11.4 Symptom table
 

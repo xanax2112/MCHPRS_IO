@@ -5,8 +5,22 @@ cd "$(dirname "$0")"
 # 三个外部依赖都能用环境变量覆盖，默认值只是本机习惯路径
 AJ="${ANDROID_JAR:-$HOME/dsh/scratch/pf35/android-35/android.jar}"
 KS="${KEYSTORE:-$HOME/dsh/scratch/apkbuild/dsh.keystore}"
-MCHPRS_BIN="${MCHPRS_BIN:-$HOME/mchprs/mchprs}"
 OUT=out
+VERSION_NAME="0.6.2-beta"
+
+# 两份二进制 → 两个 APK（用户 2026-11-05 要求）：
+#   bash build.sh            内置 ~/mchprs/mchprs（不带基岩），出 mchprs.apk，versionCode 610
+#   BEDROCK=1 bash build.sh  内置 ~/mchprs/mchprs-bedrock，出 mchprs-bedrock.apk，versionCode 611
+BEDROCK="${BEDROCK:-0}"
+if [ "$BEDROCK" = "1" ]; then
+    MCHPRS_BIN="${MCHPRS_BIN:-$HOME/mchprs/mchprs-bedrock}"
+    APK_OUT=mchprs-bedrock.apk
+    VERSION_CODE="${VERSION_CODE:-611}"
+else
+    MCHPRS_BIN="${MCHPRS_BIN:-$HOME/mchprs/mchprs}"
+    APK_OUT=mchprs.apk
+    VERSION_CODE="${VERSION_CODE:-610}"
+fi
 
 if [ ! -f "$AJ" ]; then
     echo "缺少 android.jar：用 ANDROID_JAR=<路径> 指定（或装 android-sdk 后用 platforms/android-35/android.jar）" >&2
@@ -16,15 +30,24 @@ fi
 # NO_BINARY=1 时跳过内置 mchprs，只打界面壳（用于快速预览 UI）
 NO_BINARY="${NO_BINARY:-0}"
 
-# WITH_ASSETS=1 才把 docs/ 与 python/ 打进 APK（开 App 时由 Assets.java 释放）。
-# 默认 0：版本没稳定期间不携带任何附带文件（用户 2026-11-04 定，台账 §13）。
-# 理由：Assets.java 只补缺不覆盖，带的旧文件会把工作目录里的新脚本顶掉不了、
-# 反而让人以为在测新代码，实际跑的是包里那份。
-WITH_ASSETS="${WITH_ASSETS:-0}"
+# WITH_ASSETS=1 把 docs/ 与 python/ 打进 APK（首次启动由 Assets.java 释放）。
+# 默认 1（用户 2026-11-05 改）：只带 docs/ 顶层的两份手册、python/ 与根 README，
+# 不带 docs/backlog（台账）、docs/upstream（上游说明）与 docs/mchprsio。
+# 释放是"只解压一次"：App 在工作目录写下 .apk-assets-done 之后不再碰这些文件。
+WITH_ASSETS="${WITH_ASSETS:-1}"
 
 echo "[1/7] 准备原生二进制"
 rm -rf "$OUT"
 mkdir -p "$OUT/classes" "$OUT/dex" "$OUT/lib/arm64-v8a"
+
+# aapt2 不吃 --version-code 覆盖清单里已有的值，基岩版单独生成一份清单。
+MANIFEST=AndroidManifest.xml
+if [ "$BEDROCK" = "1" ]; then
+    MANIFEST="$OUT/AndroidManifest.xml"
+    sed "s/android:versionCode=\"610\"/android:versionCode=\"$VERSION_CODE\"/" \
+        AndroidManifest.xml > "$MANIFEST"
+    grep -o 'android:versionCode="[0-9]*"' "$MANIFEST"
+fi
 if [ "$NO_BINARY" = "1" ]; then
     echo "  NO_BINARY=1，跳过嵌入 mchprs"
 else
@@ -53,7 +76,7 @@ if [ "$WITH_ASSETS" = "1" ]; then
     ASSET_ARGS=(-A "$ASS")
     echo "  内置: $(find "$ASS" -type f | wc -l) 个文件（docs / README / python）"
 else
-    echo "  WITH_ASSETS=0，不携带 docs/python（版本未稳定，附随文件手动同步）"
+    echo "  WITH_ASSETS=0，不携带 docs/python"
 fi
 
 RES_INPUT=()
@@ -67,9 +90,10 @@ fi
 
 echo "[3/7] aapt2 link"
 mkdir -p "$OUT/gen"
-aapt2 link -o "$OUT/base.apk" -I "$AJ" --manifest AndroidManifest.xml \
+aapt2 link -o "$OUT/base.apk" -I "$AJ" --manifest "$MANIFEST" \
     "${ASSET_ARGS[@]}" \
     --java "$OUT/gen" \
+    --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" \
     --min-sdk-version 24 --target-sdk-version 28 "${RES_INPUT[@]}"
 
 echo "[4/7] javac"
@@ -102,8 +126,6 @@ if [ ! -f "$KS" ]; then
 fi
 if [ "$NO_BINARY" = "1" ]; then
     APK_OUT=ui-preview.apk
-else
-    APK_OUT=mchprs.apk
 fi
 apksigner sign --ks "$KS" --ks-pass pass:android --key-pass pass:android \
     --out "$APK_OUT" "$OUT/unsigned.apk"
