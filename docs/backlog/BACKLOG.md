@@ -899,6 +899,10 @@ width = 8
       `mchprs-0.6.2-beta-bedrock.apk`（md5 bab7b709…）、`mchprs-0.6.2-beta-aarch64-java`（md5 1bd13a83…）、
       `mchprs-0.6.2-beta-aarch64-bedrock`（md5 3e358593…）。
   - 已知：`BEDROCK` 版与普通版**包名相同**，手机上只能同时存在一个；安装另一个会覆盖。
+  - **2026-11-05 23:57 已发布 GitHub Release**：`v0.6.2-beta`（prerelease），
+    标题 `v0.6.2-beta — 正式公测`，上传了 `mchprs-0.6.2-beta-java.apk`（§3,787,132 B）与
+    `mchprs-0.6.2-beta-bedrock.apk`（§5,155,196 B）；aarch64 二进制交给 tag 触发的 CI 编译。
+    README（中英）标题下方已加发布公告 + 本版更新说明；提交 `748c2e6` 已推送。
 
 - [ ] **Java 侧区块推送**：客户端视距 6 / 服务端按 8 推，空洞随机分布，发过不再补（用户 2026-11-02 决定暂不修）。
 - [ ] **模电 `matrix:`**：报 `a matrix: list cannot be analog`。
